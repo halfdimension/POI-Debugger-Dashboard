@@ -213,3 +213,10 @@ Phase 4A.1 makes Phase 4A evidence visible across the whole route without changi
 - The same source POI is deduplicated if it appears in multiple maneuvers.
 
 All correlation remains external. The production Valhalla engine, tiles, protobufs and route response are unchanged.
+
+## Phase 4B — external predicted winner comparison
+
+Phase 4B remains dashboard-only. It approximates the candidate set for each maneuver from source POIs near the preceding approach-route segment, ranks those candidates using the inspected Odin ordering (priority descending, distance-to-maneuver ascending, then POI id ascending), and compares the external predicted winner with the POI strongly observed in existing Odin narration.
+
+The candidate set is an external approximation, not Odin's private `maneuver.landmarks()` vector. MATCH/MISMATCH therefore compares dashboard prediction with narration evidence and must not be interpreted as direct runtime introspection.
+

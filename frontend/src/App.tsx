@@ -42,6 +42,38 @@ type RouteNarrationPoi = {
   primaryManeuverIndex: number;
 };
 
+type PredictedPoiCandidate = {
+  key: string;
+  feature: GeoJSON.Feature<GeoJSON.Point>;
+  coordinate: LngLat;
+  routeOffsetM: number;
+  distanceToManeuverM: number;
+  lateralDistanceM: number;
+  priority: number;
+  name: string;
+  landmarkType: string;
+  poiId: string;
+  sourceNodeId: string;
+};
+
+type PredictionStatus = 'match' | 'mismatch' | 'not-observed' | 'ambiguous-only' | 'no-candidate';
+
+type ManeuverPrediction = {
+  maneuverIndex: number;
+  candidates: PredictedPoiCandidate[];
+  winner: PredictedPoiCandidate | null;
+  observed: NarrationPoiEvidence | null;
+  status: PredictionStatus;
+  approachLengthM: number;
+};
+
+type RoutePredictedPoi = {
+  key: string;
+  candidate: PredictedPoiCandidate;
+  maneuverIndexes: number[];
+  primaryManeuverIndex: number;
+};
+
 type ScenarioRunStatus = 'pass' | 'fail' | 'no-expectation' | 'error';
 
 type ScenarioRunResult = {
@@ -57,6 +89,8 @@ const EMPTY_FC: GeoJSON.FeatureCollection = { type: 'FeatureCollection', feature
 const NEARBY_POI_RADIUS_M = 100;
 const NEARBY_POI_LIMIT = 12;
 const NARRATION_POI_MAX_DISTANCE_M = 500;
+const PREDICTION_CORRIDOR_M = 60;
+const PREDICTION_CANDIDATE_LIMIT = 8;
 
 function fmtCoord(value: number | undefined): string {
   return typeof value === 'number' ? value.toFixed(6) : '';
@@ -88,6 +122,65 @@ function haversineMeters(a: LngLat, b: LngLat): number {
   const sinLon = Math.sin(dLon / 2);
   const h = sinLat * sinLat + Math.cos(lat1) * Math.cos(lat2) * sinLon * sinLon;
   return 2 * earthRadiusM * Math.asin(Math.min(1, Math.sqrt(h)));
+}
+
+type PolylineProjection = {
+  lateralDistanceM: number;
+  distanceAlongM: number;
+  remainingDistanceM: number;
+  totalLengthM: number;
+};
+
+function projectPointToPolylineMeters(point: LngLat, line: LngLat[]): PolylineProjection | null {
+  if (line.length < 2) return null;
+
+  const latScale = 111132.92;
+  const lonScale = 111412.84 * Math.cos(point[1] * Math.PI / 180);
+  const segmentLengths = line.slice(1).map((coord, index) => haversineMeters(line[index], coord));
+  const totalLengthM = segmentLengths.reduce((sum, value) => sum + value, 0);
+
+  let best: { lateralDistanceM: number; distanceAlongM: number } | null = null;
+  let accumulatedM = 0;
+
+  for (let index = 0; index < line.length - 1; index += 1) {
+    const a = line[index];
+    const b = line[index + 1];
+    const ax = (a[0] - point[0]) * lonScale;
+    const ay = (a[1] - point[1]) * latScale;
+    const bx = (b[0] - point[0]) * lonScale;
+    const by = (b[1] - point[1]) * latScale;
+    const dx = bx - ax;
+    const dy = by - ay;
+    const denom = dx * dx + dy * dy;
+    const t = denom <= Number.EPSILON ? 0 : Math.max(0, Math.min(1, -(ax * dx + ay * dy) / denom));
+    const px = ax + t * dx;
+    const py = ay + t * dy;
+    const lateralDistanceM = Math.hypot(px, py);
+    const distanceAlongM = accumulatedM + segmentLengths[index] * t;
+
+    if (!best || lateralDistanceM < best.lateralDistanceM) {
+      best = { lateralDistanceM, distanceAlongM };
+    }
+    accumulatedM += segmentLengths[index];
+  }
+
+  if (!best) return null;
+  return {
+    lateralDistanceM: best.lateralDistanceM,
+    distanceAlongM: best.distanceAlongM,
+    remainingDistanceM: Math.max(0, totalLengthM - best.distanceAlongM),
+    totalLengthM,
+  };
+}
+
+function sourcePoiKey(feature: GeoJSON.Feature<GeoJSON.Point>): string {
+  const properties = feature.properties ?? {};
+  const poiId = propText(properties, 'mappls_poi_id', '');
+  const nodeId = propText(properties, 'new_node_id', '');
+  if (poiId) return `poi:${poiId}`;
+  if (nodeId) return `node:${nodeId}`;
+  const coordinate = feature.geometry.coordinates as LngLat;
+  return `name:${normalizeNarrationText(propText(properties, 'name', ''))}|${coordinate[0].toFixed(7)}|${coordinate[1].toFixed(7)}`;
 }
 
 function propText(properties: GeoJSON.GeoJsonProperties, key: string, fallback = ''): string {
@@ -507,6 +600,131 @@ export default function App() {
 
   const routeNarrationAmbiguousCount = routeNarrationPois.length - routeNarrationStrongCount;
 
+  const predictionByManeuver = useMemo(() => {
+    const result = new Map<number, ManeuverPrediction>();
+    const legCoordinates = new Map<number, LngLat[]>();
+
+    for (const item of maneuverViews) {
+      const leg = route?.trip?.legs?.[item.legIndex];
+      if (!leg?.shape) {
+        result.set(item.index, { maneuverIndex: item.index, candidates: [], winner: null, observed: null, status: 'no-candidate', approachLengthM: 0 });
+        continue;
+      }
+
+      let coordinates = legCoordinates.get(item.legIndex);
+      if (!coordinates) {
+        coordinates = decodePolyline6(leg.shape);
+        legCoordinates.set(item.legIndex, coordinates);
+      }
+
+      const legManeuvers = maneuverViews.filter((candidate) => candidate.legIndex === item.legIndex);
+      const legPosition = legManeuvers.findIndex((candidate) => candidate.index === item.index);
+      const previous = legPosition > 0 ? legManeuvers[legPosition - 1] : null;
+      const startIndex = previous?.maneuver.begin_shape_index;
+      const endIndex = item.maneuver.begin_shape_index;
+
+      if (typeof startIndex !== 'number' || typeof endIndex !== 'number' || endIndex <= startIndex || startIndex < 0 || endIndex >= coordinates.length) {
+        const observed = (narrationEvidenceByManeuver.get(item.index) ?? []).find((match) => match.evidence === 'strong') ?? null;
+        result.set(item.index, { maneuverIndex: item.index, candidates: [], winner: null, observed, status: 'no-candidate', approachLengthM: 0 });
+        continue;
+      }
+
+      const approach = coordinates.slice(startIndex, endIndex + 1);
+      const candidates: PredictedPoiCandidate[] = [];
+
+      for (const rawFeature of pois.features) {
+        const feature = pointFeature(rawFeature);
+        if (!feature) continue;
+        const properties = feature.properties ?? {};
+        if (!poiVisible(properties)) continue;
+
+        const name = propText(properties, 'name', '').trim();
+        const poiId = propText(properties, 'mappls_poi_id', '').trim();
+        const sourceNodeId = propText(properties, 'new_node_id', '').trim();
+        const landmarkType = propText(properties, 'landmark_type', '').trim();
+        const priority = propNumber(properties, 'priority');
+        if (!name || !poiId || !landmarkType || landmarkType.toLowerCase() === 'unknown' || priority === null || priority < 0 || priority > 100) continue;
+
+        const coordinate = feature.geometry.coordinates as LngLat;
+        const projection = projectPointToPolylineMeters(coordinate, approach);
+        if (!projection || projection.lateralDistanceM > PREDICTION_CORRIDOR_M) continue;
+
+        candidates.push({
+          key: sourcePoiKey(feature),
+          feature,
+          coordinate,
+          routeOffsetM: projection.distanceAlongM,
+          distanceToManeuverM: projection.remainingDistanceM,
+          lateralDistanceM: projection.lateralDistanceM,
+          priority,
+          name,
+          landmarkType,
+          poiId,
+          sourceNodeId,
+        });
+      }
+
+      candidates.sort((a, b) =>
+        b.priority - a.priority ||
+        a.distanceToManeuverM - b.distanceToManeuverM ||
+        a.poiId.localeCompare(b.poiId),
+      );
+
+      const winner = candidates[0] ?? null;
+      const evidence = narrationEvidenceByManeuver.get(item.index) ?? [];
+      const observed = evidence.find((match) => match.evidence === 'strong') ?? null;
+      let status: PredictionStatus;
+
+      if (!winner) status = 'no-candidate';
+      else if (observed) status = winner.key === narrationPoiKey(observed) ? 'match' : 'mismatch';
+      else if (evidence.length > 0) status = 'ambiguous-only';
+      else status = 'not-observed';
+
+      const approachLengthM = projectPointToPolylineMeters(approach[0], approach)?.totalLengthM ?? 0;
+      result.set(item.index, {
+        maneuverIndex: item.index,
+        candidates: candidates.slice(0, PREDICTION_CANDIDATE_LIMIT),
+        winner,
+        observed,
+        status,
+        approachLengthM,
+      });
+    }
+
+    return result;
+  }, [maneuverViews, narrationEvidenceByManeuver, pois, route]);
+
+  const routePredictedPois = useMemo<RoutePredictedPoi[]>(() => {
+    const grouped = new Map<string, RoutePredictedPoi>();
+    for (const item of maneuverViews) {
+      const winner = predictionByManeuver.get(item.index)?.winner;
+      if (!winner) continue;
+      const existing = grouped.get(winner.key);
+      if (!existing) {
+        grouped.set(winner.key, {
+          key: winner.key,
+          candidate: winner,
+          maneuverIndexes: [item.index],
+          primaryManeuverIndex: item.index,
+        });
+      } else if (!existing.maneuverIndexes.includes(item.index)) {
+        existing.maneuverIndexes.push(item.index);
+      }
+    }
+    return Array.from(grouped.values()).sort((a, b) => a.primaryManeuverIndex - b.primaryManeuverIndex);
+  }, [maneuverViews, predictionByManeuver]);
+
+  const predictionCounts = useMemo(() => {
+    const counts: Record<PredictionStatus, number> = { match: 0, mismatch: 0, 'not-observed': 0, 'ambiguous-only': 0, 'no-candidate': 0 };
+    for (const prediction of predictionByManeuver.values()) counts[prediction.status] += 1;
+    return counts;
+  }, [predictionByManeuver]);
+
+  const selectedPrediction = useMemo(
+    () => selectedManeuverIndex === null ? null : predictionByManeuver.get(selectedManeuverIndex) ?? null,
+    [predictionByManeuver, selectedManeuverIndex],
+  );
+
   const selectedNarrationEvidence = useMemo(
     () => selectedManeuverIndex === null ? [] : narrationEvidenceByManeuver.get(selectedManeuverIndex) ?? [],
     [narrationEvidenceByManeuver, selectedManeuverIndex],
@@ -619,6 +837,20 @@ export default function App() {
         },
       });
 
+      map.addSource('predicted-pois', { type: 'geojson', data: EMPTY_FC });
+      map.addLayer({
+        id: 'predicted-pois',
+        type: 'circle',
+        source: 'predicted-pois',
+        paint: {
+          'circle-radius': 13,
+          'circle-color': 'rgba(0,0,0,0)',
+          'circle-stroke-width': 3,
+          'circle-stroke-color': '#2563eb',
+          'circle-opacity': 1,
+        },
+      });
+
       map.addSource('narration-poi', { type: 'geojson', data: EMPTY_FC });
       map.addLayer({
         id: 'narration-poi',
@@ -705,6 +937,27 @@ export default function App() {
           .addTo(map);
       });
 
+      map.on('click', 'predicted-pois', (event) => {
+        const rawFeature = event.features?.[0];
+        if (!rawFeature || rawFeature.geometry.type !== 'Point') return;
+        const feature = rawFeature as GeoJSON.Feature<GeoJSON.Point>;
+        const coordinates = feature.geometry.coordinates.slice() as LngLat;
+        const maneuverIndex = Number(feature.properties?._predicted_maneuver_index);
+        if (Number.isFinite(maneuverIndex)) {
+          setSelectedManeuverIndex(maneuverIndex);
+          window.setTimeout(() => {
+            document.querySelector(`[data-maneuver-index="${maneuverIndex}"]`)
+              ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          }, 80);
+        }
+        setSelectedPoi(feature);
+        map.flyTo({ center: coordinates, zoom: Math.max(map.getZoom(), 17), essential: true });
+        new maplibregl.Popup({ maxWidth: '420px' })
+          .setLngLat(coordinates)
+          .setHTML(poiPopupHtml(feature.properties ?? {}))
+          .addTo(map);
+      });
+
       map.on('click', 'maneuver-points', (event) => {
         const feature = event.features?.[0];
         if (!feature || feature.geometry.type !== 'Point') return;
@@ -714,7 +967,7 @@ export default function App() {
         map.flyTo({ center: coordinates, zoom: Math.max(map.getZoom(), 17), essential: true });
       });
 
-      for (const layerId of ['pois', 'selected-poi', 'nearby-pois', 'route-narration-pois', 'narration-poi', 'maneuver-points']) {
+      for (const layerId of ['pois', 'selected-poi', 'nearby-pois', 'route-narration-pois', 'predicted-pois', 'narration-poi', 'maneuver-points']) {
         map.on('mouseenter', layerId, () => { map.getCanvas().style.cursor = 'pointer'; });
         map.on('mouseleave', layerId, () => { map.getCanvas().style.cursor = ''; });
       }
@@ -737,7 +990,7 @@ export default function App() {
     map.__pickMode = pickMode;
     const handler = (event: maplibregl.MapMouseEvent) => {
       if (map.isStyleLoaded()) {
-        const candidateLayers = ['pois', 'selected-poi', 'nearby-pois', 'route-narration-pois', 'narration-poi', 'maneuver-points', 'route-points']
+        const candidateLayers = ['pois', 'selected-poi', 'nearby-pois', 'route-narration-pois', 'predicted-pois', 'narration-poi', 'maneuver-points', 'route-points']
           .filter((layerId) => Boolean(map.getLayer(layerId)));
         if (candidateLayers.length > 0) {
           const hitFeatures = map.queryRenderedFeatures(event.point, { layers: candidateLayers });
@@ -845,6 +1098,24 @@ export default function App() {
     const source = map.getSource('route-narration-pois') as maplibregl.GeoJSONSource | undefined;
     source?.setData({ type: 'FeatureCollection', features });
   }, [routeNarrationPois]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !map.isStyleLoaded()) return;
+    const features: GeoJSON.Feature<GeoJSON.Point>[] = routePredictedPois.map((item) => ({
+      ...item.candidate.feature,
+      properties: {
+        ...(item.candidate.feature.properties ?? {}),
+        _predicted_maneuver_index: item.primaryManeuverIndex,
+        _predicted_maneuvers: item.maneuverIndexes.map((index) => index + 1).join(', '),
+        _predicted_priority: item.candidate.priority,
+        _predicted_distance_to_maneuver_m: item.candidate.distanceToManeuverM.toFixed(1),
+        _predicted_lateral_distance_m: item.candidate.lateralDistanceM.toFixed(1),
+      },
+    }));
+    const source = map.getSource('predicted-pois') as maplibregl.GeoJSONSource | undefined;
+    source?.setData({ type: 'FeatureCollection', features });
+  }, [routePredictedPois]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -1218,7 +1489,7 @@ export default function App() {
       <header className="topbar">
         <div>
           <h1>{config.project.name ?? 'Valhalla POI Debugger'}</h1>
-          <div className="subtitle">Phase 4A.1 · route-wide narration POI highlighting</div>
+          <div className="subtitle">Phase 4B · external predicted-winner vs Odin narration</div>
         </div>
         <div className={`status-pill ${valhallaStatus}`}>
           Valhalla: {valhallaStatus === 'checking' ? 'checking' : valhallaStatus === 'up' ? 'connected' : 'offline'}
@@ -1239,6 +1510,7 @@ export default function App() {
             <span><i className="legend-dot source" />Source POI</span>
             <span><i className="legend-dot strong" />Observed in Odin narration</span>
             <span><i className="legend-dot ambiguous" />Ambiguous name match</span>
+            <span><i className="legend-ring predicted" />External predicted winner</span>
             <span><i className="legend-dot selected" />Currently inspected match</span>
           </div>
 
@@ -1246,7 +1518,7 @@ export default function App() {
             <div className="route-narration-overlay">
               <div className="route-narration-overlay-heading">
                 <strong>Narration POIs on this route</strong>
-                <span>{routeNarrationStrongCount} observed · {routeNarrationAmbiguousCount} ambiguous</span>
+                <span>{routeNarrationStrongCount} observed · {predictionCounts.match} predicted match · {predictionCounts.mismatch} mismatch</span>
               </div>
               {routeNarrationPois.length === 0 ? (
                 <div className="route-narration-empty">No loaded source POI name was correlated with this route's Odin narration.</div>
@@ -1281,7 +1553,7 @@ export default function App() {
           <section className="card dataset-card">
             <div className="maneuver-heading">
               <h2>Dataset Pipeline</h2>
-              <span>Phase 4A.1</span>
+              <span>Phase 4B</span>
             </div>
             <label>Active POI dataset</label>
             <div className="dataset-actions">
@@ -1539,6 +1811,14 @@ export default function App() {
                         }
                         return null;
                       })()}
+                      {(() => {
+                        const prediction = predictionByManeuver.get(item.index);
+                        if (!prediction || prediction.status === 'no-candidate') return null;
+                        if (prediction.status === 'match') return <span className="prediction-mini-badge match">prediction MATCH</span>;
+                        if (prediction.status === 'mismatch') return <span className="prediction-mini-badge mismatch">prediction MISMATCH</span>;
+                        if (prediction.status === 'ambiguous-only') return <span className="prediction-mini-badge ambiguous">prediction ambiguous</span>;
+                        return <span className="prediction-mini-badge not-observed">predicted · not observed</span>;
+                      })()}
                       {item.maneuver.verbal_pre_transition_instruction && (
                         <div>{item.maneuver.verbal_pre_transition_instruction}</div>
                       )}
@@ -1614,6 +1894,68 @@ export default function App() {
                       )}
                     </>
                   )}
+                </div>
+                <div className="prediction-verification">
+                  <div className="prediction-verification-heading">
+                    <strong>External Selection Prediction</strong>
+                    {!selectedPrediction || selectedPrediction.status === 'no-candidate' ? (
+                      <span className="prediction-status no-candidate">NO CANDIDATE</span>
+                    ) : selectedPrediction.status === 'match' ? (
+                      <span className="prediction-status match">MATCH</span>
+                    ) : selectedPrediction.status === 'mismatch' ? (
+                      <span className="prediction-status mismatch">MISMATCH</span>
+                    ) : selectedPrediction.status === 'ambiguous-only' ? (
+                      <span className="prediction-status ambiguous">AMBIGUOUS ONLY</span>
+                    ) : (
+                      <span className="prediction-status not-observed">NOT OBSERVED</span>
+                    )}
+                  </div>
+
+                  {!selectedPrediction?.winner ? (
+                    <p>No valid source POI was found within the {PREDICTION_CORRIDOR_M} m approach-route corridor for this maneuver.</p>
+                  ) : (
+                    <>
+                      <button
+                        className="prediction-winner"
+                        onClick={() => focusPoiFeature(selectedPrediction.winner!.feature, selectedPrediction.winner!.distanceToManeuverM)}
+                      >
+                        <span>
+                          <strong>{selectedPrediction.winner.name}</strong>
+                          <small>{selectedPrediction.winner.landmarkType} · {selectedPrediction.winner.poiId}</small>
+                        </span>
+                        <span>
+                          <strong>priority {selectedPrediction.winner.priority}</strong>
+                          <small>{selectedPrediction.winner.distanceToManeuverM.toFixed(1)} m before maneuver · {selectedPrediction.winner.lateralDistanceM.toFixed(1)} m from route</small>
+                        </span>
+                      </button>
+
+                      <div className="prediction-comparison">
+                        <span><b>Predicted:</b> {selectedPrediction.winner.name}</span>
+                        <span><b>Observed:</b> {selectedPrediction.observed?.name ?? 'none in strong narration evidence'}</span>
+                        <span><b>Approach:</b> {selectedPrediction.approachLengthM.toFixed(1)} m route segment</span>
+                      </div>
+
+                      {selectedPrediction.candidates.length > 1 && (
+                        <details className="prediction-candidates">
+                          <summary>Top {selectedPrediction.candidates.length} approximate candidate(s)</summary>
+                          {selectedPrediction.candidates.map((candidate, index) => (
+                            <button key={candidate.key} onClick={() => focusPoiFeature(candidate.feature, candidate.distanceToManeuverM)}>
+                              <span className="prediction-rank">{index + 1}</span>
+                              <span>
+                                <strong>{candidate.name}</strong>
+                                <small>{candidate.landmarkType} · {candidate.poiId}</small>
+                              </span>
+                              <span>
+                                <strong>P{candidate.priority}</strong>
+                                <small>{candidate.distanceToManeuverM.toFixed(1)} m</small>
+                              </span>
+                            </button>
+                          ))}
+                        </details>
+                      )}
+                    </>
+                  )}
+                  <p className="prediction-caution">Approximation only: candidate membership is inferred externally from source POIs within {PREDICTION_CORRIDOR_M} m of the previous maneuver's route segment. Ranking mirrors the inspected Odin order: priority DESC → distance-to-maneuver ASC → poi_id ASC. It is not Odin's private candidate list.</p>
                 </div>
                 <div className="debug-note">Nearby POIs are computed from source data. “Confirmed by narration” means the existing Odin text strongly matches a loaded POI name; it does not claim access to Odin's private candidate/selected-landmark object.</div>
                 {nearbyPois.length === 0 ? (

@@ -31,3 +31,4 @@ frontend/*.tsbuildinfo
 .phase4a1_backup/
 .phase4b_backup/
 .phase4c_backup/
+.product_cleanup_backup/

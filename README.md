@@ -187,3 +187,14 @@ Phase 3B adds automatic regression assertions to saved route scenarios.
 - `Run All Matching Dataset` executes all scenarios for the active debugger dataset.
 - Existing Phase 3A scenarios remain valid; use `Expect` to add assertions.
 - Results are runtime-only; expected behavior remains stored in scenario JSON.
+
+## Phase 4A — external landmark verification
+
+Phase 4A keeps the Valhalla engine and `/route` contract unchanged. The dashboard externally correlates existing Odin narration with loaded source POIs.
+
+- Matches POI names against maneuver instruction and verbal pre-transition text.
+- Treats an `at <POI>` narration pattern as strong landmark evidence.
+- Treats a plain name occurrence as ambiguous because it may be a road/place-name coincidence.
+- Uses maneuver distance to disambiguate duplicate POI names and ignores matches beyond 500 m.
+- Highlights the primary observed source POI on the map and exposes its Mappls ID, type, priority and distance.
+- This is external evidence only; it does not claim access to Odin's internal candidate or selected-landmark object.

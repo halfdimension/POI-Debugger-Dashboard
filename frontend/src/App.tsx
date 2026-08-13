@@ -22,6 +22,19 @@ type NearbyPoi = {
   landmarkType: string;
 };
 
+type NarrationPoiEvidence = {
+  feature: GeoJSON.Feature<GeoJSON.Point>;
+  coordinate: LngLat;
+  distanceM: number | null;
+  priority: number | null;
+  name: string;
+  landmarkType: string;
+  poiId: string;
+  sourceNodeId: string;
+  evidence: 'strong' | 'ambiguous';
+  matchedInstruction: string;
+};
+
 type ScenarioRunStatus = 'pass' | 'fail' | 'no-expectation' | 'error';
 
 type ScenarioRunResult = {
@@ -36,6 +49,7 @@ type ScenarioRunResult = {
 const EMPTY_FC: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features: [] };
 const NEARBY_POI_RADIUS_M = 100;
 const NEARBY_POI_LIMIT = 12;
+const NARRATION_POI_MAX_DISTANCE_M = 500;
 
 function fmtCoord(value: number | undefined): string {
   return typeof value === 'number' ? value.toFixed(6) : '';
@@ -115,6 +129,37 @@ function poiSearchText(properties: GeoJSON.GeoJsonProperties): string {
     .map((key) => propText(properties, key, ''))
     .join(' ')
     .toLowerCase();
+}
+
+function normalizeNarrationText(value: string): string {
+  return value
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+function maneuverInstructionTexts(maneuver: Maneuver): string[] {
+  const values = [maneuver.instruction, maneuver.verbal_pre_transition_instruction]
+    .map((value) => String(value ?? '').trim())
+    .filter(Boolean);
+  return Array.from(new Set(values));
+}
+
+function instructionContainsName(instruction: string, name: string): boolean {
+  const normalizedInstruction = ` ${normalizeNarrationText(instruction)} `;
+  const normalizedName = normalizeNarrationText(name);
+  return normalizedName.length >= 3 && normalizedInstruction.includes(` ${normalizedName} `);
+}
+
+function hasStrongLandmarkCue(instruction: string, name: string): boolean {
+  const normalizedInstruction = ` ${normalizeNarrationText(instruction)} `;
+  const normalizedName = normalizeNarrationText(name);
+  if (!normalizedName) return false;
+  return normalizedInstruction.includes(` at ${normalizedName} `) ||
+    normalizedInstruction.includes(` at the ${normalizedName} `);
 }
 
 function odinInstructionTexts(response: ValhallaRouteResponse): string[] {
@@ -333,6 +378,79 @@ export default function App() {
     return result.slice(0, NEARBY_POI_LIMIT);
   }, [filteredPois, selectedManeuver]);
 
+  const narrationEvidenceByManeuver = useMemo(() => {
+    const result = new Map<number, NarrationPoiEvidence[]>();
+
+    for (const item of maneuverViews) {
+      const instructions = maneuverInstructionTexts(item.maneuver);
+      if (instructions.length === 0) {
+        result.set(item.index, []);
+        continue;
+      }
+
+      const matches: NarrationPoiEvidence[] = [];
+
+      for (const rawFeature of pois.features) {
+        const feature = pointFeature(rawFeature);
+        if (!feature) continue;
+
+        const properties = feature.properties ?? {};
+        const name = propText(properties, 'name', '').trim();
+        if (!name || normalizeNarrationText(name).length < 3) continue;
+
+        const matchedInstruction = instructions.find((instruction) => instructionContainsName(instruction, name));
+        if (!matchedInstruction) continue;
+
+        const coordinate = feature.geometry.coordinates as LngLat;
+        const distanceM = item.coordinate ? haversineMeters(item.coordinate, coordinate) : null;
+        if (distanceM !== null && distanceM > NARRATION_POI_MAX_DISTANCE_M) continue;
+
+        matches.push({
+          feature,
+          coordinate,
+          distanceM,
+          priority: propNumber(properties, 'priority'),
+          name,
+          landmarkType: propText(properties, 'landmark_type', 'unknown'),
+          poiId: propText(properties, 'mappls_poi_id', ''),
+          sourceNodeId: propText(properties, 'new_node_id', ''),
+          evidence: hasStrongLandmarkCue(matchedInstruction, name) ? 'strong' : 'ambiguous',
+          matchedInstruction,
+        });
+      }
+
+      matches.sort((a, b) => {
+        if (a.evidence !== b.evidence) return a.evidence === 'strong' ? -1 : 1;
+        const nameLength = normalizeNarrationText(b.name).length - normalizeNarrationText(a.name).length;
+        if (nameLength !== 0) return nameLength;
+        const distanceA = a.distanceM ?? Number.POSITIVE_INFINITY;
+        const distanceB = b.distanceM ?? Number.POSITIVE_INFINITY;
+        if (distanceA !== distanceB) return distanceA - distanceB;
+        return (b.priority ?? -1) - (a.priority ?? -1);
+      });
+
+      const deduped: NarrationPoiEvidence[] = [];
+      const seen = new Set<string>();
+      for (const match of matches) {
+        const key = `${normalizeNarrationText(match.name)}|${match.poiId}|${match.sourceNodeId}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        deduped.push(match);
+      }
+
+      result.set(item.index, deduped.slice(0, 8));
+    }
+
+    return result;
+  }, [maneuverViews, pois]);
+
+  const selectedNarrationEvidence = useMemo(
+    () => selectedManeuverIndex === null ? [] : narrationEvidenceByManeuver.get(selectedManeuverIndex) ?? [],
+    [narrationEvidenceByManeuver, selectedManeuverIndex],
+  );
+
+  const primaryNarrationEvidence = selectedNarrationEvidence[0] ?? null;
+
   useEffect(() => {
     (async () => {
       try {
@@ -413,6 +531,20 @@ export default function App() {
         },
       });
 
+      map.addSource('narration-poi', { type: 'geojson', data: EMPTY_FC });
+      map.addLayer({
+        id: 'narration-poi',
+        type: 'circle',
+        source: 'narration-poi',
+        paint: {
+          'circle-radius': 13,
+          'circle-stroke-width': 4,
+          'circle-stroke-color': '#0f172a',
+          'circle-color': '#22c55e',
+          'circle-opacity': 0.85,
+        },
+      });
+
       map.addSource('route-points', { type: 'geojson', data: EMPTY_FC });
       map.addLayer({
         id: 'route-points',
@@ -460,6 +592,7 @@ export default function App() {
       map.on('click', 'pois', showPoiPopup);
       map.on('click', 'selected-poi', showPoiPopup);
       map.on('click', 'nearby-pois', showPoiPopup);
+      map.on('click', 'narration-poi', showPoiPopup);
 
       map.on('click', 'maneuver-points', (event) => {
         const feature = event.features?.[0];
@@ -470,7 +603,7 @@ export default function App() {
         map.flyTo({ center: coordinates, zoom: Math.max(map.getZoom(), 17), essential: true });
       });
 
-      for (const layerId of ['pois', 'selected-poi', 'nearby-pois', 'maneuver-points']) {
+      for (const layerId of ['pois', 'selected-poi', 'nearby-pois', 'narration-poi', 'maneuver-points']) {
         map.on('mouseenter', layerId, () => { map.getCanvas().style.cursor = 'pointer'; });
         map.on('mouseleave', layerId, () => { map.getCanvas().style.cursor = ''; });
       }
@@ -493,7 +626,7 @@ export default function App() {
     map.__pickMode = pickMode;
     const handler = (event: maplibregl.MapMouseEvent) => {
       if (map.isStyleLoaded()) {
-        const candidateLayers = ['pois', 'selected-poi', 'nearby-pois', 'maneuver-points', 'route-points']
+        const candidateLayers = ['pois', 'selected-poi', 'nearby-pois', 'narration-poi', 'maneuver-points', 'route-points']
           .filter((layerId) => Boolean(map.getLayer(layerId)));
         if (candidateLayers.length > 0) {
           const hitFeatures = map.queryRenderedFeatures(event.point, { layers: candidateLayers });
@@ -581,6 +714,30 @@ export default function App() {
     const source = map.getSource('nearby-pois') as maplibregl.GeoJSONSource | undefined;
     source?.setData({ type: 'FeatureCollection', features });
   }, [nearbyPois]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !map.isStyleLoaded()) return;
+    const source = map.getSource('narration-poi') as maplibregl.GeoJSONSource | undefined;
+    if (!primaryNarrationEvidence) {
+      source?.setData(EMPTY_FC);
+      return;
+    }
+
+    source?.setData({
+      type: 'FeatureCollection',
+      features: [{
+        ...primaryNarrationEvidence.feature,
+        properties: {
+          ...(primaryNarrationEvidence.feature.properties ?? {}),
+          _debug_distance_m: primaryNarrationEvidence.distanceM === null
+            ? ''
+            : primaryNarrationEvidence.distanceM.toFixed(1),
+          _narration_evidence: primaryNarrationEvidence.evidence,
+        },
+      }],
+    });
+  }, [primaryNarrationEvidence]);
 
   useEffect(() => {
     if (poiType !== 'all' && !availablePoiTypes.includes(poiType)) {
@@ -899,6 +1056,10 @@ export default function App() {
     focusPoiFeature(item.feature, item.distanceM);
   }
 
+  function focusNarrationEvidence(item: NarrationPoiEvidence) {
+    focusPoiFeature(item.feature, item.distanceM ?? undefined);
+  }
+
   function resetPoiFilters() {
     setPoiSearch('');
     setPoiType('all');
@@ -917,7 +1078,7 @@ export default function App() {
       <header className="topbar">
         <div>
           <h1>{config.project.name ?? 'Valhalla POI Debugger'}</h1>
-          <div className="subtitle">Phase 3B · scenario assertions + automatic PASS/FAIL</div>
+          <div className="subtitle">Phase 4A · external Odin narration ↔ source POI verification</div>
         </div>
         <div className={`status-pill ${valhallaStatus}`}>
           Valhalla: {valhallaStatus === 'checking' ? 'checking' : valhallaStatus === 'up' ? 'connected' : 'offline'}
@@ -938,7 +1099,7 @@ export default function App() {
           <section className="card dataset-card">
             <div className="maneuver-heading">
               <h2>Dataset Pipeline</h2>
-              <span>Phase 3B</span>
+              <span>Phase 4A</span>
             </div>
             <label>Active POI dataset</label>
             <div className="dataset-actions">
@@ -1186,6 +1347,16 @@ export default function App() {
                   <li key={item.index} className={selectedManeuverIndex === item.index ? 'selected' : ''}>
                     <button className="maneuver-button" onClick={() => focusManeuver(item)}>
                       <strong>{item.maneuver.instruction ?? 'Unnamed maneuver'}</strong>
+                      {(() => {
+                        const evidence = narrationEvidenceByManeuver.get(item.index) ?? [];
+                        if (evidence.some((match) => match.evidence === 'strong')) {
+                          return <span className="narration-mini-badge strong">POI observed</span>;
+                        }
+                        if (evidence.length > 0) {
+                          return <span className="narration-mini-badge ambiguous">name match</span>;
+                        }
+                        return null;
+                      })()}
                       {item.maneuver.verbal_pre_transition_instruction && (
                         <div>{item.maneuver.verbal_pre_transition_instruction}</div>
                       )}
@@ -1218,7 +1389,51 @@ export default function App() {
                       : 'No begin_shape_index coordinate available'}
                   </span>
                 </div>
-                <div className="debug-note">Nearby POIs are computed from the source GeoJSON. This does not yet expose Odin's internal candidate/selected-landmark state.</div>
+                <div className="narration-verification">
+                  <div className="narration-verification-heading">
+                    <strong>External Narration Verification</strong>
+                    {!primaryNarrationEvidence ? (
+                      <span className="narration-status none">NO SOURCE POI MATCH</span>
+                    ) : primaryNarrationEvidence.evidence === 'strong' ? (
+                      <span className="narration-status strong">CONFIRMED BY NARRATION</span>
+                    ) : (
+                      <span className="narration-status ambiguous">AMBIGUOUS NAME MATCH</span>
+                    )}
+                  </div>
+
+                  {!primaryNarrationEvidence ? (
+                    <p>No loaded source POI name was found in this maneuver's Odin instruction within {NARRATION_POI_MAX_DISTANCE_M} m of the maneuver.</p>
+                  ) : (
+                    <>
+                      <button className="narration-primary-match" onClick={() => focusNarrationEvidence(primaryNarrationEvidence)}>
+                        <span>
+                          <strong>{primaryNarrationEvidence.name}</strong>
+                          <small>{primaryNarrationEvidence.landmarkType} · {primaryNarrationEvidence.poiId || 'no mappls_poi_id'}</small>
+                        </span>
+                        <span>
+                          <strong>{primaryNarrationEvidence.distanceM === null ? 'distance n/a' : `${primaryNarrationEvidence.distanceM.toFixed(1)} m`}</strong>
+                          <small>priority {primaryNarrationEvidence.priority ?? '—'}</small>
+                        </span>
+                      </button>
+                      <code className="narration-matched-instruction">{primaryNarrationEvidence.matchedInstruction}</code>
+                      {primaryNarrationEvidence.evidence === 'ambiguous' && (
+                        <p className="narration-caution">The POI name appears in narration, but not in the strong “at &lt;POI&gt;” landmark pattern. It may be a road/place-name coincidence.</p>
+                      )}
+                      {selectedNarrationEvidence.length > 1 && (
+                        <details className="narration-other-matches">
+                          <summary>{selectedNarrationEvidence.length - 1} additional source-name match(es)</summary>
+                          {selectedNarrationEvidence.slice(1).map((match, index) => (
+                            <button key={`${match.poiId}-${match.sourceNodeId}-${index}`} onClick={() => focusNarrationEvidence(match)}>
+                              <span>{match.name}</span>
+                              <small>{match.distanceM === null ? 'n/a' : `${match.distanceM.toFixed(1)} m`} · priority {match.priority ?? '—'}</small>
+                            </button>
+                          ))}
+                        </details>
+                      )}
+                    </>
+                  )}
+                </div>
+                <div className="debug-note">Nearby POIs are computed from source data. “Confirmed by narration” means the existing Odin text strongly matches a loaded POI name; it does not claim access to Odin's private candidate/selected-landmark object.</div>
                 {nearbyPois.length === 0 ? (
                   <div className="empty-state">No source POIs within {NEARBY_POI_RADIUS_M} m.</div>
                 ) : (

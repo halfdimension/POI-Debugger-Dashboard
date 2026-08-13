@@ -14,11 +14,11 @@
     "costing": "auto"
   },
   "created_at": "2026-08-13T04:01:08Z",
-  "updated_at": "2026-08-13T04:13:51Z",
+  "updated_at": "2026-08-13T04:17:11Z",
   "notes": "this has some restaurant in this",
   "expectation": {
-    "landmark_name": "Turn left onto Baba Kharak Singh Marg.",
-    "instruction_contains": "Turn left onto Baba Kharak Singh Marg.",
+    "landmark_name": "Moti Mahal",
+    "instruction_contains": "Moti Mahal",
     "case_sensitive": false
   }
 }

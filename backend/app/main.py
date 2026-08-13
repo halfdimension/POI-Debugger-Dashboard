@@ -9,13 +9,15 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .config import load_settings
 from .datasets import DatasetError, DatasetManager
+from .scenarios import ScenarioError, ScenarioManager
 
 settings = load_settings()
 datasets = DatasetManager(settings)
+scenarios = ScenarioManager(settings)
 
 app = FastAPI(
     title="Valhalla POI Debugger API",
-    version="0.2.0",
+    version="0.3.0",
     description="Local debug API for Valhalla POI/landmark testing.",
 )
 
@@ -63,7 +65,7 @@ def health() -> dict[str, Any]:
     return {
         "ok": True,
         "service": "valhalla-poi-debugger",
-        "phase": "2A",
+        "phase": "3A",
         "config_path": settings.get("_config_path"),
         "active_dataset": datasets.active_id,
     }
@@ -100,6 +102,45 @@ def reload_dataset_pois(dataset_id: str) -> dict[str, Any]:
 @app.get("/api/pois")
 def get_pois() -> dict[str, Any]:
     return datasets.get_active_pois()
+
+
+@app.get("/api/scenarios")
+def get_scenarios() -> dict[str, Any]:
+    return scenarios.list()
+
+
+@app.get("/api/scenarios/{scenario_id}")
+def get_scenario(scenario_id: str) -> dict[str, Any]:
+    try:
+        return scenarios.get(scenario_id)
+    except ScenarioError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/api/scenarios", status_code=201)
+def create_scenario(payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        return scenarios.create(payload)
+    except ScenarioError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.put("/api/scenarios/{scenario_id}")
+def update_scenario(scenario_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        return scenarios.update(scenario_id, payload)
+    except ScenarioError as exc:
+        status = 404 if "not found" in str(exc).lower() else 400
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+
+
+@app.delete("/api/scenarios/{scenario_id}")
+def delete_scenario(scenario_id: str) -> dict[str, Any]:
+    try:
+        scenarios.delete(scenario_id)
+    except ScenarioError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"ok": True, "id": scenario_id}
 
 
 @app.get("/api/valhalla/status")

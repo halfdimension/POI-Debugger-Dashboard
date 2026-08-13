@@ -1,0 +1,24 @@
+{
+  "id": "bheemeshaw-and-moti-mahal",
+  "name": "Bheemeshaw and Moti Mahal",
+  "dataset": "cp_landmarks",
+  "request": {
+    "start": {
+      "lon": 77.20892940536328,
+      "lat": 28.628355095768143
+    },
+    "end": {
+      "lon": 77.2278487977402,
+      "lat": 28.635838643407624
+    },
+    "costing": "auto"
+  },
+  "created_at": "2026-08-13T04:18:43Z",
+  "updated_at": "2026-08-13T04:18:43Z",
+  "notes": "it has 2 POI's",
+  "expectation": {
+    "landmark_name": "Bheem",
+    "instruction_contains": "Bheem",
+    "case_sensitive": false
+  }
+}

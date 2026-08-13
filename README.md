@@ -160,3 +160,30 @@ Phase 2A adds a runtime dataset registry and removes the manual CSV-to-GeoJSON s
 - `Reload POIs` rereads the source file without restarting the debugger.
 - Optional `datasets:` entries can be activated at runtime.
 - Dataset activation changes debugger-side POI data only; it does not restart Valhalla or change the tiles used by the running Valhalla process.
+
+## Phase 3A — saved route scenarios
+
+Phase 3A adds file-backed route scenarios for repeatable landmark testing.
+
+- Save the current START/END coordinates from the dashboard.
+- Each scenario records its debugger dataset and Valhalla costing.
+- Load a scenario without routing, or run it immediately.
+- Delete scenarios from the dashboard.
+- Scenarios are stored under `data/scenarios/`.
+- Useful scenarios can be committed to Git as regression cases.
+- The scenario directory can be configured with `scenarios.directory` or `VPD_SCENARIO_DIR`.
+- Running is blocked when the saved dataset differs from the active debugger dataset.
+
+Phase 3A does not yet perform PASS/FAIL assertions. Those come in Phase 3B.
+
+## Phase 3B — scenario assertions
+
+Phase 3B adds automatic regression assertions to saved route scenarios.
+
+- A scenario may require Odin text / landmark text to appear.
+- A scenario may define text that must not appear.
+- Assertions inspect both maneuver `instruction` and `verbal_pre_transition_instruction`.
+- `Run` evaluates one scenario and shows PASS / FAIL / NO EXPECTATION / ERROR.
+- `Run All Matching Dataset` executes all scenarios for the active debugger dataset.
+- Existing Phase 3A scenarios remain valid; use `Expect` to add assertions.
+- Results are runtime-only; expected behavior remains stored in scenario JSON.

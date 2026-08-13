@@ -554,3 +554,228 @@ button { cursor: pointer; }
 @media (max-width: 520px) {
   .poi-filter-grid { grid-template-columns: 1fr; }
 }
+
+/* ===== Phase 3A: saved route scenarios ===== */
+.scenario-save-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 7px;
+}
+.scenario-save-grid input,
+.scenario-save-grid button,
+.scenario-notes,
+.scenario-actions button {
+  font: inherit;
+}
+.scenario-save-grid input,
+.scenario-notes {
+  width: 100%;
+  border: 1px solid #cfd6df;
+  border-radius: 7px;
+  background: white;
+  padding: 8px;
+}
+.scenario-notes {
+  margin-top: 7px;
+  resize: vertical;
+  min-height: 52px;
+}
+.scenario-save-grid button {
+  border: 0;
+  border-radius: 7px;
+  background: #0f766e;
+  color: white;
+  padding: 8px 10px;
+  font-size: 11px;
+  font-weight: 700;
+}
+.scenario-save-grid button:disabled,
+.scenario-actions button:disabled {
+  opacity: .55;
+  cursor: default;
+}
+.scenario-message,
+.scenario-warning,
+.scenario-note {
+  margin-top: 8px;
+  border-radius: 7px;
+  padding: 7px 8px;
+  font-size: 10px;
+  line-height: 1.4;
+}
+.scenario-message {
+  background: #ecfdf5;
+  color: #166534;
+}
+.scenario-warning {
+  background: #fef2f2;
+  color: #991b1b;
+}
+.scenario-note {
+  background: #f8fafc;
+  color: #64748b;
+}
+.scenario-list {
+  display: grid;
+  gap: 7px;
+  margin-top: 9px;
+}
+.scenario-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: white;
+}
+.scenario-item.dataset-mismatch {
+  border-color: #fed7aa;
+  background: #fffaf5;
+}
+.scenario-main {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+.scenario-main strong {
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.scenario-main small {
+  color: #64748b;
+  font-size: 9px;
+}
+.scenario-main code {
+  overflow: hidden;
+  color: #475569;
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.scenario-main span {
+  color: #475569;
+  font-size: 10px;
+  line-height: 1.35;
+}
+.scenario-main em {
+  color: #9a3412;
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 600;
+}
+.scenario-actions {
+  display: grid;
+  grid-template-columns: repeat(3, auto);
+  align-content: start;
+  gap: 4px;
+}
+.scenario-actions button {
+  border: 1px solid #cfd6df;
+  border-radius: 6px;
+  background: white;
+  padding: 6px 7px;
+  color: #374151;
+  font-size: 9px;
+  font-weight: 700;
+}
+.scenario-actions button:hover:not(:disabled) {
+  background: #f8fafc;
+}
+.scenario-actions .scenario-run {
+  border-color: #2563eb;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+.scenario-actions .scenario-delete {
+  border-color: #fecaca;
+  color: #b91c1c;
+}
+
+@media (max-width: 520px) {
+  .scenario-save-grid,
+  .scenario-item {
+    grid-template-columns: 1fr;
+  }
+  .scenario-actions {
+    justify-content: start;
+  }
+}
+
+/* ===== Phase 3B: scenario assertions and PASS/FAIL ===== */
+.scenario-expectation-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 7px;
+  margin-top: 7px;
+}
+.scenario-expectation-grid input {
+  width: 100%;
+  border: 1px solid #cfd6df;
+  border-radius: 7px;
+  background: white;
+  padding: 8px;
+  font: inherit;
+}
+.scenario-suite-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+.scenario-suite-actions button {
+  border: 0;
+  border-radius: 7px;
+  background: #1d4ed8;
+  color: white;
+  padding: 7px 9px;
+  font-size: 10px;
+  font-weight: 700;
+}
+.scenario-suite-actions button:disabled { opacity: .55; }
+.scenario-suite-actions span {
+  color: #64748b;
+  font-size: 9px;
+  line-height: 1.3;
+}
+.scenario-title-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+.scenario-title-row > strong { flex: 1; }
+.scenario-result-badge {
+  border-radius: 999px;
+  padding: 2px 6px;
+  font-size: 8px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+.scenario-result-badge.pass { background: #dcfce7; color: #166534; }
+.scenario-result-badge.fail { background: #fee2e2; color: #991b1b; }
+.scenario-result-badge.no-expectation { background: #f1f5f9; color: #475569; }
+.scenario-result-badge.error { background: #ffedd5; color: #9a3412; }
+.scenario-item.result-pass { border-color: #86efac; }
+.scenario-item.result-fail { border-color: #fca5a5; background: #fffafa; }
+.scenario-expectation-summary {
+  display: grid;
+  gap: 2px;
+  color: #334155;
+  font-size: 9px;
+}
+.scenario-no-expectation { color: #94a3b8 !important; font-style: italic; }
+.scenario-match { color: #166534 !important; }
+.scenario-main .scenario-failure { color: #b91c1c; }
+.scenario-actions { grid-template-columns: repeat(4, auto); }
+.scenario-actions .scenario-expect {
+  border-color: #c4b5fd;
+  background: #f5f3ff;
+  color: #6d28d9;
+}
+@media (max-width: 520px) {
+  .scenario-expectation-grid { grid-template-columns: 1fr; }
+  .scenario-suite-actions { align-items: flex-start; flex-direction: column; }
+}

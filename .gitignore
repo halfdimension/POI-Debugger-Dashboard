@@ -1,0 +1,23 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# IDE
+.vscode/
+.idea/
+
+# Phase patch backups
+.phase1_5_backup/
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+config/debugger.yaml

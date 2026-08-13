@@ -1,0 +1,31 @@
+project:
+  name: "Valhalla POI Debugger"
+
+valhalla:
+  service_url: "http://localhost:8002"
+  status_path: "/status"
+  route_path: "/route"
+  timeout_seconds: 20
+
+engine:
+  # Kept configurable now; later phases can use this for tile/build/debug helpers.
+  root: "/path/to/your/valhalla/engine"
+
+# Relative paths are resolved from the repository root.
+data:
+  pbf_path: "/path/to/your/input.osm.pbf"
+  poi_geojson_path: "./data/landmarks.geojson"
+  poi_csv_path: "/path/to/your/landmarks.csv"
+
+frontend:
+  map_style_url: "https://tiles.openfreemap.org/styles/liberty"
+  # MapLibre coordinate order: [longitude, latitude]
+  default_center: [77.2090, 28.6139]
+  default_zoom: 11
+
+backend:
+  host: "127.0.0.1"
+  port: 8010
+  allowed_origins:
+    - "http://localhost:5173"
+    - "http://127.0.0.1:5173"

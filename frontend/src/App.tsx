@@ -90,6 +90,22 @@ function pointFeature(feature: GeoJSON.Feature): GeoJSON.Feature<GeoJSON.Point> 
   return feature.geometry?.type === 'Point' ? feature as GeoJSON.Feature<GeoJSON.Point> : null;
 }
 
+const POI_SEARCH_FIELDS = [
+  'name', 'mappls_poi_id', 'new_node_id', 'osm_source_id', 'landmark_type',
+];
+
+function poiVisible(properties: GeoJSON.GeoJsonProperties): boolean {
+  const value = propText(properties, 'visible', 'yes').trim().toLowerCase();
+  return !['no', 'false', '0', 'n'].includes(value);
+}
+
+function poiSearchText(properties: GeoJSON.GeoJsonProperties): string {
+  return POI_SEARCH_FIELDS
+    .map((key) => propText(properties, key, ''))
+    .join(' ')
+    .toLowerCase();
+}
+
 export default function App() {
   const mapContainer = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
@@ -110,10 +126,88 @@ export default function App() {
   const [datasetBusy, setDatasetBusy] = useState(false);
   const [datasetMessage, setDatasetMessage] = useState('');
 
+  const [poiSearch, setPoiSearch] = useState('');
+  const [poiType, setPoiType] = useState('all');
+  const [minPriority, setMinPriority] = useState(0);
+  const [visibleOnly, setVisibleOnly] = useState(true);
+  const [showPois, setShowPois] = useState(true);
+
   const activeDataset = useMemo<DatasetSummary | null>(() => {
     if (!datasetRegistry) return null;
     return datasetRegistry.datasets.find((dataset) => dataset.id === datasetRegistry.active_dataset) ?? null;
   }, [datasetRegistry]);
+
+  const availablePoiTypes = useMemo(() => {
+    const types = new Set<string>();
+    for (const rawFeature of pois.features) {
+      const feature = pointFeature(rawFeature);
+      if (!feature) continue;
+      const type = propText(feature.properties, 'landmark_type', '').trim();
+      if (type) types.add(type);
+    }
+    return Array.from(types).sort((a, b) => a.localeCompare(b));
+  }, [pois]);
+
+  const fullTypeStats = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const rawFeature of pois.features) {
+      const feature = pointFeature(rawFeature);
+      if (!feature) continue;
+      const type = propText(feature.properties, 'landmark_type', 'unknown') || 'unknown';
+      counts.set(type, (counts.get(type) ?? 0) + 1);
+    }
+    return Array.from(counts.entries())
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  }, [pois]);
+
+  const filteredPoiFeatures = useMemo<GeoJSON.Feature<GeoJSON.Point>[]>(() => {
+    const query = poiSearch.trim().toLowerCase();
+    const result: GeoJSON.Feature<GeoJSON.Point>[] = [];
+
+    for (const rawFeature of pois.features) {
+      const feature = pointFeature(rawFeature);
+      if (!feature) continue;
+      const properties = feature.properties ?? {};
+
+      if (visibleOnly && !poiVisible(properties)) continue;
+
+      const landmarkType = propText(properties, 'landmark_type', '').trim();
+      if (poiType !== 'all' && landmarkType !== poiType) continue;
+
+      if (minPriority > 0) {
+        const priority = propNumber(properties, 'priority');
+        if (priority === null || priority < minPriority) continue;
+      }
+
+      if (query && !poiSearchText(properties).includes(query)) continue;
+
+      result.push(feature);
+    }
+
+    return result;
+  }, [pois, poiSearch, poiType, minPriority, visibleOnly]);
+
+  const filteredPois = useMemo<GeoJSON.FeatureCollection>(() => ({
+    type: 'FeatureCollection',
+    features: filteredPoiFeatures,
+  }), [filteredPoiFeatures]);
+
+  const searchResults = useMemo(() => {
+    if (!poiSearch.trim()) return [] as GeoJSON.Feature<GeoJSON.Point>[];
+    const query = poiSearch.trim().toLowerCase();
+    return [...filteredPoiFeatures]
+      .sort((a, b) => {
+        const aName = propText(a.properties, 'name', '').toLowerCase();
+        const bName = propText(b.properties, 'name', '').toLowerCase();
+        const aStarts = aName.startsWith(query) ? 1 : 0;
+        const bStarts = bName.startsWith(query) ? 1 : 0;
+        if (aStarts !== bStarts) return bStarts - aStarts;
+        const priorityDiff = (propNumber(b.properties, 'priority') ?? -1) - (propNumber(a.properties, 'priority') ?? -1);
+        if (priorityDiff !== 0) return priorityDiff;
+        return aName.localeCompare(bName);
+      })
+      .slice(0, 10);
+  }, [filteredPoiFeatures, poiSearch]);
 
   const maneuverViews = useMemo<ManeuverView[]>(() => {
     const result: ManeuverView[] = [];
@@ -140,7 +234,7 @@ export default function App() {
     if (!selectedManeuver?.coordinate) return [];
     const result: NearbyPoi[] = [];
 
-    for (const rawFeature of pois.features) {
+    for (const rawFeature of filteredPois.features) {
       const feature = pointFeature(rawFeature);
       if (!feature) continue;
       const coordinate = feature.geometry.coordinates as LngLat;
@@ -159,7 +253,7 @@ export default function App() {
 
     result.sort((a, b) => a.distanceM - b.distanceM || (b.priority ?? -1) - (a.priority ?? -1));
     return result.slice(0, NEARBY_POI_LIMIT);
-  }, [pois, selectedManeuver]);
+  }, [filteredPois, selectedManeuver]);
 
   useEffect(() => {
     (async () => {
@@ -200,7 +294,7 @@ export default function App() {
         paint: { 'line-width': 5, 'line-color': '#2563eb' },
       });
 
-      map.addSource('pois', { type: 'geojson', data: pois });
+      map.addSource('pois', { type: 'geojson', data: showPois ? filteredPois : EMPTY_FC });
       map.addLayer({
         id: 'pois',
         type: 'circle',
@@ -210,6 +304,19 @@ export default function App() {
           'circle-stroke-width': 1,
           'circle-stroke-color': '#ffffff',
           'circle-color': '#8b5cf6',
+        },
+      });
+
+      map.addSource('selected-poi', { type: 'geojson', data: EMPTY_FC });
+      map.addLayer({
+        id: 'selected-poi',
+        type: 'circle',
+        source: 'selected-poi',
+        paint: {
+          'circle-radius': 10,
+          'circle-stroke-width': 3,
+          'circle-stroke-color': '#ffffff',
+          'circle-color': '#0f766e',
         },
       });
 
@@ -272,6 +379,7 @@ export default function App() {
       };
 
       map.on('click', 'pois', showPoiPopup);
+      map.on('click', 'selected-poi', showPoiPopup);
       map.on('click', 'nearby-pois', showPoiPopup);
 
       map.on('click', 'maneuver-points', (event) => {
@@ -283,7 +391,7 @@ export default function App() {
         map.flyTo({ center: coordinates, zoom: Math.max(map.getZoom(), 17), essential: true });
       });
 
-      for (const layerId of ['pois', 'nearby-pois', 'maneuver-points']) {
+      for (const layerId of ['pois', 'selected-poi', 'nearby-pois', 'maneuver-points']) {
         map.on('mouseenter', layerId, () => { map.getCanvas().style.cursor = 'pointer'; });
         map.on('mouseleave', layerId, () => { map.getCanvas().style.cursor = ''; });
       }
@@ -306,7 +414,7 @@ export default function App() {
     map.__pickMode = pickMode;
     const handler = (event: maplibregl.MapMouseEvent) => {
       if (map.isStyleLoaded()) {
-        const candidateLayers = ['pois', 'nearby-pois', 'maneuver-points', 'route-points']
+        const candidateLayers = ['pois', 'selected-poi', 'nearby-pois', 'maneuver-points', 'route-points']
           .filter((layerId) => Boolean(map.getLayer(layerId)));
         if (candidateLayers.length > 0) {
           const hitFeatures = map.queryRenderedFeatures(event.point, { layers: candidateLayers });
@@ -326,8 +434,17 @@ export default function App() {
     const map = mapRef.current;
     if (!map || !map.isStyleLoaded()) return;
     const source = map.getSource('pois') as maplibregl.GeoJSONSource | undefined;
-    source?.setData(pois);
-  }, [pois, config]);
+    source?.setData(showPois ? filteredPois : EMPTY_FC);
+  }, [filteredPois, showPois, config]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !map.isStyleLoaded()) return;
+    const source = map.getSource('selected-poi') as maplibregl.GeoJSONSource | undefined;
+    source?.setData(selectedPoi
+      ? { type: 'FeatureCollection', features: [selectedPoi] }
+      : EMPTY_FC);
+  }, [selectedPoi]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -385,6 +502,12 @@ export default function App() {
     const source = map.getSource('nearby-pois') as maplibregl.GeoJSONSource | undefined;
     source?.setData({ type: 'FeatureCollection', features });
   }, [nearbyPois]);
+
+  useEffect(() => {
+    if (poiType !== 'all' && !availablePoiTypes.includes(poiType)) {
+      setPoiType('all');
+    }
+  }, [availablePoiTypes, poiType]);
 
   async function refreshActiveDataset(message = '') {
     const [poiData, registry] = await Promise.all([getPois(), getDatasets()]);
@@ -494,15 +617,33 @@ export default function App() {
     });
   }
 
-  function focusPoi(item: NearbyPoi) {
-    setSelectedPoi(item.feature);
+  function focusPoiFeature(feature: GeoJSON.Feature<GeoJSON.Point>, debugDistanceM?: number) {
+    setSelectedPoi(feature);
     const map = mapRef.current;
     if (!map) return;
-    map.flyTo({ center: item.coordinate, zoom: Math.max(map.getZoom(), 18), essential: true });
+    const coordinate = feature.geometry.coordinates as LngLat;
+    map.flyTo({ center: coordinate, zoom: Math.max(map.getZoom(), 18), essential: true });
+    const properties = {
+      ...(feature.properties ?? {}),
+      ...(typeof debugDistanceM === 'number' ? { _debug_distance_m: debugDistanceM.toFixed(1) } : {}),
+    };
     new maplibregl.Popup({ maxWidth: '420px' })
-      .setLngLat(item.coordinate)
-      .setHTML(poiPopupHtml({ ...(item.feature.properties ?? {}), _debug_distance_m: item.distanceM.toFixed(1) }))
+      .setLngLat(coordinate)
+      .setHTML(poiPopupHtml(properties))
       .addTo(map);
+  }
+
+  function focusPoi(item: NearbyPoi) {
+    focusPoiFeature(item.feature, item.distanceM);
+  }
+
+  function resetPoiFilters() {
+    setPoiSearch('');
+    setPoiType('all');
+    setMinPriority(0);
+    setVisibleOnly(true);
+    setShowPois(true);
+    setSelectedPoi(null);
   }
 
   if (!config) {
@@ -514,7 +655,7 @@ export default function App() {
       <header className="topbar">
         <div>
           <h1>{config.project.name ?? 'Valhalla POI Debugger'}</h1>
-          <div className="subtitle">Phase 2A · dataset registry + automatic POI source reload</div>
+          <div className="subtitle">Phase 2B · POI explorer, filtering, search + statistics</div>
         </div>
         <div className={`status-pill ${valhallaStatus}`}>
           Valhalla: {valhallaStatus === 'checking' ? 'checking' : valhallaStatus === 'up' ? 'connected' : 'offline'}
@@ -526,7 +667,7 @@ export default function App() {
           <div className="map-toolbar">
             <button className={pickMode === 'start' ? 'active' : ''} onClick={() => setPickMode('start')}>Click map → START</button>
             <button className={pickMode === 'end' ? 'active' : ''} onClick={() => setPickMode('end')}>Click map → END</button>
-            <span>{pois.features.length} POIs loaded · {maneuverViews.length} maneuvers</span>
+            <span>{filteredPoiFeatures.length}/{pois.features.length} POIs shown · {maneuverViews.length} maneuvers</span>
           </div>
           <div ref={mapContainer} className="map" />
         </section>
@@ -535,7 +676,7 @@ export default function App() {
           <section className="card dataset-card">
             <div className="maneuver-heading">
               <h2>Dataset Pipeline</h2>
-              <span>Phase 2A</span>
+              <span>Phase 2B</span>
             </div>
             <label>Active POI dataset</label>
             <div className="dataset-actions">
@@ -563,6 +704,91 @@ export default function App() {
               <div><strong>{activeDataset?.stats?.duplicate_node_ids ?? 0}</strong><span>duplicate IDs</span></div>
             </div>
             <div className="dataset-note">Dataset switching changes the debugger POI layer only. It does not restart Valhalla or swap the tile set used by the running Valhalla service.</div>
+          </section>
+
+          <section className="card poi-explorer-card">
+            <div className="maneuver-heading">
+              <h2>POI Explorer</h2>
+              <span>{filteredPoiFeatures.length} / {pois.features.length}</span>
+            </div>
+
+            <label>Search name / Mappls ID / node ID / OSM ID / type</label>
+            <div className="poi-search-row">
+              <input
+                value={poiSearch}
+                placeholder="Indian Oil, POI-CP-000123, 900000123…"
+                onChange={(event) => setPoiSearch(event.target.value)}
+              />
+              <button onClick={resetPoiFilters}>Reset</button>
+            </div>
+
+            <div className="poi-filter-grid">
+              <div>
+                <label>Landmark type</label>
+                <select value={poiType} onChange={(event) => setPoiType(event.target.value)}>
+                  <option value="all">All types</option>
+                  {availablePoiTypes.map((type) => (
+                    <option key={type} value={type}>{type}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label>Minimum priority <strong>{minPriority}</strong></label>
+                <input
+                  className="priority-slider"
+                  type="range"
+                  min="0"
+                  max="100"
+                  step="5"
+                  value={minPriority}
+                  onChange={(event) => setMinPriority(Number(event.target.value))}
+                />
+              </div>
+            </div>
+
+            <div className="poi-checkboxes">
+              <label><input type="checkbox" checked={visibleOnly} onChange={(event) => setVisibleOnly(event.target.checked)} /> Visible only</label>
+              <label><input type="checkbox" checked={showPois} onChange={(event) => setShowPois(event.target.checked)} /> Show POIs on map</label>
+            </div>
+
+            <div className="poi-filter-summary">
+              <strong>{filteredPoiFeatures.length}</strong> POIs match the current filters.
+              <span>Filters affect debugger visualization/nearby inspection only; they do not change Valhalla or Odin.</span>
+            </div>
+
+            {poiSearch.trim() && (
+              <div className="poi-search-results">
+                <div className="poi-section-title">Search results</div>
+                {searchResults.length === 0 ? (
+                  <div className="empty-state">No POIs match the current search and filters.</div>
+                ) : searchResults.map((feature, index) => (
+                  <button
+                    key={`${propText(feature.properties, 'new_node_id', '')}-${index}`}
+                    className="poi-search-result"
+                    onClick={() => focusPoiFeature(feature)}
+                  >
+                    <span>
+                      <strong>{propText(feature.properties, 'name', 'Unnamed POI')}</strong>
+                      <small>{propText(feature.properties, 'landmark_type', 'unknown')} · {propText(feature.properties, 'mappls_poi_id', 'no Mappls ID')}</small>
+                    </span>
+                    <span className="poi-search-meta">
+                      <strong>{propText(feature.properties, 'priority', '—')}</strong>
+                      <small>priority</small>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+
+            <div className="poi-type-stats">
+              <div className="poi-section-title">Dataset type distribution</div>
+              {fullTypeStats.slice(0, 8).map(([type, count]) => (
+                <button key={type} onClick={() => setPoiType(type)} title={`Filter to ${type}`}>
+                  <span>{type}</span><strong>{count}</strong>
+                </button>
+              ))}
+              {fullTypeStats.length > 8 && <small>+ {fullTypeStats.length - 8} more landmark types</small>}
+            </div>
           </section>
 
           <section className="card">

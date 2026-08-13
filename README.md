@@ -187,3 +187,46 @@ Phase 3B adds automatic regression assertions to saved route scenarios.
 - `Run All Matching Dataset` executes all scenarios for the active debugger dataset.
 - Existing Phase 3A scenarios remain valid; use `Expect` to add assertions.
 - Results are runtime-only; expected behavior remains stored in scenario JSON.
+
+## Phase 4A — external landmark verification
+
+Phase 4A keeps the Valhalla engine and `/route` contract unchanged. The dashboard externally correlates existing Odin narration with loaded source POIs.
+
+- Matches POI names against maneuver instruction and verbal pre-transition text.
+- Treats an `at <POI>` narration pattern as strong landmark evidence.
+- Treats a plain name occurrence as ambiguous because it may be a road/place-name coincidence.
+- Uses maneuver distance to disambiguate duplicate POI names and ignores matches beyond 500 m.
+- Highlights the primary observed source POI on the map and exposes its Mappls ID, type, priority and distance.
+- This is external evidence only; it does not claim access to Odin's internal candidate or selected-landmark object.
+
+## Phase 4A.1 — route-wide narration POI highlighting
+
+Phase 4A.1 makes Phase 4A evidence visible across the whole route without changing Valhalla.
+
+- Small purple dots remain the loaded source POIs.
+- Strong POI names observed in Odin landmark-style narration are persistently highlighted in green.
+- Ambiguous source-name matches are persistently highlighted in orange rather than being called selected landmarks.
+- The currently inspected narration match receives a larger dark-outlined marker.
+- A map legend explains all POI evidence states.
+- A compact route overlay lists narration-correlated POIs and their associated maneuver number.
+- Clicking a route-wide narration marker or overlay item selects the associated maneuver and zooms to the source POI.
+- The same source POI is deduplicated if it appears in multiple maneuvers.
+
+All correlation remains external. The production Valhalla engine, tiles, protobufs and route response are unchanged.
+
+## Phase 4B — external predicted winner comparison
+
+Phase 4B remains dashboard-only. It approximates the candidate set for each maneuver from source POIs near the preceding approach-route segment, ranks those candidates using the inspected Odin ordering (priority descending, distance-to-maneuver ascending, then POI id ascending), and compares the external predicted winner with the POI strongly observed in existing Odin narration.
+
+The candidate set is an external approximation, not Odin's private `maneuver.landmarks()` vector. MATCH/MISMATCH therefore compares dashboard prediction with narration evidence and must not be interpreted as direct runtime introspection.
+
+## Phase 4C — route verification report
+
+Phase 4C consolidates the external POI verification for the current route.
+
+- Shows route-level counts for narration-observed POIs, prediction matches, mismatches and not-observed predictions.
+- Calculates an external prediction match rate over maneuvers with comparable evidence.
+- Lists mismatch, not-observed and ambiguous cases as clickable issues that jump to the corresponding maneuver.
+- Exports the current verification analysis as a standalone JSON report containing route request, Odin narration evidence, predicted winner/candidates and per-maneuver status.
+- Exported reports explicitly identify candidate prediction as debugger-side approximation rather than Odin private runtime state.
+- No Valhalla engine, tile, PBF, protobuf or API-response changes are required.

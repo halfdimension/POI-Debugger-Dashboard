@@ -198,3 +198,19 @@ Phase 4A keeps the Valhalla engine and `/route` contract unchanged. The dashboar
 - Uses maneuver distance to disambiguate duplicate POI names and ignores matches beyond 500 m.
 - Highlights the primary observed source POI on the map and exposes its Mappls ID, type, priority and distance.
 - This is external evidence only; it does not claim access to Odin's internal candidate or selected-landmark object.
+
+## Phase 4A.1 — route-wide narration POI highlighting
+
+Phase 4A.1 makes Phase 4A evidence visible across the whole route without changing Valhalla.
+
+- Small purple dots remain the loaded source POIs.
+- Strong POI names observed in Odin landmark-style narration are persistently highlighted in green.
+- Ambiguous source-name matches are persistently highlighted in orange rather than being called selected landmarks.
+- The currently inspected narration match receives a larger dark-outlined marker.
+- A map legend explains all POI evidence states.
+- A compact route overlay lists narration-correlated POIs and their associated maneuver number.
+- Clicking a route-wide narration marker or overlay item selects the associated maneuver and zooms to the source POI.
+- The same source POI is deduplicated if it appears in multiple maneuvers.
+
+All correlation remains external. The production Valhalla engine, tiles, protobufs and route response are unchanged.
+

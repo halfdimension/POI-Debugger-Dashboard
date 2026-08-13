@@ -35,6 +35,13 @@ type NarrationPoiEvidence = {
   matchedInstruction: string;
 };
 
+type RouteNarrationPoi = {
+  key: string;
+  evidence: NarrationPoiEvidence;
+  maneuverIndexes: number[];
+  primaryManeuverIndex: number;
+};
+
 type ScenarioRunStatus = 'pass' | 'fail' | 'no-expectation' | 'error';
 
 type ScenarioRunResult = {
@@ -160,6 +167,12 @@ function hasStrongLandmarkCue(instruction: string, name: string): boolean {
   if (!normalizedName) return false;
   return normalizedInstruction.includes(` at ${normalizedName} `) ||
     normalizedInstruction.includes(` at the ${normalizedName} `);
+}
+
+function narrationPoiKey(item: NarrationPoiEvidence): string {
+  if (item.poiId) return `poi:${item.poiId}`;
+  if (item.sourceNodeId) return `node:${item.sourceNodeId}`;
+  return `name:${normalizeNarrationText(item.name)}|${item.coordinate[0].toFixed(7)}|${item.coordinate[1].toFixed(7)}`;
 }
 
 function odinInstructionTexts(response: ValhallaRouteResponse): string[] {
@@ -444,6 +457,56 @@ export default function App() {
     return result;
   }, [maneuverViews, pois]);
 
+  const routeNarrationPois = useMemo<RouteNarrationPoi[]>(() => {
+    const grouped = new Map<string, RouteNarrationPoi>();
+
+    for (const item of maneuverViews) {
+      // Phase 4A sorts evidence strongest-first. For the route-wide map layer we
+      // intentionally keep one primary source-POI match per maneuver, then
+      // deduplicate the same POI across maneuvers.
+      const primary = (narrationEvidenceByManeuver.get(item.index) ?? [])[0];
+      if (!primary) continue;
+
+      const key = narrationPoiKey(primary);
+      const existing = grouped.get(key);
+      if (!existing) {
+        grouped.set(key, {
+          key,
+          evidence: primary,
+          maneuverIndexes: [item.index],
+          primaryManeuverIndex: item.index,
+        });
+        continue;
+      }
+
+      if (!existing.maneuverIndexes.includes(item.index)) {
+        existing.maneuverIndexes.push(item.index);
+      }
+
+      // If the same source POI is only an ambiguous match on one maneuver but
+      // a strong landmark-style match on another, represent the route-wide POI
+      // using the stronger evidence.
+      if (existing.evidence.evidence === 'ambiguous' && primary.evidence === 'strong') {
+        existing.evidence = primary;
+        existing.primaryManeuverIndex = item.index;
+      }
+    }
+
+    return Array.from(grouped.values()).sort((a, b) => {
+      if (a.evidence.evidence !== b.evidence.evidence) {
+        return a.evidence.evidence === 'strong' ? -1 : 1;
+      }
+      return a.primaryManeuverIndex - b.primaryManeuverIndex;
+    });
+  }, [maneuverViews, narrationEvidenceByManeuver]);
+
+  const routeNarrationStrongCount = useMemo(
+    () => routeNarrationPois.filter((item) => item.evidence.evidence === 'strong').length,
+    [routeNarrationPois],
+  );
+
+  const routeNarrationAmbiguousCount = routeNarrationPois.length - routeNarrationStrongCount;
+
   const selectedNarrationEvidence = useMemo(
     () => selectedManeuverIndex === null ? [] : narrationEvidenceByManeuver.get(selectedManeuverIndex) ?? [],
     [narrationEvidenceByManeuver, selectedManeuverIndex],
@@ -531,17 +594,42 @@ export default function App() {
         },
       });
 
+      map.addSource('route-narration-pois', { type: 'geojson', data: EMPTY_FC });
+      map.addLayer({
+        id: 'route-narration-pois-halo',
+        type: 'circle',
+        source: 'route-narration-pois',
+        paint: {
+          'circle-radius': ['case', ['==', ['get', '_route_evidence'], 'strong'], 16, 13],
+          'circle-color': ['case', ['==', ['get', '_route_evidence'], 'strong'], '#22c55e', '#f59e0b'],
+          'circle-opacity': 0.22,
+          'circle-stroke-width': 0,
+        },
+      });
+      map.addLayer({
+        id: 'route-narration-pois',
+        type: 'circle',
+        source: 'route-narration-pois',
+        paint: {
+          'circle-radius': ['case', ['==', ['get', '_route_evidence'], 'strong'], 10, 8],
+          'circle-stroke-width': 3,
+          'circle-stroke-color': '#ffffff',
+          'circle-color': ['case', ['==', ['get', '_route_evidence'], 'strong'], '#16a34a', '#f59e0b'],
+          'circle-opacity': 0.98,
+        },
+      });
+
       map.addSource('narration-poi', { type: 'geojson', data: EMPTY_FC });
       map.addLayer({
         id: 'narration-poi',
         type: 'circle',
         source: 'narration-poi',
         paint: {
-          'circle-radius': 13,
+          'circle-radius': 14,
           'circle-stroke-width': 4,
           'circle-stroke-color': '#0f172a',
-          'circle-color': '#22c55e',
-          'circle-opacity': 0.85,
+          'circle-color': ['case', ['==', ['get', '_narration_evidence'], 'strong'], '#22c55e', '#f59e0b'],
+          'circle-opacity': 0.82,
         },
       });
 
@@ -594,6 +682,29 @@ export default function App() {
       map.on('click', 'nearby-pois', showPoiPopup);
       map.on('click', 'narration-poi', showPoiPopup);
 
+      map.on('click', 'route-narration-pois', (event) => {
+        const rawFeature = event.features?.[0];
+        if (!rawFeature || rawFeature.geometry.type !== 'Point') return;
+
+        const feature = rawFeature as GeoJSON.Feature<GeoJSON.Point>;
+        const coordinates = feature.geometry.coordinates.slice() as LngLat;
+        const maneuverIndex = Number(feature.properties?._primary_maneuver_index);
+        if (Number.isFinite(maneuverIndex)) {
+          setSelectedManeuverIndex(maneuverIndex);
+          window.setTimeout(() => {
+            document.querySelector(`[data-maneuver-index="${maneuverIndex}"]`)
+              ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          }, 80);
+        }
+
+        setSelectedPoi(feature);
+        map.flyTo({ center: coordinates, zoom: Math.max(map.getZoom(), 17), essential: true });
+        new maplibregl.Popup({ maxWidth: '420px' })
+          .setLngLat(coordinates)
+          .setHTML(poiPopupHtml(feature.properties ?? {}))
+          .addTo(map);
+      });
+
       map.on('click', 'maneuver-points', (event) => {
         const feature = event.features?.[0];
         if (!feature || feature.geometry.type !== 'Point') return;
@@ -603,7 +714,7 @@ export default function App() {
         map.flyTo({ center: coordinates, zoom: Math.max(map.getZoom(), 17), essential: true });
       });
 
-      for (const layerId of ['pois', 'selected-poi', 'nearby-pois', 'narration-poi', 'maneuver-points']) {
+      for (const layerId of ['pois', 'selected-poi', 'nearby-pois', 'route-narration-pois', 'narration-poi', 'maneuver-points']) {
         map.on('mouseenter', layerId, () => { map.getCanvas().style.cursor = 'pointer'; });
         map.on('mouseleave', layerId, () => { map.getCanvas().style.cursor = ''; });
       }
@@ -626,7 +737,7 @@ export default function App() {
     map.__pickMode = pickMode;
     const handler = (event: maplibregl.MapMouseEvent) => {
       if (map.isStyleLoaded()) {
-        const candidateLayers = ['pois', 'selected-poi', 'nearby-pois', 'narration-poi', 'maneuver-points', 'route-points']
+        const candidateLayers = ['pois', 'selected-poi', 'nearby-pois', 'route-narration-pois', 'narration-poi', 'maneuver-points', 'route-points']
           .filter((layerId) => Boolean(map.getLayer(layerId)));
         if (candidateLayers.length > 0) {
           const hitFeatures = map.queryRenderedFeatures(event.point, { layers: candidateLayers });
@@ -714,6 +825,26 @@ export default function App() {
     const source = map.getSource('nearby-pois') as maplibregl.GeoJSONSource | undefined;
     source?.setData({ type: 'FeatureCollection', features });
   }, [nearbyPois]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !map.isStyleLoaded()) return;
+
+    const features: GeoJSON.Feature<GeoJSON.Point>[] = routeNarrationPois.map((item) => ({
+      ...item.evidence.feature,
+      properties: {
+        ...(item.evidence.feature.properties ?? {}),
+        _route_evidence: item.evidence.evidence,
+        _primary_maneuver_index: item.primaryManeuverIndex,
+        _maneuver_indexes: item.maneuverIndexes.map((index) => index + 1).join(', '),
+        _matched_instruction: item.evidence.matchedInstruction,
+        _debug_distance_m: item.evidence.distanceM === null ? '' : item.evidence.distanceM.toFixed(1),
+      },
+    }));
+
+    const source = map.getSource('route-narration-pois') as maplibregl.GeoJSONSource | undefined;
+    source?.setData({ type: 'FeatureCollection', features });
+  }, [routeNarrationPois]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -1060,6 +1191,15 @@ export default function App() {
     focusPoiFeature(item.feature, item.distanceM ?? undefined);
   }
 
+  function focusRouteNarrationPoi(item: RouteNarrationPoi) {
+    setSelectedManeuverIndex(item.primaryManeuverIndex);
+    focusPoiFeature(item.evidence.feature, item.evidence.distanceM ?? undefined);
+    window.setTimeout(() => {
+      document.querySelector(`[data-maneuver-index="${item.primaryManeuverIndex}"]`)
+        ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 80);
+  }
+
   function resetPoiFilters() {
     setPoiSearch('');
     setPoiType('all');
@@ -1078,7 +1218,7 @@ export default function App() {
       <header className="topbar">
         <div>
           <h1>{config.project.name ?? 'Valhalla POI Debugger'}</h1>
-          <div className="subtitle">Phase 4A · external Odin narration ↔ source POI verification</div>
+          <div className="subtitle">Phase 4A.1 · route-wide narration POI highlighting</div>
         </div>
         <div className={`status-pill ${valhallaStatus}`}>
           Valhalla: {valhallaStatus === 'checking' ? 'checking' : valhallaStatus === 'up' ? 'connected' : 'offline'}
@@ -1093,13 +1233,55 @@ export default function App() {
             <span>{filteredPoiFeatures.length}/{pois.features.length} POIs shown · {maneuverViews.length} maneuvers</span>
           </div>
           <div ref={mapContainer} className="map" />
+
+          <div className="landmark-map-legend">
+            <div className="landmark-map-legend-title">Map POI evidence</div>
+            <span><i className="legend-dot source" />Source POI</span>
+            <span><i className="legend-dot strong" />Observed in Odin narration</span>
+            <span><i className="legend-dot ambiguous" />Ambiguous name match</span>
+            <span><i className="legend-dot selected" />Currently inspected match</span>
+          </div>
+
+          {route && (
+            <div className="route-narration-overlay">
+              <div className="route-narration-overlay-heading">
+                <strong>Narration POIs on this route</strong>
+                <span>{routeNarrationStrongCount} observed · {routeNarrationAmbiguousCount} ambiguous</span>
+              </div>
+              {routeNarrationPois.length === 0 ? (
+                <div className="route-narration-empty">No loaded source POI name was correlated with this route's Odin narration.</div>
+              ) : (
+                <div className="route-narration-overlay-list">
+                  {routeNarrationPois.slice(0, 8).map((item) => (
+                    <button
+                      key={item.key}
+                      className={`route-narration-overlay-item ${item.evidence.evidence}`}
+                      onClick={() => focusRouteNarrationPoi(item)}
+                      title={item.evidence.matchedInstruction}
+                    >
+                      <i />
+                      <span>
+                        <strong>{item.evidence.name}</strong>
+                        <small>
+                          maneuver {item.primaryManeuverIndex + 1} · {item.evidence.poiId || item.evidence.sourceNodeId || 'source POI'}
+                        </small>
+                      </span>
+                    </button>
+                  ))}
+                  {routeNarrationPois.length > 8 && (
+                    <div className="route-narration-more">+{routeNarrationPois.length - 8} more narration match(es)</div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
         </section>
 
         <aside className="side-panel">
           <section className="card dataset-card">
             <div className="maneuver-heading">
               <h2>Dataset Pipeline</h2>
-              <span>Phase 4A</span>
+              <span>Phase 4A.1</span>
             </div>
             <label>Active POI dataset</label>
             <div className="dataset-actions">
@@ -1344,7 +1526,7 @@ export default function App() {
             ) : (
               <ol className="maneuver-list">
                 {maneuverViews.map((item) => (
-                  <li key={item.index} className={selectedManeuverIndex === item.index ? 'selected' : ''}>
+                  <li key={item.index} data-maneuver-index={item.index} className={selectedManeuverIndex === item.index ? 'selected' : ''}>
                     <button className="maneuver-button" onClick={() => focusManeuver(item)}>
                       <strong>{item.maneuver.instruction ?? 'Unnamed maneuver'}</strong>
                       {(() => {

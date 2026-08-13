@@ -214,19 +214,23 @@ Phase 4A.1 makes Phase 4A evidence visible across the whole route without changi
 
 All correlation remains external. The production Valhalla engine, tiles, protobufs and route response are unchanged.
 
-## Phase 4B — external predicted winner comparison
+## Product-facing dashboard scope
 
-Phase 4B remains dashboard-only. It approximates the candidate set for each maneuver from source POIs near the preceding approach-route segment, ranks those candidates using the inspected Odin ordering (priority descending, distance-to-maneuver ascending, then POI id ascending), and compares the external predicted winner with the POI strongly observed in existing Odin narration.
+The product-facing dashboard intentionally keeps only directly observable POI verification features.
 
-The candidate set is an external approximation, not Odin's private `maneuver.landmarks()` vector. MATCH/MISMATCH therefore compares dashboard prediction with narration evidence and must not be interpreted as direct runtime introspection.
+Included:
+- configurable POI dataset loading/reload
+- POI search and filters
+- START/END selection and Valhalla route rendering
+- Odin maneuver instructions
+- route-wide highlighting of landmark POIs that appear in landmark-style Odin narration
+- click-through between route POIs, maneuver inspection and source POI metadata
+- saved repeatable route scenarios and instruction assertions
 
-## Phase 4C — route verification report
+Intentionally removed:
+- debugger-side predicted landmark winners
+- approximate candidate ranking
+- prediction MATCH/MISMATCH/NOT OBSERVED scoring
+- route-level prediction scorecards and prediction JSON reports
 
-Phase 4C consolidates the external POI verification for the current route.
-
-- Shows route-level counts for narration-observed POIs, prediction matches, mismatches and not-observed predictions.
-- Calculates an external prediction match rate over maneuvers with comparable evidence.
-- Lists mismatch, not-observed and ambiguous cases as clickable issues that jump to the corresponding maneuver.
-- Exports the current verification analysis as a standalone JSON report containing route request, Odin narration evidence, predicted winner/candidates and per-maneuver status.
-- Exported reports explicitly identify candidate prediction as debugger-side approximation rather than Odin private runtime state.
-- No Valhalla engine, tile, PBF, protobuf or API-response changes are required.
+The dashboard does not claim access to Odin private runtime landmark-selection state.

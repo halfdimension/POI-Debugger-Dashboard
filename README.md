@@ -213,4 +213,3 @@ Phase 4A.1 makes Phase 4A evidence visible across the whole route without changi
 - The same source POI is deduplicated if it appears in multiple maneuvers.
 
 All correlation remains external. The production Valhalla engine, tiles, protobufs and route response are unchanged.
-

@@ -750,6 +750,38 @@ export default function App() {
     return counts;
   }, [predictionByManeuver]);
 
+  const verificationIssues = useMemo(() => {
+    return maneuverViews.flatMap((item) => {
+      const prediction = predictionByManeuver.get(item.index);
+      if (!prediction || prediction.status === 'match' || prediction.status === 'no-candidate') return [];
+
+      const evidence = narrationEvidenceByManeuver.get(item.index) ?? [];
+      const ambiguous = evidence.find((entry) => entry.evidence === 'ambiguous') ?? null;
+
+      return [{
+        maneuverIndex: item.index,
+        status: prediction.status,
+        instruction: item.maneuver.instruction ?? item.maneuver.verbal_pre_transition_instruction ?? `Maneuver ${item.index + 1}`,
+        predictedName: prediction.winner?.name ?? null,
+        predictedPoiId: prediction.winner?.poiId ?? null,
+        observedName: prediction.observed?.name ?? null,
+        observedPoiId: prediction.observed?.poiId ?? null,
+        ambiguousName: ambiguous?.name ?? null,
+      }];
+    });
+  }, [maneuverViews, predictionByManeuver, narrationEvidenceByManeuver]);
+
+  const verificationConsideredCount =
+    predictionCounts.match +
+    predictionCounts.mismatch +
+    predictionCounts['not-observed'] +
+    predictionCounts['ambiguous-only'];
+
+  const verificationMatchRate =
+    verificationConsideredCount > 0
+      ? (predictionCounts.match / verificationConsideredCount) * 100
+      : null;
+
   const selectedPrediction = useMemo(
     () => selectedManeuverIndex === null ? null : predictionByManeuver.get(selectedManeuverIndex) ?? null,
     [predictionByManeuver, selectedManeuverIndex],
@@ -1474,6 +1506,108 @@ export default function App() {
     });
   }
 
+  function focusVerificationManeuver(index: number) {
+    const item = maneuverViews.find((candidate) => candidate.index === index);
+    if (!item) return;
+    focusManeuver(item);
+    window.setTimeout(() => {
+      document.querySelector(`[data-maneuver-index="${index}"]`)
+        ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 80);
+  }
+
+  function exportVerificationReport() {
+    if (!route) return;
+
+    const report = {
+      schema_version: 1,
+      report_type: 'valhalla-poi-external-verification',
+      debugger_phase: '4C',
+      generated_at: new Date().toISOString(),
+      dataset: datasetRegistry?.active_dataset ?? config?.active_dataset ?? 'default',
+      valhalla_service_url: config?.valhalla.service_url ?? null,
+      route_request: {
+        start: start ? { lon: start[0], lat: start[1] } : null,
+        end: end ? { lon: end[0], lat: end[1] } : null,
+        costing: 'auto',
+      },
+      trip_summary: route.trip?.summary ?? null,
+      summary: {
+        maneuvers: maneuverViews.length,
+        narration_observed_pois: routeNarrationStrongCount,
+        narration_ambiguous_pois: routeNarrationAmbiguousCount,
+        prediction: {
+          ...predictionCounts,
+          considered: verificationConsideredCount,
+          match_rate_percent: verificationMatchRate === null ? null : Number(verificationMatchRate.toFixed(2)),
+        },
+      },
+      maneuvers: maneuverViews.map((item) => {
+        const evidence = narrationEvidenceByManeuver.get(item.index) ?? [];
+        const prediction = predictionByManeuver.get(item.index) ?? null;
+
+        return {
+          maneuver_index: item.index,
+          leg_index: item.legIndex,
+          coordinate: item.coordinate ? { lon: item.coordinate[0], lat: item.coordinate[1] } : null,
+          instruction: item.maneuver.instruction ?? null,
+          verbal_pre_transition_instruction: item.maneuver.verbal_pre_transition_instruction ?? null,
+          narration_evidence: evidence.map((entry) => ({
+            evidence: entry.evidence,
+            name: entry.name,
+            mappls_poi_id: entry.poiId,
+            source_node_id: entry.sourceNodeId,
+            landmark_type: entry.landmarkType,
+            priority: entry.priority,
+            distance_to_maneuver_m: entry.distanceM,
+            matched_instruction: entry.matchedInstruction,
+            coordinate: { lon: entry.coordinate[0], lat: entry.coordinate[1] },
+          })),
+          external_prediction: prediction ? {
+            status: prediction.status,
+            approach_length_m: prediction.approachLengthM,
+            winner: prediction.winner ? {
+              name: prediction.winner.name,
+              mappls_poi_id: prediction.winner.poiId,
+              source_node_id: prediction.winner.sourceNodeId,
+              landmark_type: prediction.winner.landmarkType,
+              priority: prediction.winner.priority,
+              distance_to_maneuver_m: prediction.winner.distanceToManeuverM,
+              lateral_distance_to_route_m: prediction.winner.lateralDistanceM,
+              coordinate: {
+                lon: prediction.winner.coordinate[0],
+                lat: prediction.winner.coordinate[1],
+              },
+            } : null,
+            candidates: prediction.candidates.map((candidate) => ({
+              name: candidate.name,
+              mappls_poi_id: candidate.poiId,
+              source_node_id: candidate.sourceNodeId,
+              landmark_type: candidate.landmarkType,
+              priority: candidate.priority,
+              distance_to_maneuver_m: candidate.distanceToManeuverM,
+              lateral_distance_to_route_m: candidate.lateralDistanceM,
+            })),
+          } : null,
+        };
+      }),
+      disclaimer:
+        'External debugger analysis only. Narration evidence comes from the existing Valhalla response; predicted candidates/winners are inferred from source POIs and route geometry and are not Odin private runtime state.',
+    };
+
+    const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    const datasetName = String(datasetRegistry?.active_dataset ?? config?.active_dataset ?? 'dataset')
+      .replace(/[^a-zA-Z0-9._-]+/g, '-');
+    anchor.href = url;
+    anchor.download = `valhalla-poi-verification-${datasetName}-${Date.now()}.json`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+  }
+
   function focusPoiFeature(feature: GeoJSON.Feature<GeoJSON.Point>, debugDistanceM?: number) {
     setSelectedPoi(feature);
     const map = mapRef.current;
@@ -1526,7 +1660,7 @@ export default function App() {
       <header className="topbar">
         <div>
           <h1>{config.project.name ?? 'Valhalla POI Debugger'}</h1>
-          <div className="subtitle">Phase 4B · external predicted-winner vs Odin narration</div>
+          <div className="subtitle">Phase 4C · route-level external POI verification report</div>
         </div>
         <div className={`status-pill ${valhallaStatus}`}>
           Valhalla: {valhallaStatus === 'checking' ? 'checking' : valhallaStatus === 'up' ? 'connected' : 'offline'}
@@ -1726,6 +1860,88 @@ export default function App() {
             </div>
             <button className="route-button" onClick={runRoute} disabled={busy}>{busy ? 'Routing…' : 'Run Valhalla Route'}</button>
             {error && <div className="error-box">{error}</div>}
+          </section>
+
+          <section className="card verification-report-card">
+            <div className="maneuver-heading">
+              <h2>Route Verification</h2>
+              <span>Phase 4C</span>
+            </div>
+
+            {!route ? (
+              <div className="empty-state">Run a route to generate the external POI verification report.</div>
+            ) : (
+              <>
+                <div className="verification-score-grid">
+                  <div>
+                    <strong>{routeNarrationStrongCount}</strong>
+                    <span>observed POIs</span>
+                  </div>
+                  <div className="verification-score-match">
+                    <strong>{predictionCounts.match}</strong>
+                    <span>prediction match</span>
+                  </div>
+                  <div className="verification-score-mismatch">
+                    <strong>{predictionCounts.mismatch}</strong>
+                    <span>mismatch</span>
+                  </div>
+                  <div>
+                    <strong>{predictionCounts['not-observed']}</strong>
+                    <span>not observed</span>
+                  </div>
+                </div>
+
+                <div className="verification-report-summary">
+                  <span><b>Considered:</b> {verificationConsideredCount}</span>
+                  <span><b>Match rate:</b> {verificationMatchRate === null ? 'n/a' : `${verificationMatchRate.toFixed(1)}%`}</span>
+                  <span><b>Ambiguous:</b> {predictionCounts['ambiguous-only']}</span>
+                  <span><b>No candidate:</b> {predictionCounts['no-candidate']}</span>
+                </div>
+
+                <button className="verification-export-button" onClick={exportVerificationReport}>
+                  Export Verification JSON
+                </button>
+
+                <div className="verification-issues">
+                  <div className="poi-section-title">
+                    Issues to inspect
+                    <span>{verificationIssues.length}</span>
+                  </div>
+
+                  {verificationIssues.length === 0 ? (
+                    <div className="verification-clean">
+                      No mismatch / not-observed / ambiguous prediction issues on this route.
+                    </div>
+                  ) : (
+                    verificationIssues.map((issue) => (
+                      <button
+                        key={`${issue.maneuverIndex}-${issue.status}`}
+                        className={`verification-issue ${issue.status}`}
+                        onClick={() => focusVerificationManeuver(issue.maneuverIndex)}
+                      >
+                        <span className="verification-issue-index">{issue.maneuverIndex + 1}</span>
+                        <span className="verification-issue-body">
+                          <strong>{issue.instruction}</strong>
+                          <small>
+                            Predicted: {issue.predictedName ?? 'none'}
+                            {' · '}
+                            Observed: {issue.observedName ?? issue.ambiguousName ?? 'none'}
+                          </small>
+                        </span>
+                        <span className={`verification-issue-status ${issue.status}`}>
+                          {issue.status.replace('-', ' ').toUpperCase()}
+                        </span>
+                      </button>
+                    ))
+                  )}
+                </div>
+
+                <p className="verification-report-caution">
+                  External verification only. Green narration evidence is derived from the existing Odin response.
+                  Candidate membership and blue predicted winners remain debugger-side approximations; this report does not inspect Odin private runtime state.
+                </p>
+              </>
+            )}
           </section>
 
           <section className="card scenarios-card">

@@ -219,3 +219,14 @@ All correlation remains external. The production Valhalla engine, tiles, protobu
 Phase 4B remains dashboard-only. It approximates the candidate set for each maneuver from source POIs near the preceding approach-route segment, ranks those candidates using the inspected Odin ordering (priority descending, distance-to-maneuver ascending, then POI id ascending), and compares the external predicted winner with the POI strongly observed in existing Odin narration.
 
 The candidate set is an external approximation, not Odin's private `maneuver.landmarks()` vector. MATCH/MISMATCH therefore compares dashboard prediction with narration evidence and must not be interpreted as direct runtime introspection.
+
+## Phase 4C — route verification report
+
+Phase 4C consolidates the external POI verification for the current route.
+
+- Shows route-level counts for narration-observed POIs, prediction matches, mismatches and not-observed predictions.
+- Calculates an external prediction match rate over maneuvers with comparable evidence.
+- Lists mismatch, not-observed and ambiguous cases as clickable issues that jump to the corresponding maneuver.
+- Exports the current verification analysis as a standalone JSON report containing route request, Odin narration evidence, predicted winner/candidates and per-maneuver status.
+- Exported reports explicitly identify candidate prediction as debugger-side approximation rather than Odin private runtime state.
+- No Valhalla engine, tile, PBF, protobuf or API-response changes are required.

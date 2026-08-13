@@ -29,3 +29,18 @@ backend:
   allowed_origins:
     - "http://localhost:5173"
     - "http://127.0.0.1:5173"
+
+
+# Phase 2A dataset registry example. The old `data:` block still works as a fallback.
+active_dataset: "example"
+
+datasets:
+  example:
+    name: "Example landmark dataset"
+    pbf_path: "/path/to/your/input.osm.pbf"
+    poi_csv_path: "/path/to/your/landmarks.csv"
+    # Optional fallback if no CSV exists:
+    poi_geojson_path: "./data/landmarks.geojson"
+    # Metadata only in Phase 2A; activating a dataset does NOT restart Valhalla.
+    tiles_path: "/path/to/your/valhalla_tiles"
+    valhalla_config_path: "/path/to/your/valhalla.json"

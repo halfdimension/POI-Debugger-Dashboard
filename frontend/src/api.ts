@@ -1,4 +1,4 @@
-import type { DebuggerConfig, ValhallaRouteResponse } from './types';
+import type { DatasetRegistryResponse, DebuggerConfig, ValhallaRouteResponse } from './types';
 
 export async function getConfig(): Promise<DebuggerConfig> {
   const response = await fetch('/api/config');
@@ -10,6 +10,26 @@ export async function getPois(): Promise<GeoJSON.FeatureCollection> {
   const response = await fetch('/api/pois');
   if (!response.ok) throw new Error(`POI request failed: ${response.status}`);
   return response.json();
+}
+
+export async function getDatasets(): Promise<DatasetRegistryResponse> {
+  const response = await fetch('/api/datasets');
+  if (!response.ok) throw new Error(`Dataset registry request failed: ${response.status}`);
+  return response.json();
+}
+
+export async function activateDataset(datasetId: string): Promise<any> {
+  const response = await fetch(`/api/datasets/${encodeURIComponent(datasetId)}/activate`, { method: 'POST' });
+  const body = await response.json();
+  if (!response.ok) throw new Error(typeof body?.detail === 'string' ? body.detail : JSON.stringify(body?.detail ?? body));
+  return body;
+}
+
+export async function reloadDatasetPois(datasetId: string): Promise<any> {
+  const response = await fetch(`/api/datasets/${encodeURIComponent(datasetId)}/reload-pois`, { method: 'POST' });
+  const body = await response.json();
+  if (!response.ok) throw new Error(typeof body?.detail === 'string' ? body.detail : JSON.stringify(body?.detail ?? body));
+  return body;
 }
 
 export async function getValhallaStatus(): Promise<any> {

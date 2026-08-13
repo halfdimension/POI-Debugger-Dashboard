@@ -149,3 +149,14 @@ Coordinate order in GeoJSON is `[longitude, latitude]`.
 ## Important note
 
 `engine.root` and `data.pbf_path` are deliberately present in Phase 1 even though the browser does not directly use the engine source tree. Later extraction/build/debug tools will consume these same settings, so you will not have to redesign the configuration when the project grows.
+
+
+## Phase 2A
+
+Phase 2A adds a runtime dataset registry and removes the manual CSV-to-GeoJSON step for normal testing.
+
+- If `poi_csv_path` exists, `/api/pois` is generated directly from that CSV in memory.
+- CSV rows are validated for coordinates and summarized in the dashboard.
+- `Reload POIs` rereads the source file without restarting the debugger.
+- Optional `datasets:` entries can be activated at runtime.
+- Dataset activation changes debugger-side POI data only; it does not restart Valhalla or change the tiles used by the running Valhalla process.

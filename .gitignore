@@ -21,3 +21,6 @@ frontend/dist/
 # OS
 .DS_Store
 config/debugger.yaml
+.phase2a_backup/
+.phase2a_backup/
+.phase2b_backup/

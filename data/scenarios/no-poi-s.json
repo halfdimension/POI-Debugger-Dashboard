@@ -1,0 +1,19 @@
+{
+  "id": "no-poi-s",
+  "name": "No POI's",
+  "dataset": "cp_landmarks",
+  "request": {
+    "start": {
+      "lon": 77.20458586858905,
+      "lat": 28.629556737114413
+    },
+    "end": {
+      "lon": 77.20989913651073,
+      "lat": 28.641343570239243
+    },
+    "costing": "auto"
+  },
+  "created_at": "2026-08-13T04:02:49Z",
+  "updated_at": "2026-08-13T04:02:49Z",
+  "notes": "It doesnt have POI's in it."
+}

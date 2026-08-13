@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import maplibregl, { LngLatBounds, Map as MapLibreMap } from 'maplibre-gl';
-import { activateDataset, createScenario, deleteScenario, getConfig, getDatasets, getPois, getScenarios, getValhallaStatus, reloadDatasetPois, requestRoute } from './api';
+import { activateDataset, createScenario, deleteScenario, getConfig, getDatasets, getPois, getScenarios, getValhallaStatus, reloadDatasetPois, requestRoute, updateScenario } from './api';
 import { decodePolyline6 } from './polyline';
 import type { DatasetRegistryResponse, DatasetSummary, DebuggerConfig, LngLat, Maneuver, RouteScenario, ScenarioRegistryResponse, ValhallaRouteResponse } from './types';
 
@@ -20,6 +20,17 @@ type NearbyPoi = {
   priority: number | null;
   name: string;
   landmarkType: string;
+};
+
+type ScenarioRunStatus = 'pass' | 'fail' | 'no-expectation' | 'error';
+
+type ScenarioRunResult = {
+  status: ScenarioRunStatus;
+  checkedAt: string;
+  actualInstructions: string[];
+  matchedInstructions: string[];
+  failures: string[];
+  error?: string;
 };
 
 const EMPTY_FC: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features: [] };
@@ -106,6 +117,63 @@ function poiSearchText(properties: GeoJSON.GeoJsonProperties): string {
     .toLowerCase();
 }
 
+function odinInstructionTexts(response: ValhallaRouteResponse): string[] {
+  const values: string[] = [];
+  for (const leg of response.trip?.legs ?? []) {
+    for (const maneuver of leg.maneuvers ?? []) {
+      for (const value of [maneuver.instruction, maneuver.verbal_pre_transition_instruction]) {
+        const text = String(value ?? '').trim();
+        if (text && !values.includes(text)) values.push(text);
+      }
+    }
+  }
+  return values;
+}
+
+function evaluateScenario(scenario: RouteScenario, response: ValhallaRouteResponse): ScenarioRunResult {
+  const expectation = scenario.expectation;
+  const actualInstructions = odinInstructionTexts(response);
+  const checkedAt = new Date().toISOString();
+
+  const landmarkName = expectation?.landmark_name?.trim() ?? '';
+  const required = expectation?.instruction_contains?.trim() || landmarkName;
+  const forbidden = expectation?.instruction_not_contains?.trim() ?? '';
+
+  if (!required && !forbidden) {
+    return { status: 'no-expectation', checkedAt, actualInstructions, matchedInstructions: [], failures: [] };
+  }
+
+  const caseSensitive = expectation?.case_sensitive ?? false;
+  const normalize = (value: string) => caseSensitive ? value : value.toLowerCase();
+  const normalizedInstructions = actualInstructions.map((text) => ({ raw: text, normalized: normalize(text) }));
+  const failures: string[] = [];
+  const matchedInstructions: string[] = [];
+
+  if (required) {
+    const needle = normalize(required);
+    const matches = normalizedInstructions.filter((item) => item.normalized.includes(needle)).map((item) => item.raw);
+    if (matches.length === 0) failures.push(`No Odin instruction contained "${required}".`);
+    else matchedInstructions.push(...matches);
+  }
+
+  if (forbidden) {
+    const needle = normalize(forbidden);
+    const matches = normalizedInstructions.filter((item) => item.normalized.includes(needle)).map((item) => item.raw);
+    if (matches.length > 0) {
+      failures.push(`Forbidden Odin text "${forbidden}" was present.`);
+      matchedInstructions.push(...matches);
+    }
+  }
+
+  return {
+    status: failures.length === 0 ? 'pass' : 'fail',
+    checkedAt,
+    actualInstructions,
+    matchedInstructions: Array.from(new Set(matchedInstructions)),
+    failures,
+  };
+}
+
 export default function App() {
   const mapContainer = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
@@ -131,6 +199,10 @@ export default function App() {
   const [scenarioNotes, setScenarioNotes] = useState('');
   const [scenarioBusy, setScenarioBusy] = useState(false);
   const [scenarioMessage, setScenarioMessage] = useState('');
+  const [scenarioExpectedText, setScenarioExpectedText] = useState('');
+  const [scenarioForbiddenText, setScenarioForbiddenText] = useState('');
+  const [scenarioRunResults, setScenarioRunResults] = useState<Record<string, ScenarioRunResult>>({});
+  const [runAllBusy, setRunAllBusy] = useState(false);
 
   const [poiSearch, setPoiSearch] = useState('');
   const [poiType, setPoiType] = useState('all');
@@ -555,7 +627,7 @@ export default function App() {
     }
   }
 
-  async function executeRoute(routeStart: LngLat, routeEnd: LngLat, costing = 'auto') {
+  async function executeRoute(routeStart: LngLat, routeEnd: LngLat, costing = 'auto'): Promise<ValhallaRouteResponse | null> {
     setBusy(true);
     setError('');
     setSelectedManeuverIndex(null);
@@ -592,8 +664,10 @@ export default function App() {
         allCoords.forEach((coord) => bounds.extend(coord));
         mapRef.current.fitBounds(bounds, { padding: 60, maxZoom: 16 });
       }
+      return response;
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+      return null;
     } finally {
       setBusy(false);
     }
@@ -638,18 +712,93 @@ export default function App() {
     }
   }
 
-  async function runSavedScenario(scenario: RouteScenario) {
+  async function runSavedScenario(scenario: RouteScenario): Promise<ScenarioRunResult | null> {
     const activeId = datasetRegistry?.active_dataset ?? config?.active_dataset ?? '';
     if (scenario.dataset !== activeId) {
-      setError(`Scenario uses dataset "${scenario.dataset}" but the active debugger dataset is "${activeId || 'unknown'}". Activate the matching dataset before running it.`);
-      return;
+      const message = `Scenario uses dataset "${scenario.dataset}" but the active debugger dataset is "${activeId || 'unknown'}". Activate the matching dataset before running it.`;
+      setError(message);
+      const result: ScenarioRunResult = { status: 'error', checkedAt: new Date().toISOString(), actualInstructions: [], matchedInstructions: [], failures: [], error: message };
+      setScenarioRunResults((previous) => ({ ...previous, [scenario.id]: result }));
+      return result;
     }
 
     const { routeStart, routeEnd } = scenarioPoints(scenario);
     setStart(routeStart);
     setEnd(routeEnd);
     setScenarioMessage(`Running ${scenario.name}.`);
-    await executeRoute(routeStart, routeEnd, scenario.request.costing || 'auto');
+    const response = await executeRoute(routeStart, routeEnd, scenario.request.costing || 'auto');
+    if (!response) {
+      const result: ScenarioRunResult = { status: 'error', checkedAt: new Date().toISOString(), actualInstructions: [], matchedInstructions: [], failures: [], error: 'Route request failed.' };
+      setScenarioRunResults((previous) => ({ ...previous, [scenario.id]: result }));
+      return result;
+    }
+
+    const result = evaluateScenario(scenario, response);
+    setScenarioRunResults((previous) => ({ ...previous, [scenario.id]: result }));
+    setScenarioMessage(`${scenario.name}: ${result.status === 'pass' ? 'PASS' : result.status === 'fail' ? 'FAIL' : 'route ran; no expectation configured'}.`);
+    return result;
+  }
+
+  async function editScenarioExpectation(scenario: RouteScenario) {
+    const currentContains = scenario.expectation?.instruction_contains ?? scenario.expectation?.landmark_name ?? '';
+    const contains = window.prompt('Expected Odin text / landmark name. Leave blank for no positive assertion.', currentContains);
+    if (contains === null) return;
+    const currentForbidden = scenario.expectation?.instruction_not_contains ?? '';
+    const forbidden = window.prompt('Forbidden Odin text. Leave blank if not needed.', currentForbidden);
+    if (forbidden === null) return;
+
+    setScenarioBusy(true);
+    setError('');
+    try {
+      await updateScenario(scenario.id, {
+        expectation: {
+          landmark_name: contains.trim(),
+          instruction_contains: contains.trim(),
+          instruction_not_contains: forbidden.trim(),
+          case_sensitive: false,
+        },
+      });
+      setScenarioRunResults((previous) => {
+        const next = { ...previous };
+        delete next[scenario.id];
+        return next;
+      });
+      await refreshScenarios(`Updated expectations for ${scenario.name}.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setScenarioBusy(false);
+    }
+  }
+
+  async function runAllScenarios() {
+    const scenarios = scenarioRegistry?.scenarios ?? [];
+    const activeId = datasetRegistry?.active_dataset ?? config?.active_dataset ?? '';
+    const runnable = scenarios.filter((scenario) => scenario.dataset === activeId);
+    if (runnable.length === 0) {
+      setScenarioMessage('No saved scenarios match the active dataset.');
+      return;
+    }
+
+    setRunAllBusy(true);
+    setScenarioMessage(`Running ${runnable.length} scenarios…`);
+    let pass = 0;
+    let fail = 0;
+    let noExpectation = 0;
+    let errors = 0;
+    try {
+      for (const scenario of runnable) {
+        const result = await runSavedScenario(scenario);
+        if (!result) continue;
+        if (result.status === 'pass') pass += 1;
+        else if (result.status === 'fail') fail += 1;
+        else if (result.status === 'no-expectation') noExpectation += 1;
+        else errors += 1;
+      }
+      setScenarioMessage(`Run all complete: ${pass} PASS · ${fail} FAIL · ${noExpectation} NO EXPECTATION · ${errors} ERROR.`);
+    } finally {
+      setRunAllBusy(false);
+    }
   }
 
   async function saveCurrentScenario() {
@@ -676,9 +825,17 @@ export default function App() {
           costing: 'auto',
         },
         notes: scenarioNotes.trim(),
+        expectation: {
+          landmark_name: scenarioExpectedText.trim(),
+          instruction_contains: scenarioExpectedText.trim(),
+          instruction_not_contains: scenarioForbiddenText.trim(),
+          case_sensitive: false,
+        },
       });
       setScenarioName('');
       setScenarioNotes('');
+      setScenarioExpectedText('');
+      setScenarioForbiddenText('');
       await refreshScenarios(`Saved scenario ${created.name}.`);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -760,7 +917,7 @@ export default function App() {
       <header className="topbar">
         <div>
           <h1>{config.project.name ?? 'Valhalla POI Debugger'}</h1>
-          <div className="subtitle">Phase 3A · saved and repeatable route scenarios</div>
+          <div className="subtitle">Phase 3B · scenario assertions + automatic PASS/FAIL</div>
         </div>
         <div className={`status-pill ${valhallaStatus}`}>
           Valhalla: {valhallaStatus === 'checking' ? 'checking' : valhallaStatus === 'up' ? 'connected' : 'offline'}
@@ -781,7 +938,7 @@ export default function App() {
           <section className="card dataset-card">
             <div className="maneuver-heading">
               <h2>Dataset Pipeline</h2>
-              <span>Phase 3A</span>
+              <span>Phase 3B</span>
             </div>
             <label>Active POI dataset</label>
             <div className="dataset-actions">
@@ -934,6 +1091,18 @@ export default function App() {
                 {scenarioBusy ? 'Working…' : 'Save Current Route'}
               </button>
             </div>
+            <div className="scenario-expectation-grid">
+              <input
+                value={scenarioExpectedText}
+                placeholder="Expected Odin text / landmark, e.g. Indian Oil"
+                onChange={(event) => setScenarioExpectedText(event.target.value)}
+              />
+              <input
+                value={scenarioForbiddenText}
+                placeholder="Forbidden Odin text (optional)"
+                onChange={(event) => setScenarioForbiddenText(event.target.value)}
+              />
+            </div>
             <textarea
               className="scenario-notes"
               value={scenarioNotes}
@@ -941,35 +1110,59 @@ export default function App() {
               rows={2}
               onChange={(event) => setScenarioNotes(event.target.value)}
             />
+            <div className="scenario-suite-actions">
+              <button onClick={runAllScenarios} disabled={runAllBusy || scenarioBusy || busy || !(scenarioRegistry?.scenarios.length)}>
+                {runAllBusy ? 'Running suite…' : 'Run All Matching Dataset'}
+              </button>
+              <span>Assertions inspect Odin maneuver instruction + verbal pre-transition text.</span>
+            </div>
             {scenarioMessage && <div className="scenario-message">{scenarioMessage}</div>}
             {(scenarioRegistry?.errors ?? []).map((message) => (
               <div className="scenario-warning" key={message}>{message}</div>
             ))}
             <div className="scenario-note">
-              Scenarios store coordinates, costing and debugger dataset as JSON files. Phase 3A reruns them; PASS/FAIL expectations come in Phase 3B.
+              Phase 3B evaluates required/forbidden Odin text after each route. A scenario without assertions still runs but reports NO EXPECTATION.
             </div>
             {(scenarioRegistry?.scenarios ?? []).length === 0 ? (
-              <div className="empty-state">Set START/END, give the route a name, and save your first repeatable test.</div>
+              <div className="empty-state">Set START/END, give the route a name and optionally an expected landmark, then save it.</div>
             ) : (
               <div className="scenario-list">
                 {(scenarioRegistry?.scenarios ?? []).map((scenario) => {
                   const activeId = datasetRegistry?.active_dataset ?? config?.active_dataset ?? '';
                   const datasetMismatch = scenario.dataset !== activeId;
+                  const result = scenarioRunResults[scenario.id];
+                  const expectedText = scenario.expectation?.instruction_contains ?? scenario.expectation?.landmark_name ?? '';
+                  const forbiddenText = scenario.expectation?.instruction_not_contains ?? '';
                   return (
-                    <div className={`scenario-item ${datasetMismatch ? 'dataset-mismatch' : ''}`} key={scenario.id}>
+                    <div className={`scenario-item ${datasetMismatch ? 'dataset-mismatch' : ''} ${result ? `result-${result.status}` : ''}`} key={scenario.id}>
                       <div className="scenario-main">
-                        <strong>{scenario.name}</strong>
+                        <div className="scenario-title-row">
+                          <strong>{scenario.name}</strong>
+                          {result && <span className={`scenario-result-badge ${result.status}`}>{result.status === 'no-expectation' ? 'NO EXPECTATION' : result.status.toUpperCase()}</span>}
+                        </div>
                         <small>{scenario.dataset} · {scenario.request.costing}</small>
                         <code>
                           {scenario.request.start.lon.toFixed(6)}, {scenario.request.start.lat.toFixed(6)} → {scenario.request.end.lon.toFixed(6)}, {scenario.request.end.lat.toFixed(6)}
                         </code>
+                        {(expectedText || forbiddenText) ? (
+                          <div className="scenario-expectation-summary">
+                            {expectedText && <span><b>Must contain:</b> {expectedText}</span>}
+                            {forbiddenText && <span><b>Must not contain:</b> {forbiddenText}</span>}
+                          </div>
+                        ) : <span className="scenario-no-expectation">No PASS/FAIL expectation configured.</span>}
                         {scenario.notes && <span>{scenario.notes}</span>}
+                        {result?.matchedInstructions.length ? (
+                          <span className="scenario-match"><b>Matched:</b> {result.matchedInstructions[0]}</span>
+                        ) : null}
+                        {result?.failures.map((failure) => <em className="scenario-failure" key={failure}>{failure}</em>)}
+                        {result?.error && <em className="scenario-failure">{result.error}</em>}
                         {datasetMismatch && <em>Dataset mismatch: activate {scenario.dataset} before Run.</em>}
                       </div>
                       <div className="scenario-actions">
-                        <button onClick={() => loadScenario(scenario)} disabled={scenarioBusy}>Load</button>
-                        <button className="scenario-run" onClick={() => runSavedScenario(scenario)} disabled={scenarioBusy || busy || datasetMismatch}>Run</button>
-                        <button className="scenario-delete" onClick={() => removeScenario(scenario)} disabled={scenarioBusy}>Delete</button>
+                        <button onClick={() => loadScenario(scenario)} disabled={scenarioBusy || runAllBusy}>Load</button>
+                        <button className="scenario-run" onClick={() => runSavedScenario(scenario)} disabled={scenarioBusy || runAllBusy || busy || datasetMismatch}>Run</button>
+                        <button className="scenario-expect" onClick={() => editScenarioExpectation(scenario)} disabled={scenarioBusy || runAllBusy}>Expect</button>
+                        <button className="scenario-delete" onClick={() => removeScenario(scenario)} disabled={scenarioBusy || runAllBusy}>Delete</button>
                       </div>
                     </div>
                   );

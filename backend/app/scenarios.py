@@ -131,6 +131,27 @@ class ScenarioManager:
         if notes:
             result["notes"] = notes
 
+        expectation = payload.get("expectation")
+        if expectation is not None:
+            if not isinstance(expectation, dict):
+                raise ScenarioError("Scenario expectation must be an object")
+
+            instruction_contains = str(expectation.get("instruction_contains", "")).strip()
+            instruction_not_contains = str(expectation.get("instruction_not_contains", "")).strip()
+            landmark_name = str(expectation.get("landmark_name", "")).strip()
+            case_sensitive = bool(expectation.get("case_sensitive", False))
+
+            normalized_expectation: dict[str, Any] = {}
+            if landmark_name:
+                normalized_expectation["landmark_name"] = landmark_name
+            if instruction_contains:
+                normalized_expectation["instruction_contains"] = instruction_contains
+            if instruction_not_contains:
+                normalized_expectation["instruction_not_contains"] = instruction_not_contains
+            if normalized_expectation:
+                normalized_expectation["case_sensitive"] = case_sensitive
+                result["expectation"] = normalized_expectation
+
         return result
 
     def _write(self, scenario: dict[str, Any]) -> dict[str, Any]:

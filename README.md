@@ -175,3 +175,15 @@ Phase 3A adds file-backed route scenarios for repeatable landmark testing.
 - Running is blocked when the saved dataset differs from the active debugger dataset.
 
 Phase 3A does not yet perform PASS/FAIL assertions. Those come in Phase 3B.
+
+## Phase 3B — scenario assertions
+
+Phase 3B adds automatic regression assertions to saved route scenarios.
+
+- A scenario may require Odin text / landmark text to appear.
+- A scenario may define text that must not appear.
+- Assertions inspect both maneuver `instruction` and `verbal_pre_transition_instruction`.
+- `Run` evaluates one scenario and shows PASS / FAIL / NO EXPECTATION / ERROR.
+- `Run All Matching Dataset` executes all scenarios for the active debugger dataset.
+- Existing Phase 3A scenarios remain valid; use `Expect` to add assertions.
+- Results are runtime-only; expected behavior remains stored in scenario JSON.

@@ -69,6 +69,17 @@ export async function createScenario(payload: object): Promise<import('./types')
   return body;
 }
 
+export async function updateScenario(scenarioId: string, payload: object): Promise<import('./types').RouteScenario> {
+  const response = await fetch(`/api/scenarios/${encodeURIComponent(scenarioId)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const body = await response.json();
+  if (!response.ok) throw new Error(typeof body?.detail === 'string' ? body.detail : JSON.stringify(body?.detail ?? body));
+  return body;
+}
+
 export async function deleteScenario(scenarioId: string): Promise<void> {
   const response = await fetch(`/api/scenarios/${encodeURIComponent(scenarioId)}`, { method: 'DELETE' });
   if (!response.ok) {

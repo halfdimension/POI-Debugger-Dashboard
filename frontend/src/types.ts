@@ -87,6 +87,13 @@ export interface ScenarioPoint {
   lat: number;
 }
 
+export interface ScenarioExpectation {
+  landmark_name?: string;
+  instruction_contains?: string;
+  instruction_not_contains?: string;
+  case_sensitive?: boolean;
+}
+
 export interface RouteScenario {
   id: string;
   name: string;
@@ -97,6 +104,7 @@ export interface RouteScenario {
     costing: string;
   };
   notes?: string;
+  expectation?: ScenarioExpectation;
   created_at?: string;
   updated_at?: string;
 }

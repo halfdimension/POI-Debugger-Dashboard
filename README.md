@@ -219,4 +219,3 @@ All correlation remains external. The production Valhalla engine, tiles, protobu
 Phase 4B remains dashboard-only. It approximates the candidate set for each maneuver from source POIs near the preceding approach-route segment, ranks those candidates using the inspected Odin ordering (priority descending, distance-to-maneuver ascending, then POI id ascending), and compares the external predicted winner with the POI strongly observed in existing Odin narration.
 
 The candidate set is an external approximation, not Odin's private `maneuver.landmarks()` vector. MATCH/MISMATCH therefore compares dashboard prediction with narration evidence and must not be interpreted as direct runtime introspection.
-

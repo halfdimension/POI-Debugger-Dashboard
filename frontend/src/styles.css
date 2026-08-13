@@ -997,4 +997,3 @@ button { cursor: pointer; }
 .prediction-candidates small { color: #64748b; font-size: 7px; }
 .prediction-rank { display: grid; place-items: center; width: 16px; height: 16px; border-radius: 999px; background: #2563eb; color: white; font-size: 7px; font-weight: 800; }
 .prediction-caution { margin-top: 7px !important; border-top: 1px solid #dbeafe; padding-top: 6px; color: #64748b !important; }
-

@@ -329,6 +329,36 @@ export default function App() {
   const mapContainer = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
 
+  // Keep at most one POI popup open at any time.
+  const activePoiPopupRef = useRef<maplibregl.Popup | null>(null);
+
+  function closeActivePoiPopup() {
+    activePoiPopupRef.current?.remove();
+    activePoiPopupRef.current = null;
+  }
+
+  function openPoiPopup(
+    map: maplibregl.Map,
+    coordinate: LngLat,
+    properties: GeoJSON.GeoJsonProperties,
+  ) {
+    closeActivePoiPopup();
+
+    const popup = new maplibregl.Popup({ maxWidth: '420px' })
+      .setLngLat(coordinate)
+      .setHTML(poiPopupHtml(properties ?? {}))
+      .addTo(map);
+
+    popup.on('close', () => {
+      if (activePoiPopupRef.current === popup) {
+        activePoiPopupRef.current = null;
+      }
+    });
+
+    activePoiPopupRef.current = popup;
+  }
+
+
   const [config, setConfig] = useState<DebuggerConfig | null>(null);
   const [pickMode, setPickMode] = useState<PickMode>('start');
   const [start, setStart] = useState<LngLat | null>(null);
@@ -903,10 +933,11 @@ export default function App() {
         const feature = rawFeature as GeoJSON.Feature<GeoJSON.Point>;
         const coordinates = feature.geometry.coordinates.slice() as LngLat;
         setSelectedPoi(feature);
-        new maplibregl.Popup({ maxWidth: '420px' })
-          .setLngLat(coordinates)
-          .setHTML(poiPopupHtml(feature.properties ?? {}))
-          .addTo(map);
+        openPoiPopup(
+          map,
+          coordinates,
+          feature.properties ?? {},
+        );
       };
 
       map.on('click', 'pois', showPoiPopup);
@@ -931,10 +962,11 @@ export default function App() {
 
         setSelectedPoi(feature);
         map.flyTo({ center: coordinates, zoom: Math.max(map.getZoom(), 17), essential: true });
-        new maplibregl.Popup({ maxWidth: '420px' })
-          .setLngLat(coordinates)
-          .setHTML(poiPopupHtml(feature.properties ?? {}))
-          .addTo(map);
+        openPoiPopup(
+          map,
+          coordinates,
+          feature.properties ?? {},
+        );
       });
 
       map.on('click', 'predicted-pois', (event) => {
@@ -952,10 +984,11 @@ export default function App() {
         }
         setSelectedPoi(feature);
         map.flyTo({ center: coordinates, zoom: Math.max(map.getZoom(), 17), essential: true });
-        new maplibregl.Popup({ maxWidth: '420px' })
-          .setLngLat(coordinates)
-          .setHTML(poiPopupHtml(feature.properties ?? {}))
-          .addTo(map);
+        openPoiPopup(
+          map,
+          coordinates,
+          feature.properties ?? {},
+        );
       });
 
       map.on('click', 'maneuver-points', (event) => {
@@ -964,6 +997,7 @@ export default function App() {
         const index = Number(feature.properties?.index);
         const coordinates = feature.geometry.coordinates.slice() as LngLat;
         if (Number.isFinite(index)) setSelectedManeuverIndex(index);
+        closeActivePoiPopup();
         map.flyTo({ center: coordinates, zoom: Math.max(map.getZoom(), 17), essential: true });
       });
 
@@ -997,6 +1031,8 @@ export default function App() {
           if (hitFeatures.length > 0) return;
         }
       }
+
+      closeActivePoiPopup();
 
       const point: LngLat = [event.lngLat.lng, event.lngLat.lat];
       if ((map.__pickMode ?? 'start') === 'start') setStart(point);
@@ -1448,10 +1484,11 @@ export default function App() {
       ...(feature.properties ?? {}),
       ...(typeof debugDistanceM === 'number' ? { _debug_distance_m: debugDistanceM.toFixed(1) } : {}),
     };
-    new maplibregl.Popup({ maxWidth: '420px' })
-      .setLngLat(coordinate)
-      .setHTML(poiPopupHtml(properties))
-      .addTo(map);
+    openPoiPopup(
+      map,
+      coordinate,
+      properties,
+    );
   }
 
   function focusPoi(item: NearbyPoi) {

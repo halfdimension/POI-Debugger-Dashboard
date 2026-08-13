@@ -1280,7 +1280,7 @@ export default function App() {
           <div ref={mapContainer} className="map" />
 
           <div className="landmark-map-legend">
-            <div className="landmark-map-legend-title">Map POI evidence</div>
+            <div className="landmark-map-legend-title">Map POIs</div>
             <span><i className="legend-dot source" />Source POI</span>
             <span><i className="legend-dot strong" />POI in Odin instruction</span>
             <span><i className="legend-dot selected" />Selected POI</span>
@@ -1289,7 +1289,7 @@ export default function App() {
           {route && (
             <div className="route-narration-overlay">
               <div className="route-narration-overlay-heading">
-                <strong>Narration POIs on this route</strong>
+                <strong>Landmark POIs on this route</strong>
                 <span>{routeNarrationStrongCount} POI{routeNarrationStrongCount === 1 ? "" : "s"} in instructions</span>
               </div>
               {routeNarrationPois.length === 0 ? (
@@ -1508,7 +1508,7 @@ export default function App() {
               <div className="scenario-warning" key={message}>{message}</div>
             ))}
             <div className="scenario-note">
-              Phase 3B evaluates required/forbidden Odin text after each route. A scenario without assertions still runs but reports NO EXPECTATION.
+              Saved scenarios can verify required or forbidden Odin instruction text. A scenario without assertions still runs but reports NO EXPECTATION.
             </div>
             {(scenarioRegistry?.scenarios ?? []).length === 0 ? (
               <div className="empty-state">Set START/END, give the route a name and optionally an expected landmark, then save it.</div>
@@ -1597,7 +1597,7 @@ export default function App() {
 
           <section className="card inspection-card">
             <div className="maneuver-heading">
-              <h2>Maneuver POI Inspection</h2>
+              <h2>Landmark Details</h2>
               <span>{NEARBY_POI_RADIUS_M} m radius</span>
             </div>
             {!selectedManeuver ? (
@@ -1654,7 +1654,6 @@ export default function App() {
                     </>
                   )}
                 </div>
-                                <div className="debug-note">Nearby POIs are computed from source data. “Confirmed by narration” means the existing Odin text strongly matches a loaded POI name; it does not claim access to Odin's private candidate/selected-landmark object.</div>
                 {nearbyPois.length === 0 ? (
                   <div className="empty-state">No source POIs within {NEARBY_POI_RADIUS_M} m.</div>
                 ) : (

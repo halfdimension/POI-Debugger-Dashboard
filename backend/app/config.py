@@ -40,6 +40,7 @@ def load_settings() -> dict[str, Any]:
     cfg.setdefault("engine", {})
     cfg.setdefault("data", {})
     cfg.setdefault("datasets", {})
+    cfg.setdefault("scenarios", {})
     cfg.setdefault("frontend", {})
     cfg.setdefault("backend", {})
 
@@ -51,6 +52,7 @@ def load_settings() -> dict[str, Any]:
         ("data", "poi_geojson_path"): "VPD_POI_GEOJSON_PATH",
         ("data", "poi_csv_path"): "VPD_POI_CSV_PATH",
         ("frontend", "map_style_url"): "VPD_MAP_STYLE_URL",
+        ("scenarios", "directory"): "VPD_SCENARIO_DIR",
     }
     for (section, key), env_name in env_overrides.items():
         value = os.getenv(env_name)
@@ -62,6 +64,10 @@ def load_settings() -> dict[str, Any]:
 
     if cfg["engine"].get("root"):
         cfg["engine"]["root"] = _expand_path(str(cfg["engine"]["root"]))
+
+    if not cfg["scenarios"].get("directory"):
+        cfg["scenarios"]["directory"] = "./data/scenarios"
+    cfg["scenarios"]["directory"] = _expand_path(str(cfg["scenarios"]["directory"]))
 
     for key in ("pbf_path", "poi_geojson_path", "poi_csv_path"):
         if cfg["data"].get(key):

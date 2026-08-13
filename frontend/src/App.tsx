@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import maplibregl, { LngLatBounds, Map as MapLibreMap } from 'maplibre-gl';
-import { activateDataset, getConfig, getDatasets, getPois, getValhallaStatus, reloadDatasetPois, requestRoute } from './api';
+import { activateDataset, createScenario, deleteScenario, getConfig, getDatasets, getPois, getScenarios, getValhallaStatus, reloadDatasetPois, requestRoute } from './api';
 import { decodePolyline6 } from './polyline';
-import type { DatasetRegistryResponse, DatasetSummary, DebuggerConfig, LngLat, Maneuver, ValhallaRouteResponse } from './types';
+import type { DatasetRegistryResponse, DatasetSummary, DebuggerConfig, LngLat, Maneuver, RouteScenario, ScenarioRegistryResponse, ValhallaRouteResponse } from './types';
 
 type PickMode = 'start' | 'end';
 
@@ -125,6 +125,12 @@ export default function App() {
   const [datasetRegistry, setDatasetRegistry] = useState<DatasetRegistryResponse | null>(null);
   const [datasetBusy, setDatasetBusy] = useState(false);
   const [datasetMessage, setDatasetMessage] = useState('');
+
+  const [scenarioRegistry, setScenarioRegistry] = useState<ScenarioRegistryResponse | null>(null);
+  const [scenarioName, setScenarioName] = useState('');
+  const [scenarioNotes, setScenarioNotes] = useState('');
+  const [scenarioBusy, setScenarioBusy] = useState(false);
+  const [scenarioMessage, setScenarioMessage] = useState('');
 
   const [poiSearch, setPoiSearch] = useState('');
   const [poiType, setPoiType] = useState('all');
@@ -258,10 +264,11 @@ export default function App() {
   useEffect(() => {
     (async () => {
       try {
-        const [cfg, poiData, registry] = await Promise.all([getConfig(), getPois(), getDatasets()]);
+        const [cfg, poiData, registry, scenarios] = await Promise.all([getConfig(), getPois(), getDatasets(), getScenarios()]);
         setConfig(cfg);
         setPois(poiData);
         setDatasetRegistry(registry);
+        setScenarioRegistry(scenarios);
 
         const status = await getValhallaStatus();
         setValhallaStatus(status.ok ? 'up' : 'down');
@@ -548,12 +555,7 @@ export default function App() {
     }
   }
 
-  async function runRoute() {
-    if (!start || !end) {
-      setError('Set both start and end coordinates first.');
-      return;
-    }
-
+  async function executeRoute(routeStart: LngLat, routeEnd: LngLat, costing = 'auto') {
     setBusy(true);
     setError('');
     setSelectedManeuverIndex(null);
@@ -561,10 +563,10 @@ export default function App() {
     try {
       const payload = {
         locations: [
-          { lon: start[0], lat: start[1] },
-          { lon: end[0], lat: end[1] },
+          { lon: routeStart[0], lat: routeStart[1] },
+          { lon: routeEnd[0], lat: routeEnd[1] },
         ],
-        costing: 'auto',
+        costing,
         units: 'kilometers',
         directions_options: { units: 'kilometers' },
       };
@@ -594,6 +596,109 @@ export default function App() {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function runRoute() {
+    if (!start || !end) {
+      setError('Set both start and end coordinates first.');
+      return;
+    }
+    await executeRoute(start, end, 'auto');
+  }
+
+  async function refreshScenarios(message = '') {
+    const registry = await getScenarios();
+    setScenarioRegistry(registry);
+    if (message) setScenarioMessage(message);
+  }
+
+  function scenarioPoints(scenario: RouteScenario): { routeStart: LngLat; routeEnd: LngLat } {
+    return {
+      routeStart: [scenario.request.start.lon, scenario.request.start.lat],
+      routeEnd: [scenario.request.end.lon, scenario.request.end.lat],
+    };
+  }
+
+  function loadScenario(scenario: RouteScenario) {
+    const { routeStart, routeEnd } = scenarioPoints(scenario);
+    setStart(routeStart);
+    setEnd(routeEnd);
+    setRoute(null);
+    setRouteGeoJson(EMPTY_FC);
+    setSelectedManeuverIndex(null);
+    setSelectedPoi(null);
+    setError('');
+    setScenarioMessage(`Loaded ${scenario.name}.`);
+
+    if (mapRef.current) {
+      const bounds = new LngLatBounds(routeStart, routeStart);
+      bounds.extend(routeEnd);
+      mapRef.current.fitBounds(bounds, { padding: 100, maxZoom: 16 });
+    }
+  }
+
+  async function runSavedScenario(scenario: RouteScenario) {
+    const activeId = datasetRegistry?.active_dataset ?? config?.active_dataset ?? '';
+    if (scenario.dataset !== activeId) {
+      setError(`Scenario uses dataset "${scenario.dataset}" but the active debugger dataset is "${activeId || 'unknown'}". Activate the matching dataset before running it.`);
+      return;
+    }
+
+    const { routeStart, routeEnd } = scenarioPoints(scenario);
+    setStart(routeStart);
+    setEnd(routeEnd);
+    setScenarioMessage(`Running ${scenario.name}.`);
+    await executeRoute(routeStart, routeEnd, scenario.request.costing || 'auto');
+  }
+
+  async function saveCurrentScenario() {
+    if (!start || !end) {
+      setError('Set both start and end coordinates before saving a scenario.');
+      return;
+    }
+    if (!scenarioName.trim()) {
+      setError('Enter a scenario name before saving.');
+      return;
+    }
+
+    const datasetId = datasetRegistry?.active_dataset ?? config?.active_dataset ?? 'default';
+    setScenarioBusy(true);
+    setError('');
+    setScenarioMessage('');
+    try {
+      const created = await createScenario({
+        name: scenarioName.trim(),
+        dataset: datasetId,
+        request: {
+          start: { lon: start[0], lat: start[1] },
+          end: { lon: end[0], lat: end[1] },
+          costing: 'auto',
+        },
+        notes: scenarioNotes.trim(),
+      });
+      setScenarioName('');
+      setScenarioNotes('');
+      await refreshScenarios(`Saved scenario ${created.name}.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setScenarioBusy(false);
+    }
+  }
+
+  async function removeScenario(scenario: RouteScenario) {
+    if (!window.confirm(`Delete saved scenario "${scenario.name}"?`)) return;
+    setScenarioBusy(true);
+    setError('');
+    setScenarioMessage('');
+    try {
+      await deleteScenario(scenario.id);
+      await refreshScenarios(`Deleted scenario ${scenario.name}.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setScenarioBusy(false);
     }
   }
 
@@ -655,7 +760,7 @@ export default function App() {
       <header className="topbar">
         <div>
           <h1>{config.project.name ?? 'Valhalla POI Debugger'}</h1>
-          <div className="subtitle">Phase 2B · POI explorer, filtering, search + statistics</div>
+          <div className="subtitle">Phase 3A · saved and repeatable route scenarios</div>
         </div>
         <div className={`status-pill ${valhallaStatus}`}>
           Valhalla: {valhallaStatus === 'checking' ? 'checking' : valhallaStatus === 'up' ? 'connected' : 'offline'}
@@ -676,7 +781,7 @@ export default function App() {
           <section className="card dataset-card">
             <div className="maneuver-heading">
               <h2>Dataset Pipeline</h2>
-              <span>Phase 2B</span>
+              <span>Phase 3A</span>
             </div>
             <label>Active POI dataset</label>
             <div className="dataset-actions">
@@ -795,7 +900,7 @@ export default function App() {
             <h2>Configuration</h2>
             <div className="kv"><span>Valhalla</span><code>{config.valhalla.service_url}</code></div>
             <div className="kv"><span>Engine</span><code title={config.engine.root}>{basename(config.engine.root)}</code></div>
-            <div className="kv"><span>Dataset</span><code>{datasetRegistry?.active_dataset ?? config.active_dataset ?? 'default'}</code></div>
+            <div className="kv"><span>Dataset</span><code>{datasetRegistry?.active_dataset ?? config?.active_dataset ?? 'default'}</code></div>
           </section>
 
           <section className="card">
@@ -812,6 +917,65 @@ export default function App() {
             </div>
             <button className="route-button" onClick={runRoute} disabled={busy}>{busy ? 'Routing…' : 'Run Valhalla Route'}</button>
             {error && <div className="error-box">{error}</div>}
+          </section>
+
+          <section className="card scenarios-card">
+            <div className="maneuver-heading">
+              <h2>Test Scenarios</h2>
+              <span>{scenarioRegistry?.count ?? 0} saved</span>
+            </div>
+            <div className="scenario-save-grid">
+              <input
+                value={scenarioName}
+                placeholder="Scenario name, e.g. Indian Oil right turn"
+                onChange={(event) => setScenarioName(event.target.value)}
+              />
+              <button onClick={saveCurrentScenario} disabled={scenarioBusy || !start || !end}>
+                {scenarioBusy ? 'Working…' : 'Save Current Route'}
+              </button>
+            </div>
+            <textarea
+              className="scenario-notes"
+              value={scenarioNotes}
+              placeholder="Optional note about why this route is useful"
+              rows={2}
+              onChange={(event) => setScenarioNotes(event.target.value)}
+            />
+            {scenarioMessage && <div className="scenario-message">{scenarioMessage}</div>}
+            {(scenarioRegistry?.errors ?? []).map((message) => (
+              <div className="scenario-warning" key={message}>{message}</div>
+            ))}
+            <div className="scenario-note">
+              Scenarios store coordinates, costing and debugger dataset as JSON files. Phase 3A reruns them; PASS/FAIL expectations come in Phase 3B.
+            </div>
+            {(scenarioRegistry?.scenarios ?? []).length === 0 ? (
+              <div className="empty-state">Set START/END, give the route a name, and save your first repeatable test.</div>
+            ) : (
+              <div className="scenario-list">
+                {(scenarioRegistry?.scenarios ?? []).map((scenario) => {
+                  const activeId = datasetRegistry?.active_dataset ?? config?.active_dataset ?? '';
+                  const datasetMismatch = scenario.dataset !== activeId;
+                  return (
+                    <div className={`scenario-item ${datasetMismatch ? 'dataset-mismatch' : ''}`} key={scenario.id}>
+                      <div className="scenario-main">
+                        <strong>{scenario.name}</strong>
+                        <small>{scenario.dataset} · {scenario.request.costing}</small>
+                        <code>
+                          {scenario.request.start.lon.toFixed(6)}, {scenario.request.start.lat.toFixed(6)} → {scenario.request.end.lon.toFixed(6)}, {scenario.request.end.lat.toFixed(6)}
+                        </code>
+                        {scenario.notes && <span>{scenario.notes}</span>}
+                        {datasetMismatch && <em>Dataset mismatch: activate {scenario.dataset} before Run.</em>}
+                      </div>
+                      <div className="scenario-actions">
+                        <button onClick={() => loadScenario(scenario)} disabled={scenarioBusy}>Load</button>
+                        <button className="scenario-run" onClick={() => runSavedScenario(scenario)} disabled={scenarioBusy || busy || datasetMismatch}>Run</button>
+                        <button className="scenario-delete" onClick={() => removeScenario(scenario)} disabled={scenarioBusy}>Delete</button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </section>
 
           <section className="card maneuvers-card">

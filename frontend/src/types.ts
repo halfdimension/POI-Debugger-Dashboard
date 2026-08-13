@@ -81,3 +81,29 @@ export interface ValhallaRouteResponse {
   };
   error?: string;
 }
+
+export interface ScenarioPoint {
+  lon: number;
+  lat: number;
+}
+
+export interface RouteScenario {
+  id: string;
+  name: string;
+  dataset: string;
+  request: {
+    start: ScenarioPoint;
+    end: ScenarioPoint;
+    costing: string;
+  };
+  notes?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface ScenarioRegistryResponse {
+  directory: string;
+  count: number;
+  scenarios: RouteScenario[];
+  errors: string[];
+}

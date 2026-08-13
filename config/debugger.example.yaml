@@ -44,3 +44,7 @@ datasets:
     # Metadata only in Phase 2A; activating a dataset does NOT restart Valhalla.
     tiles_path: "/path/to/your/valhalla_tiles"
     valhalla_config_path: "/path/to/your/valhalla.json"
+
+# Phase 3A saved route scenarios
+scenarios:
+  directory: "./data/scenarios"

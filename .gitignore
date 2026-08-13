@@ -24,3 +24,5 @@ config/debugger.yaml
 .phase2a_backup/
 .phase2a_backup/
 .phase2b_backup/
+.phase3a_backup/
+frontend/*.tsbuildinfo

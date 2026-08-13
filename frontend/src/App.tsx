@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import maplibregl, { LngLatBounds, Map as MapLibreMap } from 'maplibre-gl';
-import { getConfig, getPois, getValhallaStatus, requestRoute } from './api';
+import { activateDataset, getConfig, getDatasets, getPois, getValhallaStatus, reloadDatasetPois, requestRoute } from './api';
 import { decodePolyline6 } from './polyline';
-import type { DebuggerConfig, LngLat, Maneuver, ValhallaRouteResponse } from './types';
+import type { DatasetRegistryResponse, DatasetSummary, DebuggerConfig, LngLat, Maneuver, ValhallaRouteResponse } from './types';
 
 type PickMode = 'start' | 'end';
 
@@ -106,6 +106,14 @@ export default function App() {
   const [error, setError] = useState<string>('');
   const [selectedManeuverIndex, setSelectedManeuverIndex] = useState<number | null>(null);
   const [selectedPoi, setSelectedPoi] = useState<GeoJSON.Feature<GeoJSON.Point> | null>(null);
+  const [datasetRegistry, setDatasetRegistry] = useState<DatasetRegistryResponse | null>(null);
+  const [datasetBusy, setDatasetBusy] = useState(false);
+  const [datasetMessage, setDatasetMessage] = useState('');
+
+  const activeDataset = useMemo<DatasetSummary | null>(() => {
+    if (!datasetRegistry) return null;
+    return datasetRegistry.datasets.find((dataset) => dataset.id === datasetRegistry.active_dataset) ?? null;
+  }, [datasetRegistry]);
 
   const maneuverViews = useMemo<ManeuverView[]>(() => {
     const result: ManeuverView[] = [];
@@ -156,9 +164,10 @@ export default function App() {
   useEffect(() => {
     (async () => {
       try {
-        const [cfg, poiData] = await Promise.all([getConfig(), getPois()]);
+        const [cfg, poiData, registry] = await Promise.all([getConfig(), getPois(), getDatasets()]);
         setConfig(cfg);
         setPois(poiData);
+        setDatasetRegistry(registry);
 
         const status = await getValhallaStatus();
         setValhallaStatus(status.ok ? 'up' : 'down');
@@ -377,6 +386,45 @@ export default function App() {
     source?.setData({ type: 'FeatureCollection', features });
   }, [nearbyPois]);
 
+  async function refreshActiveDataset(message = '') {
+    const [poiData, registry] = await Promise.all([getPois(), getDatasets()]);
+    setPois(poiData);
+    setDatasetRegistry(registry);
+    setSelectedPoi(null);
+    if (message) setDatasetMessage(message);
+  }
+
+  async function changeDataset(datasetId: string) {
+    if (!datasetId || datasetId === datasetRegistry?.active_dataset) return;
+    setDatasetBusy(true);
+    setDatasetMessage('');
+    setError('');
+    try {
+      await activateDataset(datasetId);
+      await refreshActiveDataset(`Activated ${datasetId}.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDatasetBusy(false);
+    }
+  }
+
+  async function reloadActiveDataset() {
+    const datasetId = datasetRegistry?.active_dataset;
+    if (!datasetId) return;
+    setDatasetBusy(true);
+    setDatasetMessage('');
+    setError('');
+    try {
+      await reloadDatasetPois(datasetId);
+      await refreshActiveDataset(`Reloaded POIs directly from the configured source.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDatasetBusy(false);
+    }
+  }
+
   async function runRoute() {
     if (!start || !end) {
       setError('Set both start and end coordinates first.');
@@ -466,7 +514,7 @@ export default function App() {
       <header className="topbar">
         <div>
           <h1>{config.project.name ?? 'Valhalla POI Debugger'}</h1>
-          <div className="subtitle">Phase 1.5 · route + POI + maneuver inspection</div>
+          <div className="subtitle">Phase 2A · dataset registry + automatic POI source reload</div>
         </div>
         <div className={`status-pill ${valhallaStatus}`}>
           Valhalla: {valhallaStatus === 'checking' ? 'checking' : valhallaStatus === 'up' ? 'connected' : 'offline'}
@@ -484,12 +532,44 @@ export default function App() {
         </section>
 
         <aside className="side-panel">
+          <section className="card dataset-card">
+            <div className="maneuver-heading">
+              <h2>Dataset Pipeline</h2>
+              <span>Phase 2A</span>
+            </div>
+            <label>Active POI dataset</label>
+            <div className="dataset-actions">
+              <select
+                value={datasetRegistry?.active_dataset ?? ''}
+                disabled={datasetBusy || !datasetRegistry}
+                onChange={(event) => changeDataset(event.target.value)}
+              >
+                {(datasetRegistry?.datasets ?? []).map((dataset) => (
+                  <option key={dataset.id} value={dataset.id}>{dataset.name}</option>
+                ))}
+              </select>
+              <button onClick={reloadActiveDataset} disabled={datasetBusy || !activeDataset}>
+                {datasetBusy ? 'Working…' : 'Reload POIs'}
+              </button>
+            </div>
+            {datasetMessage && <div className="dataset-message">{datasetMessage}</div>}
+            {activeDataset?.error && <div className="dataset-warning">{activeDataset.error}</div>}
+            <div className="kv"><span>Source</span><code title={activeDataset?.source_path ?? ''}>{activeDataset?.source_kind ?? '—'} · {basename(activeDataset?.source_path ?? undefined)}</code></div>
+            <div className="kv"><span>PBF</span><code title={activeDataset?.pbf_path ?? config.data.pbf_path}>{basename(activeDataset?.pbf_path ?? config.data.pbf_path)}</code></div>
+            <div className="dataset-stats">
+              <div><strong>{activeDataset?.stats?.total_rows ?? 0}</strong><span>rows</span></div>
+              <div><strong>{activeDataset?.stats?.valid_pois ?? 0}</strong><span>valid POIs</span></div>
+              <div><strong>{activeDataset?.stats?.invalid_coordinates ?? 0}</strong><span>bad coords</span></div>
+              <div><strong>{activeDataset?.stats?.duplicate_node_ids ?? 0}</strong><span>duplicate IDs</span></div>
+            </div>
+            <div className="dataset-note">Dataset switching changes the debugger POI layer only. It does not restart Valhalla or swap the tile set used by the running Valhalla service.</div>
+          </section>
+
           <section className="card">
             <h2>Configuration</h2>
             <div className="kv"><span>Valhalla</span><code>{config.valhalla.service_url}</code></div>
-            <div className="kv"><span>PBF</span><code title={config.data.pbf_path}>{basename(config.data.pbf_path)}</code></div>
-            <div className="kv"><span>POI GeoJSON</span><code title={config.data.poi_geojson_path}>{basename(config.data.poi_geojson_path)}</code></div>
             <div className="kv"><span>Engine</span><code title={config.engine.root}>{basename(config.engine.root)}</code></div>
+            <div className="kv"><span>Dataset</span><code>{datasetRegistry?.active_dataset ?? config.active_dataset ?? 'default'}</code></div>
           </section>
 
           <section className="card">

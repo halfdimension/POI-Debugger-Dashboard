@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Any
 
 import httpx
@@ -9,12 +8,14 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config import load_settings
+from .datasets import DatasetError, DatasetManager
 
 settings = load_settings()
+datasets = DatasetManager(settings)
 
 app = FastAPI(
     title="Valhalla POI Debugger API",
-    version="0.1.0",
+    version="0.2.0",
     description="Local debug API for Valhalla POI/landmark testing.",
 )
 
@@ -36,6 +37,12 @@ def _valhalla_url(path: str) -> str:
 
 
 def _public_config() -> dict[str, Any]:
+    active = datasets.active_config()
+    data = dict(settings.get("data", {}))
+    for key in ("pbf_path", "poi_geojson_path", "poi_csv_path"):
+        if active.get(key):
+            data[key] = active[key]
+
     return {
         "project": settings.get("project", {}),
         "valhalla": {
@@ -44,7 +51,8 @@ def _public_config() -> dict[str, Any]:
             "route_path": settings["valhalla"].get("route_path", "/route"),
         },
         "engine": settings.get("engine", {}),
-        "data": settings.get("data", {}),
+        "data": data,
+        "active_dataset": datasets.active_id,
         "frontend": settings.get("frontend", {}),
         "config_path": settings.get("_config_path"),
     }
@@ -55,7 +63,9 @@ def health() -> dict[str, Any]:
     return {
         "ok": True,
         "service": "valhalla-poi-debugger",
+        "phase": "2A",
         "config_path": settings.get("_config_path"),
+        "active_dataset": datasets.active_id,
     }
 
 
@@ -64,21 +74,32 @@ def get_config() -> dict[str, Any]:
     return _public_config()
 
 
+@app.get("/api/datasets")
+def get_datasets() -> dict[str, Any]:
+    return datasets.describe()
+
+
+@app.post("/api/datasets/{dataset_id}/activate")
+def activate_dataset(dataset_id: str) -> dict[str, Any]:
+    try:
+        dataset = datasets.activate(dataset_id)
+    except DatasetError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"ok": True, "active_dataset": datasets.active_id, "dataset": dataset}
+
+
+@app.post("/api/datasets/{dataset_id}/reload-pois")
+def reload_dataset_pois(dataset_id: str) -> dict[str, Any]:
+    try:
+        dataset = datasets.reload(dataset_id)
+    except DatasetError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"ok": True, "active_dataset": datasets.active_id, "dataset": dataset}
+
+
 @app.get("/api/pois")
 def get_pois() -> dict[str, Any]:
-    poi_path = Path(settings["data"]["poi_geojson_path"])
-    if not poi_path.exists():
-        return {"type": "FeatureCollection", "features": []}
-
-    try:
-        with poi_path.open("r", encoding="utf-8") as handle:
-            payload = json.load(handle)
-    except (OSError, json.JSONDecodeError) as exc:
-        raise HTTPException(status_code=500, detail=f"Cannot read POI GeoJSON: {exc}") from exc
-
-    if payload.get("type") != "FeatureCollection":
-        raise HTTPException(status_code=500, detail="POI GeoJSON must be a FeatureCollection")
-    return payload
+    return datasets.get_active_pois()
 
 
 @app.get("/api/valhalla/status")
@@ -102,8 +123,6 @@ async def route(payload: dict[str, Any]) -> dict[str, Any]:
     timeout = float(settings["valhalla"].get("timeout_seconds", 20))
     url = _valhalla_url(settings["valhalla"].get("route_path", "/route"))
 
-    # Send the route JSON directly in the POST body.
-    # This avoids query-string encoding differences in Valhalla/company forks.
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(
@@ -123,6 +142,9 @@ async def route(payload: dict[str, Any]) -> dict[str, Any]:
         ) from exc
 
     if response.is_error:
-        raise HTTPException(status_code=response.status_code, detail={"valhalla_status": response.status_code, "body": body})
+        raise HTTPException(
+            status_code=response.status_code,
+            detail={"valhalla_status": response.status_code, "body": body},
+        )
 
     return body

@@ -39,10 +39,11 @@ def load_settings() -> dict[str, Any]:
     cfg.setdefault("valhalla", {})
     cfg.setdefault("engine", {})
     cfg.setdefault("data", {})
+    cfg.setdefault("datasets", {})
     cfg.setdefault("frontend", {})
     cfg.setdefault("backend", {})
 
-    # Environment variables override YAML, useful when switching datasets/services.
+    # Environment variables override YAML, useful when switching services or the legacy/default dataset.
     env_overrides = {
         ("valhalla", "service_url"): "VPD_VALHALLA_URL",
         ("engine", "root"): "VPD_ENGINE_ROOT",
@@ -56,13 +57,30 @@ def load_settings() -> dict[str, Any]:
         if value:
             cfg[section][key] = value
 
-    for key in ("root",):
-        if cfg["engine"].get(key):
-            cfg["engine"][key] = _expand_path(str(cfg["engine"][key]))
+    if os.getenv("VPD_ACTIVE_DATASET"):
+        cfg["active_dataset"] = os.environ["VPD_ACTIVE_DATASET"]
+
+    if cfg["engine"].get("root"):
+        cfg["engine"]["root"] = _expand_path(str(cfg["engine"]["root"]))
 
     for key in ("pbf_path", "poi_geojson_path", "poi_csv_path"):
         if cfg["data"].get(key):
             cfg["data"][key] = _expand_path(str(cfg["data"][key]))
+
+    dataset_path_keys = (
+        "pbf_path",
+        "poi_geojson_path",
+        "poi_csv_path",
+        "tiles_path",
+        "valhalla_config_path",
+    )
+    if isinstance(cfg["datasets"], dict):
+        for dataset in cfg["datasets"].values():
+            if not isinstance(dataset, dict):
+                continue
+            for key in dataset_path_keys:
+                if dataset.get(key):
+                    dataset[key] = _expand_path(str(dataset[key]))
 
     cfg["_config_path"] = str(config_path)
     return cfg

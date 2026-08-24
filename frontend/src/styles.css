@@ -1508,3 +1508,58 @@ button { cursor: pointer; }
   transition: width .20s ease;
 }
 
+/* ===== 3D POI / turn inspection ===== */
+
+.map-dimension-switcher {
+  display: inline-grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 3px;
+
+  padding: 2px;
+
+  border: 1px solid #cbd5e1;
+  border-radius: 7px;
+
+  background: #f8fafc;
+}
+
+.map-dimension-switcher button {
+  border: 0;
+  border-radius: 5px;
+
+  min-width: 35px;
+
+  padding: 5px 8px;
+
+  background: transparent;
+
+  color: #64748b;
+  font-size: 10px;
+  font-weight: 900;
+
+  cursor: pointer;
+}
+
+.map-dimension-switcher button:hover {
+  background: #e2e8f0;
+}
+
+.map-dimension-switcher button.active.two-d {
+  background: #334155;
+  color: #ffffff;
+}
+
+.map-dimension-switcher button.active.three-d {
+  background: #7c3aed;
+  color: #ffffff;
+}
+
+.legend-inspection-line {
+  display: inline-block;
+
+  width: 18px;
+  height: 0;
+
+  border-top: 3px dashed #7c3aed;
+}
+

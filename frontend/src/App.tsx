@@ -347,6 +347,7 @@ export default function App() {
   const [osrmStatus, setOsrmStatus] = useState<'checking' | 'up' | 'down'>('checking');
   const [routeView, setRouteView] = useState<'both' | 'valhalla' | 'osrm'>('both');
   const [rightPanelCollapsed, setRightPanelCollapsed] = useState(false);
+  const [map3D, setMap3D] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>('');
   const [selectedManeuverIndex, setSelectedManeuverIndex] = useState<number | null>(null);
@@ -946,6 +947,55 @@ export default function App() {
         },
       });
 
+      // 3D POI <-> turn inspection.
+      // One source contains:
+      //   - LineString: POI to associated maneuver
+      //   - Point: actual maneuver location
+      map.addSource('poi-turn-inspection', {
+        type: 'geojson',
+        data: EMPTY_FC,
+      });
+
+      map.addLayer({
+        id: 'poi-turn-inspection-line',
+        type: 'line',
+        source: 'poi-turn-inspection',
+        filter: ['==', ['geometry-type'], 'LineString'],
+        layout: {
+          'line-cap': 'round',
+          'line-join': 'round',
+        },
+        paint: {
+          'line-width': 4,
+          'line-dasharray': [2, 1.4],
+          'line-color': [
+            'match',
+            ['get', 'engine'],
+            'osrm', '#dc2626',
+            '#2563eb',
+          ],
+          'line-opacity': 0.95,
+        },
+      });
+
+      map.addLayer({
+        id: 'poi-turn-inspection-turn',
+        type: 'circle',
+        source: 'poi-turn-inspection',
+        filter: ['==', ['geometry-type'], 'Point'],
+        paint: {
+          'circle-radius': 11,
+          'circle-stroke-width': 4,
+          'circle-stroke-color': '#ffffff',
+          'circle-color': [
+            'match',
+            ['get', 'engine'],
+            'osrm', '#dc2626',
+            '#2563eb',
+          ],
+        },
+      });
+
       map.addSource('nearby-pois', { type: 'geojson', data: EMPTY_FC });
       map.addLayer({
         id: 'nearby-pois',
@@ -1122,7 +1172,7 @@ export default function App() {
     map.__pickMode = pickMode;
     const handler = (event: maplibregl.MapMouseEvent) => {
       if (map.isStyleLoaded()) {
-        const candidateLayers = ['pois', 'selected-poi', 'nearby-pois', 'route-narration-pois', 'narration-poi', 'maneuver-points', 'osrm-selected-maneuver', 'route-points']
+        const candidateLayers = ['pois', 'selected-poi', 'nearby-pois', 'route-narration-pois', 'narration-poi', 'maneuver-points', 'osrm-selected-maneuver', 'poi-turn-inspection-turn', 'route-points']
           .filter((layerId) => Boolean(map.getLayer(layerId)));
         if (candidateLayers.length > 0) {
           const hitFeatures = map.queryRenderedFeatures(event.point, { layers: candidateLayers });
@@ -1364,6 +1414,11 @@ export default function App() {
     setSelectedOsrmStepIndex(null);
     setSelectedPoi(null);
 
+    syncGeoJsonSource(
+      'poi-turn-inspection',
+      EMPTY_FC,
+    );
+
     try {
       const payload = {
         locations: [
@@ -1523,6 +1578,12 @@ export default function App() {
     setSelectedManeuverIndex(null);
     setSelectedOsrmStepIndex(null);
     setSelectedPoi(null);
+
+    syncGeoJsonSource(
+      'poi-turn-inspection',
+      EMPTY_FC,
+    );
+
     setError('');
     setScenarioMessage(`Loaded ${scenario.name}.`);
 
@@ -1680,6 +1741,99 @@ export default function App() {
     }
   }
 
+  function set3DView(enabled: boolean) {
+    setMap3D(enabled);
+
+    const map = mapRef.current;
+    if (!map) return;
+
+    if (enabled) {
+      const currentBearing = map.getBearing();
+
+      map.easeTo({
+        pitch: 60,
+        bearing: Math.abs(currentBearing) < 1 ? 25 : currentBearing,
+        duration: 700,
+        essential: true,
+      });
+
+      return;
+    }
+
+    // Reset visual POI-turn relationship when returning to normal analysis.
+    syncGeoJsonSource('poi-turn-inspection', EMPTY_FC);
+
+    map.easeTo({
+      pitch: 0,
+      bearing: 0,
+      duration: 700,
+      essential: true,
+    });
+  }
+
+  function inspectPoiTurn(
+    engine: 'valhalla' | 'osrm',
+    poiCoordinate: LngLat,
+    turnCoordinate: LngLat,
+  ) {
+    const map = mapRef.current;
+    if (!map) return;
+
+    setMap3D(true);
+
+    const inspectionData: GeoJSON.FeatureCollection = {
+      type: 'FeatureCollection',
+      features: [
+        {
+          type: 'Feature',
+          geometry: {
+            type: 'LineString',
+            coordinates: [
+              poiCoordinate,
+              turnCoordinate,
+            ],
+          },
+          properties: {
+            kind: 'poi-turn-link',
+            engine,
+          },
+        },
+        {
+          type: 'Feature',
+          geometry: {
+            type: 'Point',
+            coordinates: turnCoordinate,
+          },
+          properties: {
+            kind: 'turn',
+            engine,
+          },
+        },
+      ],
+    };
+
+    syncGeoJsonSource(
+      'poi-turn-inspection',
+      inspectionData,
+    );
+
+    const center: LngLat = [
+      (poiCoordinate[0] + turnCoordinate[0]) / 2,
+      (poiCoordinate[1] + turnCoordinate[1]) / 2,
+    ];
+
+    const currentBearing = map.getBearing();
+
+    map.easeTo({
+      center,
+      zoom: Math.max(map.getZoom(), 18),
+      pitch: 60,
+      bearing: Math.abs(currentBearing) < 1 ? 25 : currentBearing,
+      duration: 850,
+      essential: true,
+    });
+  }
+
   function updateCoord(kind: PickMode, axis: 0 | 1, text: string) {
     const value = Number(text);
     if (!Number.isFinite(value)) return;
@@ -1719,10 +1873,26 @@ export default function App() {
 
   function focusPoiFeature(feature: GeoJSON.Feature<GeoJSON.Point>, debugDistanceM?: number) {
     setSelectedPoi(feature);
+
     const map = mapRef.current;
     if (!map) return;
+
     const coordinate = feature.geometry.coordinates as LngLat;
-    map.flyTo({ center: coordinate, zoom: Math.max(map.getZoom(), 18), essential: true });
+
+    // Clear an older POI-turn relation first. A route-specific click will
+    // immediately populate a new relation below.
+    syncGeoJsonSource('poi-turn-inspection', EMPTY_FC);
+
+    setMap3D(true);
+
+    map.flyTo({
+      center: coordinate,
+      zoom: Math.max(map.getZoom(), 18),
+      pitch: 60,
+      bearing: Math.abs(map.getBearing()) < 1 ? 25 : map.getBearing(),
+      essential: true,
+    });
+
     const properties = {
       ...(feature.properties ?? {}),
       ...(typeof debugDistanceM === 'number' ? { _debug_distance_m: debugDistanceM.toFixed(1) } : {}),
@@ -1751,6 +1921,20 @@ export default function App() {
       item.evidence.distanceM ?? undefined,
     );
 
+    const maneuver =
+      maneuverViews.find(
+        (candidate) =>
+          candidate.index === item.primaryManeuverIndex,
+      );
+
+    if (maneuver?.coordinate) {
+      inspectPoiTurn(
+        'valhalla',
+        item.evidence.coordinate,
+        maneuver.coordinate,
+      );
+    }
+
     window.setTimeout(() => {
       document.querySelector(
         `[data-maneuver-index="${item.primaryManeuverIndex}"]`,
@@ -1769,6 +1953,20 @@ export default function App() {
       item.evidence.feature,
       item.evidence.distanceM ?? undefined,
     );
+
+    const step =
+      osrmStepViews.find(
+        (candidate) =>
+          candidate.index === item.primaryStepIndex,
+      );
+
+    if (step?.coordinate) {
+      inspectPoiTurn(
+        'osrm',
+        item.evidence.coordinate,
+        step.coordinate,
+      );
+    }
 
     window.setTimeout(() => {
       document.querySelector(
@@ -1823,6 +2021,24 @@ export default function App() {
             >
               {busy ? 'Routing…' : 'Run Valhalla + OSRM'}
             </button>
+
+            <div className="map-dimension-switcher">
+              <button
+                className={!map3D ? 'active two-d' : ''}
+                onClick={() => set3DView(false)}
+                title="Return to normal top-down map"
+              >
+                2D
+              </button>
+
+              <button
+                className={map3D ? 'active three-d' : ''}
+                onClick={() => set3DView(true)}
+                title="Pitch map for 3D landmark inspection"
+              >
+                3D
+              </button>
+            </div>
 
             <span>
               {filteredPoiFeatures.length}/{pois.features.length} POIs shown ·
@@ -1946,6 +2162,7 @@ export default function App() {
             <span><i className="legend-dot source" />Source POI</span>
             <span><i className="legend-dot strong" />POI in Valhalla/Odin instruction</span>
             <span><i className="legend-dot selected" />Selected POI</span>
+            <span><i className="legend-inspection-line" />POI ↔ turn</span>
           </div>
 
           {(route || osrmRoute) && (

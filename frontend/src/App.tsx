@@ -50,6 +50,13 @@ type RouteNarrationPoi = {
   primaryManeuverIndex: number;
 };
 
+type OsrmRouteNarrationPoi = {
+  key: string;
+  evidence: NarrationPoiEvidence;
+  stepIndexes: number[];
+  primaryStepIndex: number;
+};
+
 type ScenarioRunStatus = 'pass' | 'fail' | 'no-expectation' | 'error';
 
 type ScenarioRunResult = {
@@ -68,6 +75,11 @@ const NARRATION_POI_MAX_DISTANCE_M = 500;
 
 function fmtCoord(value: number | undefined): string {
   return typeof value === 'number' ? value.toFixed(6) : '';
+}
+
+function fmtSigned(value: number | null, digits = 2): string {
+  if (value === null || !Number.isFinite(value)) return '—';
+  return `${value >= 0 ? '+' : ''}${value.toFixed(digits)}`;
 }
 
 function basename(path?: string): string {
@@ -296,6 +308,31 @@ export default function App() {
     activePoiPopupRef.current = popup;
   }
 
+  function syncGeoJsonSource(
+    sourceId: string,
+    data: GeoJSON.FeatureCollection,
+  ) {
+    const map = mapRef.current;
+    if (!map) return;
+
+    const apply = () => {
+      const source =
+        map.getSource(sourceId) as maplibregl.GeoJSONSource | undefined;
+
+      if (!source) return false;
+
+      source.setData(data);
+      return true;
+    };
+
+    // Normal case: map/source already exists.
+    if (apply()) return;
+
+    // Defensive case: route response arrived around map/style startup.
+    // Replay once MapLibre reaches an idle state.
+    map.once('idle', apply);
+  }
+
 
   const [config, setConfig] = useState<DebuggerConfig | null>(null);
   const [pickMode, setPickMode] = useState<PickMode>('start');
@@ -308,9 +345,12 @@ export default function App() {
   const [osrmRouteGeoJson, setOsrmRouteGeoJson] = useState<GeoJSON.FeatureCollection>(EMPTY_FC);
   const [valhallaStatus, setValhallaStatus] = useState<'checking' | 'up' | 'down'>('checking');
   const [osrmStatus, setOsrmStatus] = useState<'checking' | 'up' | 'down'>('checking');
+  const [routeView, setRouteView] = useState<'both' | 'valhalla' | 'osrm'>('both');
+  const [rightPanelCollapsed, setRightPanelCollapsed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>('');
   const [selectedManeuverIndex, setSelectedManeuverIndex] = useState<number | null>(null);
+  const [selectedOsrmStepIndex, setSelectedOsrmStepIndex] = useState<number | null>(null);
   const [selectedPoi, setSelectedPoi] = useState<GeoJSON.Feature<GeoJSON.Point> | null>(null);
   const [datasetRegistry, setDatasetRegistry] = useState<DatasetRegistryResponse | null>(null);
   const [datasetBusy, setDatasetBusy] = useState(false);
@@ -483,6 +523,171 @@ export default function App() {
     return result;
   }, [osrmStepViews, pois]);
 
+  const osrmRouteNarrationPois = useMemo<OsrmRouteNarrationPoi[]>(() => {
+    const grouped = new Map<string, OsrmRouteNarrationPoi>();
+
+    for (const item of osrmStepViews) {
+      const instruction = osrmInstructionText(item.step);
+
+      if (!instruction) continue;
+
+      const matches: NarrationPoiEvidence[] = [];
+
+      for (const rawFeature of pois.features) {
+        const feature = pointFeature(rawFeature);
+        if (!feature) continue;
+
+        const properties = feature.properties ?? {};
+        const name = propText(properties, 'name', '').trim();
+
+        if (!name || normalizeNarrationText(name).length < 3) continue;
+
+        // For the OSRM fork, a POI-bearing turn is currently emitted as
+        // "Turn <modifier> at <landmark>".
+        if (!instructionContainsName(instruction, name)) continue;
+        if (!hasStrongLandmarkCue(instruction, name)) continue;
+
+        const coordinate = feature.geometry.coordinates as LngLat;
+
+        const distanceM = item.coordinate
+          ? haversineMeters(item.coordinate, coordinate)
+          : null;
+
+        if (
+          distanceM !== null &&
+          distanceM > NARRATION_POI_MAX_DISTANCE_M
+        ) {
+          continue;
+        }
+
+        matches.push({
+          feature,
+          coordinate,
+          distanceM,
+          priority: propNumber(properties, 'priority'),
+          name,
+          landmarkType: propText(properties, 'landmark_type', 'unknown'),
+          poiId: propText(properties, 'mappls_poi_id', ''),
+          sourceNodeId: propText(properties, 'new_node_id', ''),
+          evidence: 'strong',
+          matchedInstruction: instruction,
+        });
+      }
+
+      if (matches.length === 0) continue;
+
+      // Prefer the closest matching source POI when duplicate names exist.
+      matches.sort((a, b) => {
+        const distanceA = a.distanceM ?? Number.POSITIVE_INFINITY;
+        const distanceB = b.distanceM ?? Number.POSITIVE_INFINITY;
+
+        if (distanceA !== distanceB) {
+          return distanceA - distanceB;
+        }
+
+        return (b.priority ?? -1) - (a.priority ?? -1);
+      });
+
+      const primary = matches[0];
+      const key = narrationPoiKey(primary);
+
+      const existing = grouped.get(key);
+
+      if (!existing) {
+        grouped.set(key, {
+          key,
+          evidence: primary,
+          stepIndexes: [item.index],
+          primaryStepIndex: item.index,
+        });
+
+        continue;
+      }
+
+      if (!existing.stepIndexes.includes(item.index)) {
+        existing.stepIndexes.push(item.index);
+      }
+
+      const existingDistance =
+        existing.evidence.distanceM ?? Number.POSITIVE_INFINITY;
+
+      const newDistance =
+        primary.distanceM ?? Number.POSITIVE_INFINITY;
+
+      if (newDistance < existingDistance) {
+        existing.evidence = primary;
+        existing.primaryStepIndex = item.index;
+      }
+    }
+
+    return Array.from(grouped.values()).sort(
+      (a, b) => a.primaryStepIndex - b.primaryStepIndex,
+    );
+  }, [osrmStepViews, pois]);
+
+  const osrmGeometryPointCount =
+    osrmRoute?.routes?.[0]?.geometry?.coordinates?.length ?? 0;
+
+  const routeComparison = useMemo(() => {
+    const valhallaSummary = route?.trip?.summary;
+    const osrmSummary = osrmRoute?.routes?.[0];
+
+    const valhallaDistanceKm =
+      typeof valhallaSummary?.length === 'number'
+        ? valhallaSummary.length
+        : null;
+
+    const valhallaDurationMin =
+      typeof valhallaSummary?.time === 'number'
+        ? valhallaSummary.time / 60
+        : null;
+
+    const osrmDistanceKm =
+      typeof osrmSummary?.distance === 'number'
+        ? osrmSummary.distance / 1000
+        : null;
+
+    const osrmDurationMin =
+      typeof osrmSummary?.duration === 'number'
+        ? osrmSummary.duration / 60
+        : null;
+
+    const distanceDeltaKm =
+      valhallaDistanceKm !== null && osrmDistanceKm !== null
+        ? osrmDistanceKm - valhallaDistanceKm
+        : null;
+
+    const timeDeltaMin =
+      valhallaDurationMin !== null && osrmDurationMin !== null
+        ? osrmDurationMin - valhallaDurationMin
+        : null;
+
+    const distanceDeltaPct =
+      distanceDeltaKm !== null &&
+      valhallaDistanceKm !== null &&
+      valhallaDistanceKm !== 0
+        ? (distanceDeltaKm / valhallaDistanceKm) * 100
+        : null;
+
+    const timeDeltaPct =
+      timeDeltaMin !== null &&
+      valhallaDurationMin !== null &&
+      valhallaDurationMin !== 0
+        ? (timeDeltaMin / valhallaDurationMin) * 100
+        : null;
+
+    return {
+      valhallaDistanceKm,
+      valhallaDurationMin,
+      osrmDistanceKm,
+      osrmDurationMin,
+      distanceDeltaKm,
+      timeDeltaMin,
+      distanceDeltaPct,
+      timeDeltaPct,
+    };
+  }, [route, osrmRoute]);
+
   const nearbyPois = useMemo<NearbyPoi[]>(() => {
     if (!selectedManeuver?.coordinate) return [];
     const result: NearbyPoi[] = [];
@@ -618,6 +823,16 @@ export default function App() {
     });
   }, [maneuverViews, narrationEvidenceByManeuver]);
 
+  const valhallaRoutePoiKeys = useMemo(
+    () => new Set(routeNarrationPois.map((item) => item.key)),
+    [routeNarrationPois],
+  );
+
+  const osrmRoutePoiKeys = useMemo(
+    () => new Set(osrmRouteNarrationPois.map((item) => item.key)),
+    [osrmRouteNarrationPois],
+  );
+
   const routeNarrationStrongCount = useMemo(
     () => routeNarrationPois.filter((item) => item.evidence.evidence === 'strong').length,
     [routeNarrationPois],
@@ -669,25 +884,39 @@ export default function App() {
     map.addControl(new maplibregl.NavigationControl(), 'top-right');
 
     map.on('load', () => {
-      map.addSource('route', { type: 'geojson', data: EMPTY_FC });
-      map.addLayer({
-        id: 'route',
-        type: 'line',
-        source: 'route',
-        layout: { 'line-cap': 'round', 'line-join': 'round' },
-        paint: { 'line-width': 5, 'line-color': '#2563eb' },
-      });
-
+      // OSRM goes underneath as a thick red line.
+      // When Valhalla follows the same geometry, the red OSRM line remains
+      // visible as a casing around the thinner blue Valhalla line.
       map.addSource('osrm-route', { type: 'geojson', data: EMPTY_FC });
       map.addLayer({
         id: 'osrm-route',
         type: 'line',
         source: 'osrm-route',
-        layout: { 'line-cap': 'round', 'line-join': 'round' },
+        layout: {
+          'line-cap': 'round',
+          'line-join': 'round',
+        },
         paint: {
-          'line-width': 4,
+          'line-width': 10,
           'line-color': '#dc2626',
-          'line-opacity': 0.82,
+          'line-opacity': 0.92,
+        },
+      });
+
+      // Valhalla is intentionally rendered above OSRM.
+      map.addSource('route', { type: 'geojson', data: EMPTY_FC });
+      map.addLayer({
+        id: 'route',
+        type: 'line',
+        source: 'route',
+        layout: {
+          'line-cap': 'round',
+          'line-join': 'round',
+        },
+        paint: {
+          'line-width': 5,
+          'line-color': '#2563eb',
+          'line-opacity': 1,
         },
       });
 
@@ -802,6 +1031,22 @@ export default function App() {
         },
       });
 
+      map.addSource('osrm-selected-maneuver', {
+        type: 'geojson',
+        data: EMPTY_FC,
+      });
+      map.addLayer({
+        id: 'osrm-selected-maneuver',
+        type: 'circle',
+        source: 'osrm-selected-maneuver',
+        paint: {
+          'circle-radius': 9,
+          'circle-stroke-width': 3,
+          'circle-stroke-color': '#ffffff',
+          'circle-color': '#dc2626',
+        },
+      });
+
       const showPoiPopup = (event: maplibregl.MapLayerMouseEvent) => {
         const rawFeature = event.features?.[0];
         if (!rawFeature || rawFeature.geometry.type !== 'Point') return;
@@ -877,7 +1122,7 @@ export default function App() {
     map.__pickMode = pickMode;
     const handler = (event: maplibregl.MapMouseEvent) => {
       if (map.isStyleLoaded()) {
-        const candidateLayers = ['pois', 'selected-poi', 'nearby-pois', 'route-narration-pois', 'narration-poi', 'maneuver-points', 'route-points']
+        const candidateLayers = ['pois', 'selected-poi', 'nearby-pois', 'route-narration-pois', 'narration-poi', 'maneuver-points', 'osrm-selected-maneuver', 'route-points']
           .filter((layerId) => Boolean(map.getLayer(layerId)));
         if (candidateLayers.length > 0) {
           const hitFeatures = map.queryRenderedFeatures(event.point, { layers: candidateLayers });
@@ -905,6 +1150,27 @@ export default function App() {
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !map.isStyleLoaded()) return;
+
+    if (map.getLayer('route')) {
+      map.setLayoutProperty(
+        'route',
+        'visibility',
+        routeView === 'osrm' ? 'none' : 'visible',
+      );
+    }
+
+    if (map.getLayer('osrm-route')) {
+      map.setLayoutProperty(
+        'osrm-route',
+        'visibility',
+        routeView === 'valhalla' ? 'none' : 'visible',
+      );
+    }
+  }, [routeView, config]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !map.isStyleLoaded()) return;
     const source = map.getSource('selected-poi') as maplibregl.GeoJSONSource | undefined;
     source?.setData(selectedPoi
       ? { type: 'FeatureCollection', features: [selectedPoi] }
@@ -912,17 +1178,11 @@ export default function App() {
   }, [selectedPoi]);
 
   useEffect(() => {
-    const map = mapRef.current;
-    if (!map || !map.isStyleLoaded()) return;
-    const source = map.getSource('route') as maplibregl.GeoJSONSource | undefined;
-    source?.setData(routeGeoJson);
+    syncGeoJsonSource('route', routeGeoJson);
   }, [routeGeoJson]);
 
   useEffect(() => {
-    const map = mapRef.current;
-    if (!map || !map.isStyleLoaded()) return;
-    const source = map.getSource('osrm-route') as maplibregl.GeoJSONSource | undefined;
-    source?.setData(osrmRouteGeoJson);
+    syncGeoJsonSource('osrm-route', osrmRouteGeoJson);
   }, [osrmRouteGeoJson]);
 
   useEffect(() => {
@@ -960,6 +1220,39 @@ export default function App() {
     const source = map.getSource('maneuver-points') as maplibregl.GeoJSONSource | undefined;
     source?.setData({ type: 'FeatureCollection', features });
   }, [maneuverViews, selectedManeuverIndex]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !map.isStyleLoaded()) return;
+
+    const selectedOsrmStep =
+      selectedOsrmStepIndex === null
+        ? null
+        : osrmStepViews.find((item) => item.index === selectedOsrmStepIndex) ?? null;
+
+    const source =
+      map.getSource('osrm-selected-maneuver') as maplibregl.GeoJSONSource | undefined;
+
+    if (!selectedOsrmStep?.coordinate) {
+      source?.setData(EMPTY_FC);
+      return;
+    }
+
+    source?.setData({
+      type: 'FeatureCollection',
+      features: [{
+        type: 'Feature',
+        geometry: {
+          type: 'Point',
+          coordinates: selectedOsrmStep.coordinate,
+        },
+        properties: {
+          index: selectedOsrmStep.index,
+          instruction: osrmInstructionText(selectedOsrmStep.step),
+        },
+      }],
+    });
+  }, [selectedOsrmStepIndex, osrmStepViews]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -1068,6 +1361,7 @@ export default function App() {
     setBusy(true);
     setError('');
     setSelectedManeuverIndex(null);
+    setSelectedOsrmStepIndex(null);
     setSelectedPoi(null);
 
     try {
@@ -1119,10 +1413,13 @@ export default function App() {
         });
       }
 
-      setRouteGeoJson({
+      const valhallaRouteData: GeoJSON.FeatureCollection = {
         type: 'FeatureCollection',
         features: valhallaFeatures,
-      });
+      };
+
+      setRouteGeoJson(valhallaRouteData);
+      syncGeoJsonSource('route', valhallaRouteData);
 
       const osrmCoordinates =
         osrmResponse?.routes?.[0]?.geometry?.coordinates ?? [];
@@ -1142,10 +1439,16 @@ export default function App() {
         });
       }
 
-      setOsrmRouteGeoJson({
+      const osrmRouteData: GeoJSON.FeatureCollection = {
         type: 'FeatureCollection',
         features: osrmFeatures,
-      });
+      };
+
+      setOsrmRouteGeoJson(osrmRouteData);
+
+      // Do not rely only on a later React effect. Push the current OSRM
+      // geometry into the existing MapLibre source immediately.
+      syncGeoJsonSource('osrm-route', osrmRouteData);
 
       if (allCoords.length > 1 && mapRef.current) {
         const bounds = new LngLatBounds(allCoords[0], allCoords[0]);
@@ -1218,6 +1521,7 @@ export default function App() {
     setOsrmRoute(null);
     setOsrmRouteGeoJson(EMPTY_FC);
     setSelectedManeuverIndex(null);
+    setSelectedOsrmStepIndex(null);
     setSelectedPoi(null);
     setError('');
     setScenarioMessage(`Loaded ${scenario.name}.`);
@@ -1388,7 +1692,24 @@ export default function App() {
 
   function focusManeuver(item: ManeuverView) {
     setSelectedManeuverIndex(item.index);
+    setSelectedOsrmStepIndex(null);
+
     if (!item.coordinate || !mapRef.current) return;
+
+    mapRef.current.flyTo({
+      center: item.coordinate,
+      zoom: Math.max(mapRef.current.getZoom(), 17),
+      essential: true,
+    });
+  }
+
+  function focusOsrmStep(item: OsrmStepView) {
+    setSelectedOsrmStepIndex(item.index);
+    setSelectedManeuverIndex(null);
+    closeActivePoiPopup();
+
+    if (!item.coordinate || !mapRef.current) return;
+
     mapRef.current.flyTo({
       center: item.coordinate,
       zoom: Math.max(mapRef.current.getZoom(), 17),
@@ -1423,10 +1744,39 @@ export default function App() {
 
   function focusRouteNarrationPoi(item: RouteNarrationPoi) {
     setSelectedManeuverIndex(item.primaryManeuverIndex);
-    focusPoiFeature(item.evidence.feature, item.evidence.distanceM ?? undefined);
+    setSelectedOsrmStepIndex(null);
+
+    focusPoiFeature(
+      item.evidence.feature,
+      item.evidence.distanceM ?? undefined,
+    );
+
     window.setTimeout(() => {
-      document.querySelector(`[data-maneuver-index="${item.primaryManeuverIndex}"]`)
-        ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      document.querySelector(
+        `[data-maneuver-index="${item.primaryManeuverIndex}"]`,
+      )?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'center',
+      });
+    }, 80);
+  }
+
+  function focusOsrmRouteNarrationPoi(item: OsrmRouteNarrationPoi) {
+    setSelectedOsrmStepIndex(item.primaryStepIndex);
+    setSelectedManeuverIndex(null);
+
+    focusPoiFeature(
+      item.evidence.feature,
+      item.evidence.distanceM ?? undefined,
+    );
+
+    window.setTimeout(() => {
+      document.querySelector(
+        `[data-osrm-step-index="${item.primaryStepIndex}"]`,
+      )?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'center',
+      });
     }, 80);
   }
 
@@ -1460,11 +1810,20 @@ export default function App() {
         </div>
       </header>
 
-      <main className="workspace">
+      <main className={`workspace ${rightPanelCollapsed ? 'right-collapsed' : ''}`}>
         <section className="map-section">
           <div className="map-toolbar">
             <button className={pickMode === 'start' ? 'active' : ''} onClick={() => setPickMode('start')}>Click map → START</button>
             <button className={pickMode === 'end' ? 'active' : ''} onClick={() => setPickMode('end')}>Click map → END</button>
+
+            <button
+              className="toolbar-route-button"
+              onClick={runRoute}
+              disabled={busy || !start || !end}
+            >
+              {busy ? 'Routing…' : 'Run Valhalla + OSRM'}
+            </button>
+
             <span>
               {filteredPoiFeatures.length}/{pois.features.length} POIs shown ·
               {' '}{maneuverViews.length} Odin maneuvers · {osrmStepViews.length} OSRM steps
@@ -1472,51 +1831,264 @@ export default function App() {
           </div>
           <div ref={mapContainer} className="map" />
 
+          {(route || osrmRoute) && (
+            <div className="route-comparison-overlay">
+              <div className="route-comparison-heading">
+                <strong>Route Comparison</strong>
+                <span>same START / END</span>
+              </div>
+
+              <div className="route-comparison-engines">
+                <div className="route-engine-summary valhalla">
+                  <div className="route-engine-name">
+                    <i />
+                    <span>Valhalla</span>
+                  </div>
+
+                  <strong>
+                    {routeComparison.valhallaDistanceKm === null
+                      ? '—'
+                      : `${routeComparison.valhallaDistanceKm.toFixed(2)} km`}
+                  </strong>
+
+                  <small>
+                    {routeComparison.valhallaDurationMin === null
+                      ? 'time —'
+                      : `${routeComparison.valhallaDurationMin.toFixed(1)} min`}
+                    {' · '}
+                    {maneuverViews.length} maneuvers
+                  </small>
+                </div>
+
+                <div className="route-engine-summary osrm">
+                  <div className="route-engine-name">
+                    <i />
+                    <span>OSRM</span>
+                  </div>
+
+                  <strong>
+                    {routeComparison.osrmDistanceKm === null
+                      ? '—'
+                      : `${routeComparison.osrmDistanceKm.toFixed(2)} km`}
+                  </strong>
+
+                  <small>
+                    {routeComparison.osrmDurationMin === null
+                      ? 'time —'
+                      : `${routeComparison.osrmDurationMin.toFixed(1)} min`}
+                    {' · '}
+                    {osrmStepViews.length} steps
+                    {' · '}
+                    {osrmGeometryPointCount} geometry pts
+                  </small>
+                </div>
+              </div>
+
+              <div className="route-view-switcher">
+                <button
+                  className={routeView === 'both' ? 'active' : ''}
+                  onClick={() => setRouteView('both')}
+                >
+                  Both
+                </button>
+
+                <button
+                  className={routeView === 'valhalla' ? 'active valhalla' : ''}
+                  onClick={() => setRouteView('valhalla')}
+                >
+                  Valhalla
+                </button>
+
+                <button
+                  className={routeView === 'osrm' ? 'active osrm' : ''}
+                  onClick={() => setRouteView('osrm')}
+                >
+                  OSRM
+                </button>
+              </div>
+
+              <div className="route-comparison-deltas">
+                <div>
+                  <span>Δ distance</span>
+                  <strong>
+                    {routeComparison.distanceDeltaKm === null
+                      ? '—'
+                      : `${fmtSigned(routeComparison.distanceDeltaKm)} km`}
+                    {routeComparison.distanceDeltaPct !== null &&
+                      ` (${fmtSigned(routeComparison.distanceDeltaPct, 1)}%)`}
+                  </strong>
+                </div>
+
+                <div>
+                  <span>Δ time</span>
+                  <strong>
+                    {routeComparison.timeDeltaMin === null
+                      ? '—'
+                      : `${fmtSigned(routeComparison.timeDeltaMin, 1)} min`}
+                    {routeComparison.timeDeltaPct !== null &&
+                      ` (${fmtSigned(routeComparison.timeDeltaPct, 1)}%)`}
+                  </strong>
+                </div>
+              </div>
+
+              <div className="route-comparison-note">
+                <span><i className="comparison-line valhalla" />Valhalla</span>
+                <span><i className="comparison-line osrm" />OSRM</span>
+                <span className="overlap-note">Blue + red border = overlap</span>
+              </div>
+            </div>
+          )}
+
           <div className="landmark-map-legend">
             <div className="landmark-map-legend-title">Map</div>
             <span><i className="legend-route valhalla" />Valhalla route</span>
-            <span><i className="legend-route osrm" />OSRM route</span>
+            <span><i className="legend-route osrm" />OSRM route / casing</span>
             <span><i className="legend-dot source" />Source POI</span>
-            <span><i className="legend-dot strong" />POI in Odin instruction</span>
+            <span><i className="legend-dot strong" />POI in Valhalla/Odin instruction</span>
             <span><i className="legend-dot selected" />Selected POI</span>
           </div>
 
-          {route && (
-            <div className="route-narration-overlay">
+          {(route || osrmRoute) && (
+            <div className="route-narration-overlay dual-engine-pois">
               <div className="route-narration-overlay-heading">
                 <strong>Landmark POIs on this route</strong>
-                <span>{routeNarrationStrongCount} POI{routeNarrationStrongCount === 1 ? "" : "s"} in instructions</span>
+                <span>
+                  V {routeNarrationStrongCount} · O {osrmRouteNarrationPois.length}
+                </span>
               </div>
-              {routeNarrationPois.length === 0 ? (
-                <div className="route-narration-empty">No landmark POI was identified in this route's Odin instructions.</div>
-              ) : (
-                <div className="route-narration-overlay-list">
-                  {routeNarrationPois.slice(0, 8).map((item) => (
-                    <button
-                      key={item.key}
-                      className={`route-narration-overlay-item ${item.evidence.evidence}`}
-                      onClick={() => focusRouteNarrationPoi(item)}
-                      title={item.evidence.matchedInstruction}
-                    >
-                      <i />
-                      <span>
-                        <strong>{item.evidence.name}</strong>
-                        <small>
-                          maneuver {item.primaryManeuverIndex + 1} · {item.evidence.poiId || item.evidence.sourceNodeId || 'source POI'}
-                        </small>
-                      </span>
-                    </button>
-                  ))}
-                  {routeNarrationPois.length > 8 && (
-                    <div className="route-narration-more">+{routeNarrationPois.length - 8} more narration match(es)</div>
-                  )}
+
+              <div className="route-poi-engine-section valhalla">
+                <div className="route-poi-engine-heading">
+                  <span className="route-poi-engine-badge valhalla">
+                    Valhalla
+                  </span>
+                  <span>
+                    {routeNarrationStrongCount} POI
+                    {routeNarrationStrongCount === 1 ? '' : 's'}
+                  </span>
                 </div>
-              )}
+
+                {routeNarrationPois.length === 0 ? (
+                  <div className="route-narration-empty compact">
+                    No landmark POI found in Odin instructions.
+                  </div>
+                ) : (
+                  <div className="route-narration-overlay-list engine-list">
+                    {routeNarrationPois.slice(0, 8).map((item) => {
+                      const alsoOsrm = osrmRoutePoiKeys.has(item.key);
+
+                      return (
+                        <button
+                          key={`valhalla-${item.key}`}
+                          className="route-narration-overlay-item valhalla-engine"
+                          onClick={() => focusRouteNarrationPoi(item)}
+                          title={item.evidence.matchedInstruction}
+                        >
+                          <i />
+
+                          <span>
+                            <strong>{item.evidence.name}</strong>
+
+                            <small>
+                              Odin maneuver {item.primaryManeuverIndex + 1}
+                              {' · '}
+                              {item.evidence.poiId ||
+                                item.evidence.sourceNodeId ||
+                                'source POI'}
+                            </small>
+                          </span>
+
+                          <b className={`engine-match-badge ${alsoOsrm ? 'both' : 'valhalla'}`}>
+                            {alsoOsrm ? 'BOTH' : 'V'}
+                          </b>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              <div className="route-poi-engine-section osrm">
+                <div className="route-poi-engine-heading">
+                  <span className="route-poi-engine-badge osrm">
+                    OSRM
+                  </span>
+
+                  <span>
+                    {osrmRouteNarrationPois.length} POI
+                    {osrmRouteNarrationPois.length === 1 ? '' : 's'}
+                  </span>
+                </div>
+
+                {osrmRouteNarrationPois.length === 0 ? (
+                  <div className="route-narration-empty compact">
+                    No landmark POI found in OSRM maneuver instructions.
+                  </div>
+                ) : (
+                  <div className="route-narration-overlay-list engine-list">
+                    {osrmRouteNarrationPois.slice(0, 8).map((item) => {
+                      const alsoValhalla =
+                        valhallaRoutePoiKeys.has(item.key);
+
+                      return (
+                        <button
+                          key={`osrm-${item.key}`}
+                          className="route-narration-overlay-item osrm-engine"
+                          onClick={() => focusOsrmRouteNarrationPoi(item)}
+                          title={item.evidence.matchedInstruction}
+                        >
+                          <i />
+
+                          <span>
+                            <strong>{item.evidence.name}</strong>
+
+                            <small>
+                              OSRM step {item.primaryStepIndex + 1}
+                              {' · '}
+                              {item.evidence.poiId ||
+                                item.evidence.sourceNodeId ||
+                                'source POI'}
+                            </small>
+                          </span>
+
+                          <b className={`engine-match-badge ${alsoValhalla ? 'both' : 'osrm'}`}>
+                            {alsoValhalla ? 'BOTH' : 'O'}
+                          </b>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </section>
 
         <aside className="side-panel">
+
+          <div className="right-panel-toggle-row">
+
+            <button
+
+              className="right-panel-toggle"
+
+              onClick={() => setRightPanelCollapsed((value) => !value)}
+
+              title={rightPanelCollapsed ? 'Expand analysis panel' : 'Collapse analysis panel'}
+
+            >
+
+              {rightPanelCollapsed ? '‹' : '›'}
+
+              <span>
+
+                {rightPanelCollapsed ? 'Expand' : 'Collapse'}
+
+              </span>
+
+            </button>
+
+          </div>
           <section className="card dataset-card">
             <div className="maneuver-heading">
               <h2>Dataset Pipeline</h2>
@@ -1814,8 +2386,15 @@ export default function App() {
                   const poiNames = osrmPoiNamesByStep.get(item.index) ?? [];
 
                   return (
-                    <li key={item.index}>
-                      <div className="osrm-step">
+                    <li
+                      key={item.index}
+                      data-osrm-step-index={item.index}
+                      className={selectedOsrmStepIndex === item.index ? 'selected' : ''}
+                    >
+                      <button
+                        className="osrm-step"
+                        onClick={() => focusOsrmStep(item)}
+                      >
                         <strong>{osrmInstructionText(item.step)}</strong>
 
                         {poiNames.length > 0 && (
@@ -1844,7 +2423,7 @@ export default function App() {
                               : ''}
                           </code>
                         )}
-                      </div>
+                      </button>
                     </li>
                   );
                 })}

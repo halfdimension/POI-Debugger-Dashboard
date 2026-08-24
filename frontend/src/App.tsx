@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import maplibregl, { LngLatBounds, Map as MapLibreMap } from 'maplibre-gl';
-import { activateDataset, createScenario, deleteScenario, getConfig, getDatasets, getPois, getScenarios, getValhallaStatus, reloadDatasetPois, requestRoute, updateScenario } from './api';
+import { activateDataset, createScenario, deleteScenario, getConfig, getDatasets, getOsrmStatus, getPois, getScenarios, getValhallaStatus, reloadDatasetPois, requestCompareRoute, updateScenario } from './api';
 import { decodePolyline6 } from './polyline';
-import type { DatasetRegistryResponse, DatasetSummary, DebuggerConfig, LngLat, Maneuver, RouteScenario, ScenarioRegistryResponse, ValhallaRouteResponse } from './types';
+import type { DatasetRegistryResponse, DatasetSummary, DebuggerConfig, LngLat, Maneuver, OsrmRouteResponse, OsrmStep, RouteScenario, ScenarioRegistryResponse, ValhallaRouteResponse } from './types';
 
 type PickMode = 'start' | 'end';
 
@@ -10,6 +10,14 @@ type ManeuverView = {
   index: number;
   legIndex: number;
   maneuver: Maneuver;
+  coordinate: LngLat | null;
+};
+
+type OsrmStepView = {
+  index: number;
+  legIndex: number;
+  stepIndex: number;
+  step: OsrmStep;
   coordinate: LngLat | null;
 };
 
@@ -195,6 +203,22 @@ function odinInstructionTexts(response: ValhallaRouteResponse): string[] {
   return values;
 }
 
+function osrmInstructionText(step: OsrmStep): string {
+  const detailed = String(step.maneuver?.instruction ?? '').trim();
+  if (detailed) return detailed;
+
+  const shortInstruction = String(step.maneuver?.short_instruction ?? '').trim();
+  if (shortInstruction) return shortInstruction;
+
+  const structured = [
+    String(step.maneuver?.type ?? '').trim(),
+    String(step.maneuver?.modifier ?? '').trim(),
+  ].filter(Boolean).join(' ');
+
+  if (structured) return structured;
+  return String(step.name ?? '').trim() || 'Unnamed OSRM step';
+}
+
 function evaluateScenario(scenario: RouteScenario, response: ValhallaRouteResponse): ScenarioRunResult {
   const expectation = scenario.expectation;
   const actualInstructions = odinInstructionTexts(response);
@@ -280,7 +304,10 @@ export default function App() {
   const [pois, setPois] = useState<GeoJSON.FeatureCollection>(EMPTY_FC);
   const [route, setRoute] = useState<ValhallaRouteResponse | null>(null);
   const [routeGeoJson, setRouteGeoJson] = useState<GeoJSON.FeatureCollection>(EMPTY_FC);
+  const [osrmRoute, setOsrmRoute] = useState<OsrmRouteResponse | null>(null);
+  const [osrmRouteGeoJson, setOsrmRouteGeoJson] = useState<GeoJSON.FeatureCollection>(EMPTY_FC);
   const [valhallaStatus, setValhallaStatus] = useState<'checking' | 'up' | 'down'>('checking');
+  const [osrmStatus, setOsrmStatus] = useState<'checking' | 'up' | 'down'>('checking');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>('');
   const [selectedManeuverIndex, setSelectedManeuverIndex] = useState<number | null>(null);
@@ -402,6 +429,59 @@ export default function App() {
     () => selectedManeuverIndex === null ? null : maneuverViews.find((item) => item.index === selectedManeuverIndex) ?? null,
     [maneuverViews, selectedManeuverIndex],
   );
+
+  const osrmStepViews = useMemo<OsrmStepView[]>(() => {
+    const result: OsrmStepView[] = [];
+    let globalIndex = 0;
+
+    for (const [legIndex, leg] of (osrmRoute?.routes?.[0]?.legs ?? []).entries()) {
+      for (const [stepIndex, step] of (leg.steps ?? []).entries()) {
+        const location = step.maneuver?.location;
+        const coordinate = Array.isArray(location) && location.length >= 2
+          ? [Number(location[0]), Number(location[1])] as LngLat
+          : null;
+
+        result.push({
+          index: globalIndex++,
+          legIndex,
+          stepIndex,
+          step,
+          coordinate,
+        });
+      }
+    }
+
+    return result;
+  }, [osrmRoute]);
+
+  const osrmPoiNamesByStep = useMemo(() => {
+    const result = new Map<number, string[]>();
+
+    for (const item of osrmStepViews) {
+      const instruction = osrmInstructionText(item.step);
+      const names: string[] = [];
+
+      for (const rawFeature of pois.features) {
+        const feature = pointFeature(rawFeature);
+        if (!feature) continue;
+
+        const name = propText(feature.properties, 'name', '').trim();
+        if (!name) continue;
+
+        if (
+          instructionContainsName(instruction, name) &&
+          hasStrongLandmarkCue(instruction, name) &&
+          !names.includes(name)
+        ) {
+          names.push(name);
+        }
+      }
+
+      result.set(item.index, names);
+    }
+
+    return result;
+  }, [osrmStepViews, pois]);
 
   const nearbyPois = useMemo<NearbyPoi[]>(() => {
     if (!selectedManeuver?.coordinate) return [];
@@ -562,11 +642,16 @@ export default function App() {
         setDatasetRegistry(registry);
         setScenarioRegistry(scenarios);
 
-        const status = await getValhallaStatus();
-        setValhallaStatus(status.ok ? 'up' : 'down');
+        const [valhallaStatusResponse, osrmStatusResponse] = await Promise.all([
+          getValhallaStatus(),
+          getOsrmStatus(),
+        ]);
+        setValhallaStatus(valhallaStatusResponse.ok ? 'up' : 'down');
+        setOsrmStatus(osrmStatusResponse.ok ? 'up' : 'down');
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
         setValhallaStatus('down');
+        setOsrmStatus('down');
       }
     })();
   }, []);
@@ -591,6 +676,19 @@ export default function App() {
         source: 'route',
         layout: { 'line-cap': 'round', 'line-join': 'round' },
         paint: { 'line-width': 5, 'line-color': '#2563eb' },
+      });
+
+      map.addSource('osrm-route', { type: 'geojson', data: EMPTY_FC });
+      map.addLayer({
+        id: 'osrm-route',
+        type: 'line',
+        source: 'osrm-route',
+        layout: { 'line-cap': 'round', 'line-join': 'round' },
+        paint: {
+          'line-width': 4,
+          'line-color': '#dc2626',
+          'line-opacity': 0.82,
+        },
       });
 
       map.addSource('pois', { type: 'geojson', data: showPois ? filteredPois : EMPTY_FC });
@@ -823,6 +921,13 @@ export default function App() {
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !map.isStyleLoaded()) return;
+    const source = map.getSource('osrm-route') as maplibregl.GeoJSONSource | undefined;
+    source?.setData(osrmRouteGeoJson);
+  }, [osrmRouteGeoJson]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !map.isStyleLoaded()) return;
     const features: GeoJSON.Feature[] = [];
     if (start) features.push({
       type: 'Feature',
@@ -964,6 +1069,7 @@ export default function App() {
     setError('');
     setSelectedManeuverIndex(null);
     setSelectedPoi(null);
+
     try {
       const payload = {
         locations: [
@@ -974,30 +1080,107 @@ export default function App() {
         units: 'kilometers',
         directions_options: { units: 'kilometers' },
       };
-      const response = await requestRoute(payload);
-      setRoute(response);
 
-      const features: GeoJSON.Feature[] = [];
+      const comparison = await requestCompareRoute(payload);
+
+      const valhallaResponse =
+        comparison.valhalla.ok
+          ? comparison.valhalla.response ?? null
+          : null;
+
+      const osrmResponse =
+        comparison.osrm.ok
+          ? comparison.osrm.response ?? null
+          : null;
+
+      setRoute(valhallaResponse);
+      setOsrmRoute(osrmResponse);
+
+      const valhallaFeatures: GeoJSON.Feature[] = [];
+      const osrmFeatures: GeoJSON.Feature[] = [];
       const allCoords: LngLat[] = [];
-      for (const [index, leg] of (response.trip?.legs ?? []).entries()) {
+
+      for (const [index, leg] of (valhallaResponse?.trip?.legs ?? []).entries()) {
         if (!leg.shape) continue;
+
         const coords = decodePolyline6(leg.shape);
         allCoords.push(...coords);
-        features.push({
+
+        valhallaFeatures.push({
           type: 'Feature',
-          geometry: { type: 'LineString', coordinates: coords },
-          properties: { leg: index },
+          geometry: {
+            type: 'LineString',
+            coordinates: coords,
+          },
+          properties: {
+            leg: index,
+            engine: 'valhalla',
+          },
         });
       }
-      setRouteGeoJson({ type: 'FeatureCollection', features });
+
+      setRouteGeoJson({
+        type: 'FeatureCollection',
+        features: valhallaFeatures,
+      });
+
+      const osrmCoordinates =
+        osrmResponse?.routes?.[0]?.geometry?.coordinates ?? [];
+
+      if (osrmCoordinates.length > 0) {
+        allCoords.push(...osrmCoordinates);
+
+        osrmFeatures.push({
+          type: 'Feature',
+          geometry: {
+            type: 'LineString',
+            coordinates: osrmCoordinates,
+          },
+          properties: {
+            engine: 'osrm',
+          },
+        });
+      }
+
+      setOsrmRouteGeoJson({
+        type: 'FeatureCollection',
+        features: osrmFeatures,
+      });
 
       if (allCoords.length > 1 && mapRef.current) {
         const bounds = new LngLatBounds(allCoords[0], allCoords[0]);
         allCoords.forEach((coord) => bounds.extend(coord));
-        mapRef.current.fitBounds(bounds, { padding: 60, maxZoom: 16 });
+        mapRef.current.fitBounds(bounds, {
+          padding: 60,
+          maxZoom: 16,
+        });
       }
-      return response;
+
+      const engineErrors: string[] = [];
+
+      if (!comparison.valhalla.ok) {
+        engineErrors.push(
+          `Valhalla: ${comparison.valhalla.error ?? 'route request failed'}`
+        );
+      }
+
+      if (!comparison.osrm.ok) {
+        engineErrors.push(
+          `OSRM: ${comparison.osrm.error ?? 'route request failed'}`
+        );
+      }
+
+      if (engineErrors.length > 0) {
+        setError(engineErrors.join('\n'));
+      }
+
+      // Existing scenario assertions are still Odin/Valhalla assertions.
+      return valhallaResponse;
     } catch (err) {
+      setRoute(null);
+      setOsrmRoute(null);
+      setRouteGeoJson(EMPTY_FC);
+      setOsrmRouteGeoJson(EMPTY_FC);
       setError(err instanceof Error ? err.message : String(err));
       return null;
     } finally {
@@ -1032,6 +1215,8 @@ export default function App() {
     setEnd(routeEnd);
     setRoute(null);
     setRouteGeoJson(EMPTY_FC);
+    setOsrmRoute(null);
+    setOsrmRouteGeoJson(EMPTY_FC);
     setSelectedManeuverIndex(null);
     setSelectedPoi(null);
     setError('');
@@ -1262,11 +1447,16 @@ export default function App() {
     <div className="app-shell">
       <header className="topbar">
         <div>
-          <h1>{config.project.name ?? 'Valhalla POI Debugger'}</h1>
-          <div className="subtitle">Route, Odin instruction and landmark POI verification</div>
+          <h1>{config.project.name ?? 'Valhalla + OSRM POI Debugger'}</h1>
+          <div className="subtitle">Dual-engine route, guidance and landmark POI verification</div>
         </div>
-        <div className={`status-pill ${valhallaStatus}`}>
-          Valhalla: {valhallaStatus === 'checking' ? 'checking' : valhallaStatus === 'up' ? 'connected' : 'offline'}
+        <div className="engine-statuses">
+          <div className={`status-pill ${valhallaStatus}`}>
+            Valhalla: {valhallaStatus === 'checking' ? 'checking' : valhallaStatus === 'up' ? 'connected' : 'offline'}
+          </div>
+          <div className={`status-pill ${osrmStatus}`}>
+            OSRM: {osrmStatus === 'checking' ? 'checking' : osrmStatus === 'up' ? 'connected' : 'offline'}
+          </div>
         </div>
       </header>
 
@@ -1275,12 +1465,17 @@ export default function App() {
           <div className="map-toolbar">
             <button className={pickMode === 'start' ? 'active' : ''} onClick={() => setPickMode('start')}>Click map → START</button>
             <button className={pickMode === 'end' ? 'active' : ''} onClick={() => setPickMode('end')}>Click map → END</button>
-            <span>{filteredPoiFeatures.length}/{pois.features.length} POIs shown · {maneuverViews.length} maneuvers</span>
+            <span>
+              {filteredPoiFeatures.length}/{pois.features.length} POIs shown ·
+              {' '}{maneuverViews.length} Odin maneuvers · {osrmStepViews.length} OSRM steps
+            </span>
           </div>
           <div ref={mapContainer} className="map" />
 
           <div className="landmark-map-legend">
-            <div className="landmark-map-legend-title">Map POIs</div>
+            <div className="landmark-map-legend-title">Map</div>
+            <span><i className="legend-route valhalla" />Valhalla route</span>
+            <span><i className="legend-route osrm" />OSRM route</span>
             <span><i className="legend-dot source" />Source POI</span>
             <span><i className="legend-dot strong" />POI in Odin instruction</span>
             <span><i className="legend-dot selected" />Selected POI</span>
@@ -1443,6 +1638,7 @@ export default function App() {
           <section className="card">
             <h2>Configuration</h2>
             <div className="kv"><span>Valhalla</span><code>{config.valhalla.service_url}</code></div>
+            <div className="kv"><span>OSRM</span><code>{config.osrm.service_url}</code></div>
             <div className="kv"><span>Engine</span><code title={config.engine.root}>{basename(config.engine.root)}</code></div>
             <div className="kv"><span>Dataset</span><code>{datasetRegistry?.active_dataset ?? config?.active_dataset ?? 'default'}</code></div>
           </section>
@@ -1459,7 +1655,9 @@ export default function App() {
               <input value={fmtCoord(end?.[0])} placeholder="longitude" onChange={(e) => updateCoord('end', 0, e.target.value)} />
               <input value={fmtCoord(end?.[1])} placeholder="latitude" onChange={(e) => updateCoord('end', 1, e.target.value)} />
             </div>
-            <button className="route-button" onClick={runRoute} disabled={busy}>{busy ? 'Routing…' : 'Run Valhalla Route'}</button>
+            <button className="route-button" onClick={runRoute} disabled={busy}>
+              {busy ? 'Routing both engines…' : 'Run Valhalla + OSRM'}
+            </button>
             {error && <div className="error-box">{error}</div>}
           </section>
 
@@ -1595,6 +1793,65 @@ export default function App() {
             )}
           </section>
 
+          <section className="card maneuvers-card osrm-maneuvers-card">
+            <div className="maneuver-heading">
+              <h2>OSRM Maneuvers</h2>
+              {osrmRoute?.routes?.[0] && (
+                <span>
+                  {((osrmRoute.routes[0].distance ?? 0) / 1000).toFixed(2)} km ·
+                  {' '}{Math.round((osrmRoute.routes[0].duration ?? 0) / 60)} min
+                </span>
+              )}
+            </div>
+
+            {osrmStepViews.length === 0 ? (
+              <div className="empty-state">
+                Run a route to inspect OSRM instructions.
+              </div>
+            ) : (
+              <ol className="maneuver-list osrm-maneuver-list">
+                {osrmStepViews.map((item) => {
+                  const poiNames = osrmPoiNamesByStep.get(item.index) ?? [];
+
+                  return (
+                    <li key={item.index}>
+                      <div className="osrm-step">
+                        <strong>{osrmInstructionText(item.step)}</strong>
+
+                        {poiNames.length > 0 && (
+                          <span className="narration-mini-badge osrm">
+                            POI in instruction: {poiNames.join(', ')}
+                          </span>
+                        )}
+
+                        <small>
+                          {typeof item.step.distance === 'number'
+                            ? `${item.step.distance.toFixed(1)} m`
+                            : ''}
+                          {typeof item.step.duration === 'number'
+                            ? ` · ${Math.round(item.step.duration)} s`
+                            : ''}
+                          {item.coordinate
+                            ? ` · ${item.coordinate[1].toFixed(6)}, ${item.coordinate[0].toFixed(6)}`
+                            : ''}
+                        </small>
+
+                        {(item.step.maneuver?.type || item.step.maneuver?.modifier) && (
+                          <code>
+                            {item.step.maneuver?.type ?? ''}
+                            {item.step.maneuver?.modifier
+                              ? ` / ${item.step.maneuver.modifier}`
+                              : ''}
+                          </code>
+                        )}
+                      </div>
+                    </li>
+                  );
+                })}
+              </ol>
+            )}
+          </section>
+
           <section className="card inspection-card">
             <div className="maneuver-heading">
               <h2>Landmark Details</h2>
@@ -1698,7 +1955,12 @@ export default function App() {
 
           <details className="card raw-card">
             <summary>Raw Valhalla JSON</summary>
-            <pre>{route ? JSON.stringify(route, null, 2) : 'No route response yet.'}</pre>
+            <pre>{route ? JSON.stringify(route, null, 2) : 'No Valhalla route response yet.'}</pre>
+          </details>
+
+          <details className="card raw-card">
+            <summary>Raw OSRM JSON</summary>
+            <pre>{osrmRoute ? JSON.stringify(osrmRoute, null, 2) : 'No OSRM route response yet.'}</pre>
           </details>
         </aside>
       </main>

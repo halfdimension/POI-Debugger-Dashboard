@@ -1,4 +1,4 @@
-import type { DatasetRegistryResponse, DebuggerConfig, ValhallaRouteResponse } from './types';
+import type { CompareRouteResponse, DatasetRegistryResponse, DebuggerConfig, ValhallaRouteResponse } from './types';
 
 export async function getConfig(): Promise<DebuggerConfig> {
   const response = await fetch('/api/config');
@@ -38,6 +38,12 @@ export async function getValhallaStatus(): Promise<any> {
   return response.json();
 }
 
+export async function getOsrmStatus(): Promise<any> {
+  const response = await fetch('/api/osrm/status');
+  if (!response.ok) throw new Error(`OSRM status request failed: ${response.status}`);
+  return response.json();
+}
+
 export async function requestRoute(payload: object): Promise<ValhallaRouteResponse> {
   const response = await fetch('/api/route', {
     method: 'POST',
@@ -49,6 +55,26 @@ export async function requestRoute(payload: object): Promise<ValhallaRouteRespon
   if (!response.ok) {
     throw new Error(typeof body?.detail === 'string' ? body.detail : JSON.stringify(body?.detail ?? body));
   }
+  return body;
+}
+
+export async function requestCompareRoute(payload: object): Promise<CompareRouteResponse> {
+  const response = await fetch('/api/route/compare', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+  const body = await response.json();
+
+  if (!response.ok) {
+    throw new Error(
+      typeof body?.detail === 'string'
+        ? body.detail
+        : JSON.stringify(body?.detail ?? body)
+    );
+  }
+
   return body;
 }
 

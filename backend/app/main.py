@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -16,9 +17,9 @@ datasets = DatasetManager(settings)
 scenarios = ScenarioManager(settings)
 
 app = FastAPI(
-    title="Valhalla POI Debugger API",
-    version="0.3.0",
-    description="Local debug API for Valhalla POI/landmark testing.",
+    title="Valhalla + OSRM POI Debugger API",
+    version="0.4.0",
+    description="Local debug API for Valhalla and OSRM POI/landmark comparison.",
 )
 
 app.add_middleware(
@@ -38,6 +39,14 @@ def _valhalla_url(path: str) -> str:
     return base + suffix
 
 
+def _osrm_url(path: str) -> str:
+    base = str(settings["osrm"]["service_url"]).rstrip("/")
+    suffix = str(path).strip()
+    if not suffix.startswith("/"):
+        suffix = "/" + suffix
+    return base + suffix
+
+
 def _public_config() -> dict[str, Any]:
     active = datasets.active_config()
     data = dict(settings.get("data", {}))
@@ -51,6 +60,11 @@ def _public_config() -> dict[str, Any]:
             "service_url": settings["valhalla"].get("service_url"),
             "status_path": settings["valhalla"].get("status_path", "/status"),
             "route_path": settings["valhalla"].get("route_path", "/route"),
+        },
+        "osrm": {
+            "service_url": settings["osrm"].get("service_url"),
+            "profile": settings["osrm"].get("profile", "driving"),
+            "route_path": settings["osrm"].get("route_path", "/route/v1"),
         },
         "engine": settings.get("engine", {}),
         "data": data,
@@ -189,3 +203,168 @@ async def route(payload: dict[str, Any]) -> dict[str, Any]:
         )
 
     return body
+
+
+@app.get("/api/osrm/status")
+async def osrm_status() -> dict[str, Any]:
+    timeout = float(settings["osrm"].get("timeout_seconds", 20))
+    profile = str(settings["osrm"].get("profile", "driving"))
+    nearest_path = settings["osrm"].get("nearest_path", "/nearest/v1")
+
+    center = settings.get("frontend", {}).get("default_center", [77.2090, 28.6139])
+    lon = float(center[0])
+    lat = float(center[1])
+
+    url = f"{_osrm_url(nearest_path)}/{profile}/{lon},{lat}"
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.get(url, params={"number": 1})
+        body = response.json()
+        return {
+            "ok": not response.is_error,
+            "url": str(response.request.url),
+            "status_code": response.status_code,
+            "response": body,
+        }
+    except (httpx.HTTPError, ValueError) as exc:
+        return {"ok": False, "url": url, "error": str(exc)}
+
+
+async def _compare_valhalla(payload: dict[str, Any]) -> dict[str, Any]:
+    timeout = float(settings["valhalla"].get("timeout_seconds", 20))
+    url = _valhalla_url(settings["valhalla"].get("route_path", "/route"))
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.post(
+                url,
+                content=json.dumps(payload, separators=(",", ":")),
+                headers={"Content-Type": "application/json"},
+            )
+    except httpx.HTTPError as exc:
+        return {
+            "ok": False,
+            "url": url,
+            "error": f"Cannot reach Valhalla: {exc}",
+        }
+
+    try:
+        body = response.json()
+    except ValueError:
+        return {
+            "ok": False,
+            "url": url,
+            "status_code": response.status_code,
+            "error": f"Valhalla returned non-JSON HTTP {response.status_code}: {response.text[:500]}",
+        }
+
+    if response.is_error:
+        return {
+            "ok": False,
+            "url": url,
+            "status_code": response.status_code,
+            "response": body,
+            "error": f"Valhalla returned HTTP {response.status_code}",
+        }
+
+    return {
+        "ok": True,
+        "url": url,
+        "status_code": response.status_code,
+        "response": body,
+    }
+
+
+async def _compare_osrm(payload: dict[str, Any]) -> dict[str, Any]:
+    osrm = settings["osrm"]
+    timeout = float(osrm.get("timeout_seconds", 20))
+    profile = str(osrm.get("profile", "driving"))
+    route_path = osrm.get("route_path", "/route/v1")
+
+    locations = payload.get("locations") or []
+
+    try:
+        coordinate_parts = [
+            f"{float(location['lon'])},{float(location['lat'])}"
+            for location in locations
+        ]
+    except (KeyError, TypeError, ValueError) as exc:
+        return {
+            "ok": False,
+            "error": f"Cannot build OSRM coordinates from route request: {exc}",
+        }
+
+    coordinates = ";".join(coordinate_parts)
+    url = f"{_osrm_url(route_path)}/{profile}/{coordinates}"
+
+    # `instructions=true` is important for this custom fork:
+    # route_api.hpp fills StepManeuver::banner_instruction and json_factory.cpp
+    # serializes it as maneuver.instruction.
+    params = {
+        "steps": "true",
+        "overview": "full",
+        "geometries": "geojson",
+        "annotations": "true",
+        "alternatives": "false",
+        "instructions": "true",
+        "banner_instructions": "true",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.get(url, params=params)
+    except httpx.HTTPError as exc:
+        return {
+            "ok": False,
+            "url": url,
+            "error": f"Cannot reach OSRM: {exc}",
+        }
+
+    try:
+        body = response.json()
+    except ValueError:
+        return {
+            "ok": False,
+            "url": url,
+            "status_code": response.status_code,
+            "error": f"OSRM returned non-JSON HTTP {response.status_code}: {response.text[:500]}",
+        }
+
+    if response.is_error or body.get("code") != "Ok":
+        return {
+            "ok": False,
+            "url": str(response.request.url),
+            "status_code": response.status_code,
+            "response": body,
+            "error": f"OSRM route failed: HTTP {response.status_code}, code={body.get('code')}",
+        }
+
+    return {
+        "ok": True,
+        "url": str(response.request.url),
+        "status_code": response.status_code,
+        "response": body,
+    }
+
+
+@app.post("/api/route/compare")
+async def compare_route(payload: dict[str, Any]) -> dict[str, Any]:
+    locations = payload.get("locations")
+
+    if not isinstance(locations, list) or len(locations) < 2:
+        raise HTTPException(
+            status_code=400,
+            detail="Route request needs at least two locations",
+        )
+
+    valhalla_result, osrm_result = await asyncio.gather(
+        _compare_valhalla(payload),
+        _compare_osrm(payload),
+    )
+
+    return {
+        "valhalla": valhalla_result,
+        "osrm": osrm_result,
+    }
+

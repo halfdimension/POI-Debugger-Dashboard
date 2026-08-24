@@ -37,6 +37,7 @@ def load_settings() -> dict[str, Any]:
 
     cfg.setdefault("project", {})
     cfg.setdefault("valhalla", {})
+    cfg.setdefault("osrm", {})
     cfg.setdefault("engine", {})
     cfg.setdefault("data", {})
     cfg.setdefault("datasets", {})
@@ -47,6 +48,7 @@ def load_settings() -> dict[str, Any]:
     # Environment variables override YAML, useful when switching services or the legacy/default dataset.
     env_overrides = {
         ("valhalla", "service_url"): "VPD_VALHALLA_URL",
+        ("osrm", "service_url"): "VPD_OSRM_URL",
         ("engine", "root"): "VPD_ENGINE_ROOT",
         ("data", "pbf_path"): "VPD_PBF_PATH",
         ("data", "poi_geojson_path"): "VPD_POI_GEOJSON_PATH",

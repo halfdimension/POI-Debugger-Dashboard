@@ -38,6 +38,11 @@ export interface DebuggerConfig {
     status_path: string;
     route_path: string;
   };
+  osrm: {
+    service_url: string;
+    profile: string;
+    route_path: string;
+  };
   engine: { root?: string };
   data: {
     pbf_path?: string;
@@ -80,6 +85,64 @@ export interface ValhallaRouteResponse {
     legs?: ValhallaLeg[];
   };
   error?: string;
+}
+
+export interface OsrmStepManeuver {
+  location?: LngLat;
+  type?: string;
+  modifier?: string;
+
+  // Custom fields from this OSRM fork.
+  instruction?: string;
+  short_instruction?: string;
+  maneuver_id?: number;
+}
+
+export interface OsrmStep {
+  distance?: number;
+  duration?: number;
+  weight?: number;
+  name?: string;
+  maneuver?: OsrmStepManeuver;
+}
+
+export interface OsrmLeg {
+  distance?: number;
+  duration?: number;
+  weight?: number;
+  steps?: OsrmStep[];
+}
+
+export interface OsrmRouteGeometry {
+  type?: string;
+  coordinates?: LngLat[];
+}
+
+export interface OsrmRoute {
+  distance?: number;
+  duration?: number;
+  weight?: number;
+  geometry?: OsrmRouteGeometry;
+  legs?: OsrmLeg[];
+}
+
+export interface OsrmRouteResponse {
+  code?: string;
+  routes?: OsrmRoute[];
+  message?: string;
+}
+
+export interface EngineRouteResult<T> {
+  ok: boolean;
+  url?: string;
+  status_code?: number;
+  response?: T;
+  error?: string;
+}
+
+export interface CompareRouteResponse {
+  valhalla: EngineRouteResult<ValhallaRouteResponse>;
+  osrm: EngineRouteResult<OsrmRouteResponse>;
 }
 
 export interface ScenarioPoint {

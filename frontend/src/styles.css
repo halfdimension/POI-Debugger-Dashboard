@@ -963,3 +963,74 @@ button { cursor: pointer; }
   .route-narration-overlay-list { max-height: 145px; }
   .landmark-map-legend { min-width: 160px; }
 }
+
+/* ===== Dual-engine Valhalla + OSRM comparison ===== */
+
+.engine-statuses {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.legend-route {
+  display: inline-block;
+  width: 18px;
+  height: 4px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+}
+
+.legend-route.valhalla {
+  background: #2563eb;
+}
+
+.legend-route.osrm {
+  background: #dc2626;
+}
+
+.osrm-maneuvers-card {
+  border-top: 3px solid #dc2626;
+}
+
+.osrm-maneuver-list li {
+  padding: 8px 4px;
+}
+
+.osrm-step {
+  display: grid;
+  gap: 4px;
+}
+
+.osrm-step > strong {
+  color: #111827;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.osrm-step > small {
+  color: #8993a0;
+  font-size: 10px;
+}
+
+.osrm-step > code {
+  width: fit-content;
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: #fef2f2;
+  color: #991b1b;
+  font-size: 9px;
+}
+
+.narration-mini-badge.osrm {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+@media (max-width: 700px) {
+  .engine-statuses {
+    align-items: flex-end;
+    flex-direction: column;
+    gap: 4px;
+  }
+}
+

@@ -10,11 +10,13 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .config import load_settings
 from .datasets import DatasetError, DatasetManager
+from .landmark_debug import OsrmLandmarkDebugManager
 from .scenarios import ScenarioError, ScenarioManager
 
 settings = load_settings()
 datasets = DatasetManager(settings)
 scenarios = ScenarioManager(settings)
+osrm_landmark_debug = OsrmLandmarkDebugManager(settings, datasets)
 
 app = FastAPI(
     title="Valhalla + OSRM POI Debugger API",
@@ -65,6 +67,10 @@ def _public_config() -> dict[str, Any]:
             "service_url": settings["osrm"].get("service_url"),
             "profile": settings["osrm"].get("profile", "driving"),
             "route_path": settings["osrm"].get("route_path", "/route/v1"),
+            "landmark_debug_jsonl_path": (
+                active.get("osrm_landmark_debug_jsonl_path")
+                or settings["osrm"].get("landmark_debug_jsonl_path")
+            ),
         },
         "engine": settings.get("engine", {}),
         "data": data,
@@ -340,11 +346,14 @@ async def _compare_osrm(payload: dict[str, Any]) -> dict[str, Any]:
             "error": f"OSRM route failed: HTTP {response.status_code}, code={body.get('code')}",
         }
 
+    candidate_analysis = osrm_landmark_debug.analyze_route(body)
+
     return {
         "ok": True,
         "url": str(response.request.url),
         "status_code": response.status_code,
         "response": body,
+        "candidate_analysis": candidate_analysis,
     }
 
 

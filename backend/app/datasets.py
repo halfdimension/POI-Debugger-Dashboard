@@ -109,6 +109,9 @@ class DatasetManager:
             "poi_geojson_path": cfg.get("poi_geojson_path"),
             "tiles_path": cfg.get("tiles_path"),
             "valhalla_config_path": cfg.get("valhalla_config_path"),
+            "osrm_landmark_debug_jsonl_path": cfg.get(
+                "osrm_landmark_debug_jsonl_path"
+            ),
             "source_kind": cached.get("source_kind") if cached else None,
             "source_path": cached.get("source_path") if cached else None,
             "source_exists": cached.get("source_exists") if cached else self._configured_source_exists(cfg),

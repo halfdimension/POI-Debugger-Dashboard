@@ -49,6 +49,7 @@ def load_settings() -> dict[str, Any]:
     env_overrides = {
         ("valhalla", "service_url"): "VPD_VALHALLA_URL",
         ("osrm", "service_url"): "VPD_OSRM_URL",
+        ("osrm", "landmark_debug_jsonl_path"): "VPD_OSRM_LANDMARK_DEBUG_JSONL",
         ("engine", "root"): "VPD_ENGINE_ROOT",
         ("data", "pbf_path"): "VPD_PBF_PATH",
         ("data", "poi_geojson_path"): "VPD_POI_GEOJSON_PATH",
@@ -67,6 +68,11 @@ def load_settings() -> dict[str, Any]:
     if cfg["engine"].get("root"):
         cfg["engine"]["root"] = _expand_path(str(cfg["engine"]["root"]))
 
+    if cfg["osrm"].get("landmark_debug_jsonl_path"):
+        cfg["osrm"]["landmark_debug_jsonl_path"] = _expand_path(
+            str(cfg["osrm"]["landmark_debug_jsonl_path"])
+        )
+
     if not cfg["scenarios"].get("directory"):
         cfg["scenarios"]["directory"] = "./data/scenarios"
     cfg["scenarios"]["directory"] = _expand_path(str(cfg["scenarios"]["directory"]))
@@ -81,6 +87,7 @@ def load_settings() -> dict[str, Any]:
         "poi_csv_path",
         "tiles_path",
         "valhalla_config_path",
+        "osrm_landmark_debug_jsonl_path",
     )
     if isinstance(cfg["datasets"], dict):
         for dataset in cfg["datasets"].values():

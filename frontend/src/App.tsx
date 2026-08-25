@@ -2,13 +2,14 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import maplibregl, { LngLatBounds, Map as MapLibreMap } from 'maplibre-gl';
 import { activateDataset, createScenario, deleteScenario, getConfig, getDatasets, getOsrmStatus, getPois, getScenarios, getValhallaStatus, reloadDatasetPois, requestCompareRoute, updateScenario } from './api';
 import { decodePolyline6 } from './polyline';
-import type { DatasetRegistryResponse, DatasetSummary, DebuggerConfig, LngLat, Maneuver, OsrmRouteResponse, OsrmStep, RouteScenario, ScenarioRegistryResponse, ValhallaRouteResponse } from './types';
+import type { CandidateAnalysis, CandidateAnalysisCandidate, CandidateAnalysisManeuver, DatasetRegistryResponse, DatasetSummary, DebuggerConfig, LngLat, Maneuver, OsrmRouteResponse, OsrmStep, RouteScenario, ScenarioRegistryResponse, ValhallaRouteResponse } from './types';
 
 type PickMode = 'start' | 'end';
 
 type ManeuverView = {
   index: number;
   legIndex: number;
+  maneuverIndex: number;
   maneuver: Maneuver;
   coordinate: LngLat | null;
 };
@@ -80,6 +81,578 @@ function fmtCoord(value: number | undefined): string {
 function fmtSigned(value: number | null, digits = 2): string {
   if (value === null || !Number.isFinite(value)) return '—';
   return `${value >= 0 ? '+' : ''}${value.toFixed(digits)}`;
+}
+
+
+function analysisValue(value: unknown, digits = 2): string {
+  if (value === null || value === undefined || value === '') {
+    return '—';
+  }
+
+  if (typeof value === 'boolean') {
+    return value ? 'yes' : 'no';
+  }
+
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) return '—';
+
+    return Number.isInteger(value)
+      ? String(value)
+      : value.toFixed(digits);
+  }
+
+  return String(value);
+}
+
+function candidateStatusClass(status?: string): string {
+  if (status === 'SELECTED') {
+    return 'selected';
+  }
+
+  if (status === 'ELIGIBLE / LOST RANKING') {
+    return 'eligible';
+  }
+
+  if (status === 'REJECTED') {
+    return 'rejected';
+  }
+
+  if (status === 'DEDUPLICATED') {
+    return 'deduplicated';
+  }
+
+  return 'unknown';
+}
+
+function candidateCoordinateText(
+  candidate: CandidateAnalysisCandidate,
+): string {
+  const coordinate = candidate.coordinate;
+
+  if (
+    !Array.isArray(coordinate) ||
+    coordinate.length < 2 ||
+    !Number.isFinite(Number(coordinate[0])) ||
+    !Number.isFinite(Number(coordinate[1]))
+  ) {
+    return '—';
+  }
+
+  return (
+    `${Number(coordinate[1]).toFixed(6)}, ` +
+    `${Number(coordinate[0]).toFixed(6)}`
+  );
+}
+
+function CandidateDecisionList({
+  engine,
+  analysis,
+}: {
+  engine: 'valhalla' | 'osrm';
+  analysis: CandidateAnalysisManeuver;
+}) {
+  const candidates = analysis.candidates ?? [];
+
+  const selected =
+    candidates.find((candidate) => candidate.selected) ?? null;
+
+  const identity = analysis.identity ?? {};
+  const maneuver = analysis.maneuver ?? {};
+  const selector = analysis.selector ?? {};
+
+  return (
+    <div className={`candidate-analysis-engine ${engine}`}>
+      <div className="candidate-analysis-engine-header">
+        <span className={`candidate-engine-badge ${engine}`}>
+          {engine === 'valhalla' ? 'VALHALLA' : 'OSRM'}
+        </span>
+
+        <div>
+          <strong>
+            {selected?.name
+              ? `Selected: ${selected.name}`
+              : 'No candidate selected'}
+          </strong>
+
+          <small>
+            {candidates.length} candidate
+            {candidates.length === 1 ? '' : 's'} considered
+          </small>
+        </div>
+      </div>
+
+      {engine === 'osrm' ? (
+        <div className="candidate-context-grid">
+          <div>
+            <span>turn_id</span>
+            <strong>{analysisValue(identity.turn_id)}</strong>
+          </div>
+
+          <div>
+            <span>intersection node</span>
+            <strong>
+              {analysisValue(identity.intersection_node)}
+            </strong>
+          </div>
+
+          <div>
+            <span>maneuver coordinate</span>
+            <strong>
+              {Array.isArray(maneuver.coordinate)
+                ? (
+                  `${Number(maneuver.coordinate[1]).toFixed(6)}, ` +
+                  `${Number(maneuver.coordinate[0]).toFixed(6)}`
+                )
+                : '—'}
+            </strong>
+          </div>
+
+          <div>
+            <span>incoming bearing</span>
+            <strong>
+              {typeof maneuver.incoming_bearing === 'number'
+                ? `${maneuver.incoming_bearing.toFixed(2)}°`
+                : '—'}
+            </strong>
+          </div>
+
+          <div>
+            <span>outgoing bearing</span>
+            <strong>
+              {typeof maneuver.outgoing_bearing === 'number'
+                ? `${maneuver.outgoing_bearing.toFixed(2)}°`
+                : '—'}
+            </strong>
+          </div>
+
+          <div>
+            <span>delayed turn</span>
+            <strong>{analysisValue(identity.delayed)}</strong>
+          </div>
+        </div>
+      ) : (
+        <div className="candidate-analysis-limitation">
+          Valhalla's current runtime landmark debug does not expose an
+          authoritative maneuver coordinate or incoming/outgoing bearings.
+          They are intentionally not reconstructed here.
+        </div>
+      )}
+
+      {Object.keys(selector).length > 0 && (
+        <details className="candidate-selector-details">
+          <summary>Engine selection policy</summary>
+
+          <div className="candidate-policy-grid">
+            {Object.entries(selector).map(([key, value]) => (
+              <div key={key}>
+                <span>{key}</span>
+                <code>{analysisValue(value, 3)}</code>
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
+
+      {candidates.length === 0 ? (
+        <div className="empty-state">
+          The engine emitted no candidate decisions for this maneuver.
+        </div>
+      ) : (
+        <div className="candidate-decision-list">
+          {candidates.map((candidate, index) => {
+            const runtimeAssociation =
+              candidate.association?.runtime;
+
+            const buildAssociation =
+              candidate.association?.build;
+
+            const selectedBuildEvent =
+              buildAssociation?.selected_event;
+
+            return (
+              <div
+                className={
+                  `candidate-decision ` +
+                  `${candidateStatusClass(candidate.status)}`
+                }
+                key={
+                  `${
+                    candidate.poi_id ??
+                    candidate.osm_node_id ??
+                    candidate.name ??
+                    'candidate'
+                  }-${index}`
+                }
+              >
+                <div className="candidate-decision-heading">
+                  <span className="candidate-rank">
+                    {index + 1}
+                  </span>
+
+                  <div className="candidate-name">
+                    <strong>
+                      {candidate.name || 'Unnamed POI'}
+                    </strong>
+
+                    <small>
+                      {candidate.poi_id
+                        ? candidate.poi_id
+                        : (
+                          candidate.osm_node_id !== null &&
+                          candidate.osm_node_id !== undefined
+                        )
+                          ? `OSM node ${candidate.osm_node_id}`
+                          : 'no POI identifier'}
+                    </small>
+                  </div>
+
+                  <span
+                    className={
+                      `candidate-status ` +
+                      `${candidateStatusClass(candidate.status)}`
+                    }
+                  >
+                    {candidate.status || 'UNKNOWN'}
+                  </span>
+                </div>
+
+                <div className="candidate-metric-grid">
+                  <div>
+                    <span>priority</span>
+                    <strong>
+                      {analysisValue(candidate.priority)}
+                    </strong>
+                  </div>
+
+                  <div>
+                    <span>distance</span>
+                    <strong>
+                      {typeof candidate.distance_m === 'number'
+                        ? `${candidate.distance_m.toFixed(2)} m`
+                        : '—'}
+                    </strong>
+                  </div>
+
+                  <div>
+                    <span>coordinate</span>
+                    <strong>
+                      {candidateCoordinateText(candidate)}
+                    </strong>
+                  </div>
+
+                  {engine === 'osrm' && (
+                    <>
+                      <div>
+                        <span>POI bearing</span>
+                        <strong>
+                          {typeof candidate.poi_bearing_deg ===
+                          'number'
+                            ? (
+                              `${candidate.poi_bearing_deg.toFixed(2)}°`
+                            )
+                            : '—'}
+                        </strong>
+                      </div>
+
+                      <div>
+                        <span>bearing deviation</span>
+                        <strong>
+                          {typeof candidate.bearing_deviation_deg ===
+                          'number'
+                            ? (
+                              `${
+                                candidate.bearing_deviation_deg
+                                  .toFixed(2)
+                              }°`
+                            )
+                            : '—'}
+                        </strong>
+                      </div>
+
+                      <div>
+                        <span>visible</span>
+                        <strong>
+                          {analysisValue(candidate.visible)}
+                        </strong>
+                      </div>
+
+                      <div>
+                        <span>eligible</span>
+                        <strong>
+                          {analysisValue(candidate.eligible)}
+                        </strong>
+                      </div>
+
+                      <div>
+                        <span>OSM node</span>
+                        <strong>
+                          {analysisValue(candidate.osm_node_id)}
+                        </strong>
+                      </div>
+                    </>
+                  )}
+
+                  {engine === 'valhalla' && (
+                    <>
+                      <div>
+                        <span>side</span>
+                        <strong>
+                          {candidate.right === true
+                            ? 'right'
+                            : candidate.right === false
+                              ? 'left'
+                              : '—'}
+                        </strong>
+                      </div>
+
+                      <div>
+                        <span>route edge role</span>
+                        <strong>
+                          {analysisValue(
+                            runtimeAssociation?.route_edge_role,
+                          )}
+                        </strong>
+                      </div>
+                    </>
+                  )}
+                </div>
+
+                {candidate.reason && (
+                  <div className="candidate-reason">
+                    <strong>Decision reason</strong>
+                    <span>{candidate.reason}</span>
+                  </div>
+                )}
+
+                {(candidate.rejection_reasons?.length ?? 0) > 0 && (
+                  <div className="candidate-structured-reasons">
+                    {(candidate.rejection_reasons ?? []).map(
+                      (reason, reasonIndex) => (
+                        <code
+                          key={
+                            `${
+                              reason.code ?? 'reason'
+                            }-${reasonIndex}`
+                          }
+                        >
+                          {reason.code || 'rejection'}
+
+                          {reason.actual !== undefined
+                            ? (
+                              ` · actual=${
+                                analysisValue(
+                                  reason.actual,
+                                  3,
+                                )
+                              }`
+                            )
+                            : ''}
+
+                          {reason.operator
+                            ? ` ${reason.operator}`
+                            : ''}
+
+                          {reason.threshold !== undefined
+                            ? (
+                              ` ${
+                                analysisValue(
+                                  reason.threshold,
+                                  3,
+                                )
+                              }`
+                            )
+                            : ''}
+
+                          {reason.unit
+                            ? ` ${reason.unit}`
+                            : ''}
+                        </code>
+                      ),
+                    )}
+                  </div>
+                )}
+
+                {engine === 'valhalla' &&
+                  runtimeAssociation && (
+                    <details className="candidate-association-details">
+                      <summary>
+                        Route / build association
+                        {buildAssociation?.matched
+                          ? (
+                            ` · MATCHED (${
+                              buildAssociation.match_kind ??
+                              'unknown'
+                            })`
+                          )
+                          : ' · UNMATCHED'}
+                      </summary>
+
+                      <div className="candidate-association-grid">
+                        <div>
+                          <span>runtime graph_id</span>
+                          <code>
+                            {analysisValue(
+                              runtimeAssociation.graph_id,
+                            )}
+                          </code>
+                        </div>
+
+                        <div>
+                          <span>directed edge</span>
+                          <code>
+                            {analysisValue(
+                              runtimeAssociation
+                                .directed_edge_id,
+                            )}
+                          </code>
+                        </div>
+
+                        <div>
+                          <span>way_id</span>
+                          <code>
+                            {analysisValue(
+                              runtimeAssociation.way_id,
+                            )}
+                          </code>
+                        </div>
+
+                        <div>
+                          <span>trip edge node</span>
+                          <code>
+                            {analysisValue(
+                              runtimeAssociation
+                                .trip_edge_node_index,
+                            )}
+                          </code>
+                        </div>
+
+                        <div>
+                          <span>distance along edge</span>
+                          <code>
+                            {typeof runtimeAssociation
+                              .distance_along_used_edge_m ===
+                            'number'
+                              ? (
+                                `${
+                                  runtimeAssociation
+                                    .distance_along_used_edge_m
+                                    .toFixed(3)
+                                } m`
+                              )
+                              : '—'}
+                          </code>
+                        </div>
+
+                        <div>
+                          <span>full-edge fraction</span>
+                          <code>
+                            {analysisValue(
+                              runtimeAssociation
+                                .fraction_along_full_edge,
+                              4,
+                            )}
+                          </code>
+                        </div>
+
+                        <div>
+                          <span>build match</span>
+                          <code>
+                            {buildAssociation?.matched
+                              ? (
+                                buildAssociation.match_kind ??
+                                'matched'
+                              )
+                              : 'unmatched'}
+                          </code>
+                        </div>
+
+                        <div>
+                          <span>POI build events</span>
+                          <code>
+                            {analysisValue(
+                              buildAssociation
+                                ?.poi_event_count,
+                            )}
+                          </code>
+                        </div>
+                      </div>
+
+                      {selectedBuildEvent && (
+                        <div className="candidate-build-selected">
+                          <strong>
+                            Selected Mjolnir association
+                          </strong>
+
+                          <span>
+                            {selectedBuildEvent.road_name ||
+                              'unnamed road'}
+
+                            {typeof selectedBuildEvent
+                              .distance_m === 'number'
+                              ? (
+                                ` · ${
+                                  selectedBuildEvent
+                                    .distance_m
+                                    .toFixed(3)
+                                } m`
+                              )
+                              : ''}
+                          </span>
+
+                          <small>
+                            edge{' '}
+                            {analysisValue(
+                              selectedBuildEvent.edge
+                                ?.graph_id,
+                            )}
+                            {' · opposing '}
+                            {analysisValue(
+                              selectedBuildEvent
+                                .opposing_edge
+                                ?.graph_id,
+                            )}
+                          </small>
+
+                          {selectedBuildEvent.reason && (
+                            <small>
+                              {selectedBuildEvent.reason}
+                            </small>
+                          )}
+                        </div>
+                      )}
+
+                      {(buildAssociation?.warnings?.length ??
+                        0) > 0 && (
+                        <div className="candidate-association-warnings">
+                          {(buildAssociation?.warnings ?? [])
+                            .map(
+                              (warning, warningIndex) => (
+                                <span key={warningIndex}>
+                                  {warning}
+                                </span>
+                              ),
+                            )}
+                        </div>
+                      )}
+                    </details>
+                  )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {(analysis.warnings?.length ?? 0) > 0 && (
+        <div className="candidate-analysis-warnings">
+          {(analysis.warnings ?? []).map(
+            (warning, index) => (
+              <span key={index}>{warning}</span>
+            ),
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function basename(path?: string): string {
@@ -343,6 +916,8 @@ export default function App() {
   const [routeGeoJson, setRouteGeoJson] = useState<GeoJSON.FeatureCollection>(EMPTY_FC);
   const [osrmRoute, setOsrmRoute] = useState<OsrmRouteResponse | null>(null);
   const [osrmRouteGeoJson, setOsrmRouteGeoJson] = useState<GeoJSON.FeatureCollection>(EMPTY_FC);
+  const [valhallaCandidateAnalysis, setValhallaCandidateAnalysis] = useState<CandidateAnalysis | null>(null);
+  const [osrmCandidateAnalysis, setOsrmCandidateAnalysis] = useState<CandidateAnalysis | null>(null);
   const [valhallaStatus, setValhallaStatus] = useState<'checking' | 'up' | 'down'>('checking');
   const [osrmStatus, setOsrmStatus] = useState<'checking' | 'up' | 'down'>('checking');
   const [routeView, setRouteView] = useState<'both' | 'valhalla' | 'osrm'>('both');
@@ -455,12 +1030,18 @@ export default function App() {
     let globalIndex = 0;
     for (const [legIndex, leg] of (route?.trip?.legs ?? []).entries()) {
       const coordinates = leg.shape ? decodePolyline6(leg.shape) : [];
-      for (const maneuver of (leg.maneuvers ?? [])) {
+      for (const [maneuverIndex, maneuver] of (leg.maneuvers ?? []).entries()) {
         const shapeIndex = maneuver.begin_shape_index;
         const coordinate = typeof shapeIndex === 'number' && shapeIndex >= 0 && shapeIndex < coordinates.length
           ? coordinates[shapeIndex]
           : null;
-        result.push({ index: globalIndex++, legIndex, maneuver, coordinate });
+        result.push({
+          index: globalIndex++,
+          legIndex,
+          maneuverIndex,
+          maneuver,
+          coordinate,
+        });
       }
     }
     return result;
@@ -494,6 +1075,69 @@ export default function App() {
 
     return result;
   }, [osrmRoute]);
+
+
+  const selectedOsrmStepView = useMemo(
+    () =>
+      selectedOsrmStepIndex === null
+        ? null
+        : (
+          osrmStepViews.find(
+            (item) =>
+              item.index === selectedOsrmStepIndex,
+          ) ?? null
+        ),
+    [osrmStepViews, selectedOsrmStepIndex],
+  );
+
+  const selectedValhallaCandidateAnalysis = useMemo(
+    () => {
+      if (
+        !selectedManeuver ||
+        !valhallaCandidateAnalysis
+      ) {
+        return null;
+      }
+
+      return (
+        valhallaCandidateAnalysis.maneuvers.find(
+          (item) =>
+            item.leg_index === selectedManeuver.legIndex &&
+            item.maneuver_index ===
+              selectedManeuver.maneuverIndex,
+        ) ?? null
+      );
+    },
+    [
+      selectedManeuver,
+      valhallaCandidateAnalysis,
+    ],
+  );
+
+  const selectedOsrmCandidateAnalysis = useMemo(
+    () => {
+      if (
+        !selectedOsrmStepView ||
+        !osrmCandidateAnalysis
+      ) {
+        return null;
+      }
+
+      return (
+        osrmCandidateAnalysis.maneuvers.find(
+          (item) =>
+            item.leg_index ===
+              selectedOsrmStepView.legIndex &&
+            item.step_index ===
+              selectedOsrmStepView.stepIndex,
+        ) ?? null
+      );
+    },
+    [
+      selectedOsrmStepView,
+      osrmCandidateAnalysis,
+    ],
+  );
 
   const osrmPoiNamesByStep = useMemo(() => {
     const result = new Map<number, string[]>();
@@ -1413,6 +2057,8 @@ export default function App() {
     setSelectedManeuverIndex(null);
     setSelectedOsrmStepIndex(null);
     setSelectedPoi(null);
+    setValhallaCandidateAnalysis(null);
+    setOsrmCandidateAnalysis(null);
 
     syncGeoJsonSource(
       'poi-turn-inspection',
@@ -1444,6 +2090,24 @@ export default function App() {
 
       setRoute(valhallaResponse);
       setOsrmRoute(osrmResponse);
+
+      setValhallaCandidateAnalysis(
+        comparison.valhalla.ok
+          ? (
+            comparison.valhalla
+              .candidate_analysis ?? null
+          )
+          : null,
+      );
+
+      setOsrmCandidateAnalysis(
+        comparison.osrm.ok
+          ? (
+            comparison.osrm
+              .candidate_analysis ?? null
+          )
+          : null,
+      );
 
       const valhallaFeatures: GeoJSON.Feature[] = [];
       const osrmFeatures: GeoJSON.Feature[] = [];
@@ -1539,6 +2203,8 @@ export default function App() {
       setOsrmRoute(null);
       setRouteGeoJson(EMPTY_FC);
       setOsrmRouteGeoJson(EMPTY_FC);
+      setValhallaCandidateAnalysis(null);
+      setOsrmCandidateAnalysis(null);
       setError(err instanceof Error ? err.message : String(err));
       return null;
     } finally {
@@ -1575,6 +2241,8 @@ export default function App() {
     setRouteGeoJson(EMPTY_FC);
     setOsrmRoute(null);
     setOsrmRouteGeoJson(EMPTY_FC);
+    setValhallaCandidateAnalysis(null);
+    setOsrmCandidateAnalysis(null);
     setSelectedManeuverIndex(null);
     setSelectedOsrmStepIndex(null);
     setSelectedPoi(null);
@@ -2748,6 +3416,108 @@ export default function App() {
               </div>
             </section>
           )}
+
+
+          <section className="card candidate-analysis-card">
+            <div className="maneuver-heading">
+              <h2>Candidate Analysis</h2>
+
+              {selectedManeuver ? (
+                <span>
+                  Valhalla · Odin #
+                  {selectedManeuver.index + 1}
+                </span>
+              ) : selectedOsrmStepView ? (
+                <span>
+                  OSRM · step #
+                  {selectedOsrmStepView.index + 1}
+                </span>
+              ) : (
+                <span>
+                  authoritative engine evidence
+                </span>
+              )}
+            </div>
+
+            {!selectedManeuver &&
+            !selectedOsrmStepView ? (
+              <div className="empty-state">
+                Click a Valhalla maneuver or an OSRM step
+                to inspect the candidates actually considered
+                by that engine.
+              </div>
+            ) : selectedManeuver ? (
+              !valhallaCandidateAnalysis ? (
+                <div className="empty-state">
+                  No Valhalla candidate-analysis response was
+                  returned.
+                </div>
+              ) : !valhallaCandidateAnalysis.available ? (
+                <div className="candidate-analysis-error">
+                  {valhallaCandidateAnalysis.error ??
+                    'Valhalla candidate analysis is unavailable.'}
+                </div>
+              ) : !selectedValhallaCandidateAnalysis ? (
+                <div className="empty-state">
+                  This Odin maneuver has no embedded
+                  authoritative landmark_debug candidate
+                  record. No candidate decision is inferred
+                  by the frontend.
+                </div>
+              ) : (
+                <CandidateDecisionList
+                  engine="valhalla"
+                  analysis={
+                    selectedValhallaCandidateAnalysis
+                  }
+                />
+              )
+            ) : selectedOsrmStepView ? (
+              !osrmCandidateAnalysis ? (
+                <div className="empty-state">
+                  No OSRM candidate-analysis response was
+                  returned.
+                </div>
+              ) : !osrmCandidateAnalysis.available ? (
+                <div className="candidate-analysis-error">
+                  {osrmCandidateAnalysis.error ??
+                    'OSRM candidate analysis is unavailable.'}
+                </div>
+              ) : !selectedOsrmCandidateAnalysis ? (
+                <div className="empty-state">
+                  This OSRM step has no authoritative turn_id
+                  candidate record. Depart/arrive steps normally
+                  do not carry a guidance turn_id.
+                </div>
+              ) : (
+                <CandidateDecisionList
+                  engine="osrm"
+                  analysis={
+                    selectedOsrmCandidateAnalysis
+                  }
+                />
+              )
+            ) : null}
+
+            {selectedManeuver &&
+            (valhallaCandidateAnalysis?.limitations
+              ?.length ?? 0) > 0 ? (
+              <details className="candidate-analysis-limitations">
+                <summary>
+                  Valhalla diagnostic limitations
+                </summary>
+
+                {(valhallaCandidateAnalysis
+                  ?.limitations ?? []).map(
+                    (limitation, index) => (
+                      <p key={index}>
+                        {limitation}
+                      </p>
+                    ),
+                  )}
+              </details>
+            ) : null}
+          </section>
 
           <details className="card raw-card">
             <summary>Raw Valhalla JSON</summary>

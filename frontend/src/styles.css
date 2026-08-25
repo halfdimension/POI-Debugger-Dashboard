@@ -1563,3 +1563,331 @@ button { cursor: pointer; }
   border-top: 3px dashed #7c3aed;
 }
 
+
+/* ===== Candidate Analysis: authoritative engine evidence ===== */
+
+.candidate-analysis-card {
+  overflow: visible;
+}
+
+.candidate-analysis-engine {
+  display: grid;
+  gap: 10px;
+}
+
+.candidate-analysis-engine-header {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  padding: 10px;
+  border: 1px solid #dbe3ec;
+  border-radius: 10px;
+  background: #f8fafc;
+}
+
+.candidate-analysis-engine-header > div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.candidate-analysis-engine-header small {
+  color: #64748b;
+}
+
+.candidate-engine-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 72px;
+  padding: 5px 7px;
+  border-radius: 7px;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .05em;
+}
+
+.candidate-engine-badge.valhalla {
+  background: #2563eb;
+}
+
+.candidate-engine-badge.osrm {
+  background: #dc2626;
+}
+
+.candidate-context-grid,
+.candidate-policy-grid,
+.candidate-metric-grid,
+.candidate-association-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.candidate-context-grid > div,
+.candidate-policy-grid > div,
+.candidate-metric-grid > div,
+.candidate-association-grid > div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+  padding: 7px;
+  border: 1px solid #e2e8f0;
+  border-radius: 7px;
+  background: #fff;
+}
+
+.candidate-context-grid span,
+.candidate-policy-grid span,
+.candidate-metric-grid span,
+.candidate-association-grid span {
+  color: #64748b;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+
+.candidate-context-grid strong,
+.candidate-metric-grid strong,
+.candidate-policy-grid code,
+.candidate-association-grid code {
+  overflow-wrap: anywhere;
+  font-size: 11px;
+}
+
+.candidate-selector-details,
+.candidate-association-details,
+.candidate-analysis-limitations {
+  border: 1px solid #dbe3ec;
+  border-radius: 8px;
+  padding: 8px;
+  background: #f8fafc;
+}
+
+.candidate-selector-details summary,
+.candidate-association-details summary,
+.candidate-analysis-limitations summary {
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.candidate-selector-details[open] summary,
+.candidate-association-details[open] summary,
+.candidate-analysis-limitations[open] summary {
+  margin-bottom: 8px;
+}
+
+.candidate-decision-list {
+  display: grid;
+  gap: 8px;
+}
+
+.candidate-decision {
+  display: grid;
+  gap: 8px;
+  padding: 9px;
+  border: 1px solid #dbe3ec;
+  border-left-width: 4px;
+  border-radius: 9px;
+  background: #fff;
+}
+
+.candidate-decision.selected {
+  border-left-color: #15803d;
+  background: #f0fdf4;
+}
+
+.candidate-decision.eligible {
+  border-left-color: #d97706;
+  background: #fffbeb;
+}
+
+.candidate-decision.rejected {
+  border-left-color: #dc2626;
+  background: #fef2f2;
+}
+
+.candidate-decision.deduplicated {
+  border-left-color: #7c3aed;
+  background: #f5f3ff;
+}
+
+.candidate-decision.unknown {
+  border-left-color: #64748b;
+}
+
+.candidate-decision-heading {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.candidate-rank {
+  display: inline-flex;
+  width: 24px;
+  height: 24px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: #e2e8f0;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.candidate-name {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.candidate-name strong,
+.candidate-name small {
+  overflow-wrap: anywhere;
+}
+
+.candidate-name small {
+  color: #64748b;
+  font-size: 9px;
+}
+
+.candidate-status {
+  max-width: 145px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  font-size: 8px;
+  font-weight: 800;
+  text-align: center;
+  line-height: 1.2;
+}
+
+.candidate-status.selected {
+  color: #166534;
+  background: #dcfce7;
+}
+
+.candidate-status.eligible {
+  color: #92400e;
+  background: #fef3c7;
+}
+
+.candidate-status.rejected {
+  color: #991b1b;
+  background: #fee2e2;
+}
+
+.candidate-status.deduplicated {
+  color: #6d28d9;
+  background: #ede9fe;
+}
+
+.candidate-status.unknown {
+  color: #475569;
+  background: #e2e8f0;
+}
+
+.candidate-reason {
+  display: grid;
+  gap: 3px;
+  padding: 7px;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, .72);
+}
+
+.candidate-reason strong {
+  font-size: 9px;
+  text-transform: uppercase;
+  color: #64748b;
+}
+
+.candidate-reason span {
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.candidate-structured-reasons {
+  display: grid;
+  gap: 4px;
+}
+
+.candidate-structured-reasons code {
+  padding: 5px 6px;
+  border-radius: 5px;
+  background: #fff;
+  border: 1px solid #fecaca;
+  overflow-wrap: anywhere;
+  font-size: 9px;
+}
+
+.candidate-build-selected {
+  display: grid;
+  gap: 3px;
+  margin-top: 7px;
+  padding: 7px;
+  border-radius: 7px;
+  background: #eff6ff;
+}
+
+.candidate-build-selected span,
+.candidate-build-selected small {
+  overflow-wrap: anywhere;
+}
+
+.candidate-build-selected small {
+  color: #475569;
+}
+
+.candidate-analysis-limitation {
+  padding: 8px;
+  border: 1px dashed #94a3b8;
+  border-radius: 8px;
+  background: #f8fafc;
+  color: #475569;
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.candidate-analysis-error {
+  padding: 9px;
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+  background: #fef2f2;
+  color: #991b1b;
+  font-size: 11px;
+}
+
+.candidate-analysis-warnings,
+.candidate-association-warnings {
+  display: grid;
+  gap: 4px;
+  color: #92400e;
+  font-size: 10px;
+}
+
+.candidate-analysis-limitations p {
+  margin: 5px 0 0;
+  color: #475569;
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+@media (max-width: 1150px) {
+  .candidate-context-grid,
+  .candidate-policy-grid,
+  .candidate-metric-grid,
+  .candidate-association-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .candidate-decision-heading {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .candidate-status {
+    grid-column: 2;
+    justify-self: start;
+  }
+}

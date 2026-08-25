@@ -48,6 +48,7 @@ def load_settings() -> dict[str, Any]:
     # Environment variables override YAML, useful when switching services or the legacy/default dataset.
     env_overrides = {
         ("valhalla", "service_url"): "VPD_VALHALLA_URL",
+        ("valhalla", "association_debug_jsonl_path"): "VPD_VALHALLA_ASSOCIATION_DEBUG_JSONL",
         ("osrm", "service_url"): "VPD_OSRM_URL",
         ("osrm", "landmark_debug_jsonl_path"): "VPD_OSRM_LANDMARK_DEBUG_JSONL",
         ("engine", "root"): "VPD_ENGINE_ROOT",
@@ -68,6 +69,11 @@ def load_settings() -> dict[str, Any]:
     if cfg["engine"].get("root"):
         cfg["engine"]["root"] = _expand_path(str(cfg["engine"]["root"]))
 
+    if cfg["valhalla"].get("association_debug_jsonl_path"):
+        cfg["valhalla"]["association_debug_jsonl_path"] = _expand_path(
+            str(cfg["valhalla"]["association_debug_jsonl_path"])
+        )
+
     if cfg["osrm"].get("landmark_debug_jsonl_path"):
         cfg["osrm"]["landmark_debug_jsonl_path"] = _expand_path(
             str(cfg["osrm"]["landmark_debug_jsonl_path"])
@@ -87,6 +93,7 @@ def load_settings() -> dict[str, Any]:
         "poi_csv_path",
         "tiles_path",
         "valhalla_config_path",
+        "valhalla_association_debug_jsonl_path",
         "osrm_landmark_debug_jsonl_path",
     )
     if isinstance(cfg["datasets"], dict):

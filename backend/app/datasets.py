@@ -109,6 +109,9 @@ class DatasetManager:
             "poi_geojson_path": cfg.get("poi_geojson_path"),
             "tiles_path": cfg.get("tiles_path"),
             "valhalla_config_path": cfg.get("valhalla_config_path"),
+            "valhalla_association_debug_jsonl_path": cfg.get(
+                "valhalla_association_debug_jsonl_path"
+            ),
             "osrm_landmark_debug_jsonl_path": cfg.get(
                 "osrm_landmark_debug_jsonl_path"
             ),

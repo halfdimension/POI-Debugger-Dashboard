@@ -1891,3 +1891,44 @@ button { cursor: pointer; }
     justify-self: start;
   }
 }
+
+/* ===== Candidate fan-out map visualization ===== */
+
+.candidate-map-toggle {
+  width: 100%;
+  display: grid;
+  gap: 2px;
+  justify-items: start;
+  padding: 9px 10px;
+  border: 1px solid #93c5fd;
+  border-radius: 8px;
+  background: #eff6ff;
+  color: #1e3a8a;
+  cursor: pointer;
+  text-align: left;
+}
+
+.candidate-map-toggle:hover:not(:disabled) {
+  background: #dbeafe;
+}
+
+.candidate-map-toggle.active {
+  border-color: #2563eb;
+  background: #dbeafe;
+  box-shadow: inset 0 0 0 1px #2563eb;
+}
+
+.candidate-map-toggle:disabled {
+  cursor: not-allowed;
+  opacity: .5;
+}
+
+.candidate-map-toggle span {
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.candidate-map-toggle small {
+  color: #475569;
+  font-size: 9px;
+}

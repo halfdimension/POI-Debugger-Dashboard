@@ -147,9 +147,13 @@ function candidateCoordinateText(
 function CandidateDecisionList({
   engine,
   analysis,
+  showCandidatesOnMap,
+  onToggleCandidatesOnMap,
 }: {
   engine: 'valhalla' | 'osrm';
   analysis: CandidateAnalysisManeuver;
+  showCandidatesOnMap: boolean;
+  onToggleCandidatesOnMap: () => void;
 }) {
   const candidates = analysis.candidates ?? [];
 
@@ -252,6 +256,26 @@ function CandidateDecisionList({
           </div>
         </details>
       )}
+
+      <button
+        type="button"
+        className={
+          showCandidatesOnMap
+            ? 'candidate-map-toggle active'
+            : 'candidate-map-toggle'
+        }
+        disabled={candidates.length === 0}
+        onClick={onToggleCandidatesOnMap}
+      >
+        <span>
+          {showCandidatesOnMap ? 'Hide' : 'Show'}
+          {' '}candidate POIs on map
+        </span>
+
+        <small>
+          Draw the selected maneuver → every engine candidate
+        </small>
+      </button>
 
       {candidates.length === 0 ? (
         <div className="empty-state">
@@ -923,6 +947,7 @@ export default function App() {
   const [routeView, setRouteView] = useState<'both' | 'valhalla' | 'osrm'>('both');
   const [rightPanelCollapsed, setRightPanelCollapsed] = useState(false);
   const [map3D, setMap3D] = useState(false);
+  const [showCandidateMap, setShowCandidateMap] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>('');
   const [selectedManeuverIndex, setSelectedManeuverIndex] = useState<number | null>(null);
@@ -1138,6 +1163,229 @@ export default function App() {
       osrmCandidateAnalysis,
     ],
   );
+
+
+  useEffect(() => {
+    if (!showCandidateMap) {
+      syncGeoJsonSource(
+        'candidate-analysis-map',
+        EMPTY_FC,
+      );
+      return;
+    }
+
+    let engine: 'valhalla' | 'osrm' | null = null;
+
+    let analysis:
+      CandidateAnalysisManeuver | null = null;
+
+    let origin:
+      LngLat | null = null;
+
+    if (
+      selectedManeuver &&
+      selectedValhallaCandidateAnalysis
+    ) {
+      engine = 'valhalla';
+      analysis = selectedValhallaCandidateAnalysis;
+
+      // Display-only visualization origin.
+      //
+      // Valhalla's current authoritative landmark_debug does not
+      // expose the maneuver coordinate, so use the already-rendered
+      // Odin begin_shape_index route position.
+      //
+      // Do not use this coordinate to recalculate engine decisions.
+      origin = selectedManeuver.coordinate;
+    } else if (
+      selectedOsrmStepView &&
+      selectedOsrmCandidateAnalysis
+    ) {
+      engine = 'osrm';
+      analysis = selectedOsrmCandidateAnalysis;
+
+      const debugCoordinate =
+        analysis.maneuver?.coordinate;
+
+      if (
+        Array.isArray(debugCoordinate) &&
+        debugCoordinate.length >= 2 &&
+        Number.isFinite(Number(debugCoordinate[0])) &&
+        Number.isFinite(Number(debugCoordinate[1]))
+      ) {
+        origin = [
+          Number(debugCoordinate[0]),
+          Number(debugCoordinate[1]),
+        ];
+      } else {
+        origin = selectedOsrmStepView.coordinate;
+      }
+    }
+
+    if (
+      !engine ||
+      !analysis ||
+      !origin
+    ) {
+      syncGeoJsonSource(
+        'candidate-analysis-map',
+        EMPTY_FC,
+      );
+      return;
+    }
+
+    const features:
+      GeoJSON.Feature[] = [];
+
+    const bounds =
+      new LngLatBounds();
+
+    bounds.extend(origin);
+
+    features.push({
+      type: 'Feature',
+      geometry: {
+        type: 'Point',
+        coordinates: origin,
+      },
+      properties: {
+        kind: 'origin',
+        engine,
+        name:
+          engine === 'valhalla'
+            ? `Odin maneuver ${
+                (selectedManeuver?.index ?? 0) + 1
+              }`
+            : `OSRM step ${
+                (selectedOsrmStepView?.index ?? 0) + 1
+              }`,
+      },
+    });
+
+    for (
+      const [
+        candidateIndex,
+        candidate,
+      ] of analysis.candidates.entries()
+    ) {
+      const coordinate =
+        candidate.coordinate;
+
+      if (
+        !Array.isArray(coordinate) ||
+        coordinate.length < 2
+      ) {
+        continue;
+      }
+
+      const lon =
+        Number(coordinate[0]);
+
+      const lat =
+        Number(coordinate[1]);
+
+      if (
+        !Number.isFinite(lon) ||
+        !Number.isFinite(lat)
+      ) {
+        continue;
+      }
+
+      const candidateCoordinate:
+        LngLat = [lon, lat];
+
+      bounds.extend(candidateCoordinate);
+
+      const properties = {
+        kind: 'candidate',
+        engine,
+        candidate_index: candidateIndex,
+        poi_id:
+          candidate.poi_id ?? '',
+        osm_node_id:
+          candidate.osm_node_id ?? '',
+        name:
+          candidate.name ??
+          'Unnamed POI',
+        status:
+          candidate.status ??
+          'UNKNOWN',
+        selected:
+          candidate.selected === true,
+        eligible:
+          candidate.eligible ?? '',
+        priority:
+          candidate.priority ?? '',
+        distance_m:
+          candidate.distance_m ?? '',
+        reason:
+          candidate.reason ?? '',
+      };
+
+      features.push({
+        type: 'Feature',
+        geometry: {
+          type: 'LineString',
+          coordinates: [
+            origin,
+            candidateCoordinate,
+          ],
+        },
+        properties: {
+          ...properties,
+          kind: 'link',
+        },
+      });
+
+      features.push({
+        type: 'Feature',
+        geometry: {
+          type: 'Point',
+          coordinates:
+            candidateCoordinate,
+        },
+        properties,
+      });
+    }
+
+    const collection:
+      GeoJSON.FeatureCollection = {
+        type: 'FeatureCollection',
+        features,
+      };
+
+    syncGeoJsonSource(
+      'candidate-analysis-map',
+      collection,
+    );
+
+    const map = mapRef.current;
+
+    if (
+      map &&
+      features.length > 1
+    ) {
+      map.fitBounds(
+        bounds,
+        {
+          padding: {
+            top: 90,
+            right: 430,
+            bottom: 90,
+            left: 390,
+          },
+          maxZoom: 18.5,
+          duration: 700,
+        },
+      );
+    }
+  }, [
+    showCandidateMap,
+    selectedManeuver,
+    selectedOsrmStepView,
+    selectedValhallaCandidateAnalysis,
+    selectedOsrmCandidateAnalysis,
+  ]);
 
   const osrmPoiNamesByStep = useMemo(() => {
     const result = new Map<number, string[]>();
@@ -1640,6 +1888,103 @@ export default function App() {
         },
       });
 
+
+      map.addSource('candidate-analysis-map', {
+        type: 'geojson',
+        data: EMPTY_FC,
+      });
+
+      map.addLayer({
+        id: 'candidate-analysis-lines',
+        type: 'line',
+        source: 'candidate-analysis-map',
+        filter: ['==', ['get', 'kind'], 'link'],
+        paint: {
+          'line-color': [
+            'match',
+            ['get', 'status'],
+            'SELECTED', '#16a34a',
+            'ELIGIBLE / LOST RANKING', '#d97706',
+            'REJECTED', '#dc2626',
+            '#64748b',
+          ],
+          'line-width': [
+            'case',
+            ['==', ['get', 'selected'], true],
+            4,
+            2,
+          ],
+          'line-opacity': [
+            'case',
+            ['==', ['get', 'selected'], true],
+            0.95,
+            0.62,
+          ],
+          'line-dasharray': [2, 1.5],
+        },
+      });
+
+      map.addLayer({
+        id: 'candidate-analysis-pois',
+        type: 'circle',
+        source: 'candidate-analysis-map',
+        filter: ['==', ['get', 'kind'], 'candidate'],
+        paint: {
+          'circle-radius': [
+            'case',
+            ['==', ['get', 'selected'], true],
+            10,
+            7,
+          ],
+          'circle-color': [
+            'match',
+            ['get', 'status'],
+            'SELECTED', '#16a34a',
+            'ELIGIBLE / LOST RANKING', '#d97706',
+            'REJECTED', '#dc2626',
+            '#64748b',
+          ],
+          'circle-stroke-color': '#ffffff',
+          'circle-stroke-width': [
+            'case',
+            ['==', ['get', 'selected'], true],
+            4,
+            2,
+          ],
+          'circle-opacity': 0.95,
+        },
+      });
+
+      map.addLayer({
+        id: 'candidate-analysis-selected-ring',
+        type: 'circle',
+        source: 'candidate-analysis-map',
+        filter: [
+          'all',
+          ['==', ['get', 'kind'], 'candidate'],
+          ['==', ['get', 'selected'], true],
+        ],
+        paint: {
+          'circle-radius': 15,
+          'circle-color': 'rgba(0,0,0,0)',
+          'circle-stroke-color': '#052e16',
+          'circle-stroke-width': 3,
+        },
+      });
+
+      map.addLayer({
+        id: 'candidate-analysis-origin',
+        type: 'circle',
+        source: 'candidate-analysis-map',
+        filter: ['==', ['get', 'kind'], 'origin'],
+        paint: {
+          'circle-radius': 8,
+          'circle-color': '#1d4ed8',
+          'circle-stroke-color': '#ffffff',
+          'circle-stroke-width': 3,
+        },
+      });
+
       map.addSource('nearby-pois', { type: 'geojson', data: EMPTY_FC });
       map.addLayer({
         id: 'nearby-pois',
@@ -1783,6 +2128,63 @@ export default function App() {
         );
       });
 
+
+      map.on(
+        'click',
+        'candidate-analysis-pois',
+        (event) => {
+          event.originalEvent.stopPropagation();
+
+          const feature = event.features?.[0];
+
+          if (
+            !feature ||
+            feature.geometry?.type !== 'Point'
+          ) {
+            return;
+          }
+
+          const coordinate =
+            feature.geometry.coordinates as LngLat;
+
+          const properties =
+            feature.properties ?? {};
+
+          const popupProperties = {
+            name:
+              properties.name ??
+              'Candidate POI',
+            poi_id:
+              properties.poi_id ??
+              '',
+            status:
+              properties.status ??
+              '',
+            selected:
+              properties.selected ??
+              false,
+            engine:
+              properties.engine ??
+              '',
+            distance_m:
+              properties.distance_m ??
+              '',
+            priority:
+              properties.priority ??
+              '',
+            reason:
+              properties.reason ??
+              '',
+          };
+
+          openPoiPopup(
+            map,
+            coordinate,
+            popupProperties,
+          );
+        },
+      );
+
       map.on('click', 'maneuver-points', (event) => {
         const feature = event.features?.[0];
         if (!feature || feature.geometry.type !== 'Point') return;
@@ -1793,7 +2195,7 @@ export default function App() {
         map.flyTo({ center: coordinates, zoom: Math.max(map.getZoom(), 17), essential: true });
       });
 
-      for (const layerId of ['pois', 'selected-poi', 'nearby-pois', 'route-narration-pois', 'narration-poi', 'maneuver-points']) {
+      for (const layerId of ['pois', 'selected-poi', 'nearby-pois', 'route-narration-pois', 'narration-poi', 'maneuver-points', 'candidate-analysis-pois']) {
         map.on('mouseenter', layerId, () => { map.getCanvas().style.cursor = 'pointer'; });
         map.on('mouseleave', layerId, () => { map.getCanvas().style.cursor = ''; });
       }
@@ -1816,7 +2218,7 @@ export default function App() {
     map.__pickMode = pickMode;
     const handler = (event: maplibregl.MapMouseEvent) => {
       if (map.isStyleLoaded()) {
-        const candidateLayers = ['pois', 'selected-poi', 'nearby-pois', 'route-narration-pois', 'narration-poi', 'maneuver-points', 'osrm-selected-maneuver', 'poi-turn-inspection-turn', 'route-points']
+        const candidateLayers = ['pois', 'selected-poi', 'nearby-pois', 'route-narration-pois', 'narration-poi', 'maneuver-points', 'osrm-selected-maneuver', 'poi-turn-inspection-turn', 'candidate-analysis-pois', 'candidate-analysis-origin', 'route-points']
           .filter((layerId) => Boolean(map.getLayer(layerId)));
         if (candidateLayers.length > 0) {
           const hitFeatures = map.queryRenderedFeatures(event.point, { layers: candidateLayers });
@@ -2059,6 +2461,12 @@ export default function App() {
     setSelectedPoi(null);
     setValhallaCandidateAnalysis(null);
     setOsrmCandidateAnalysis(null);
+    setShowCandidateMap(false);
+
+    syncGeoJsonSource(
+      'candidate-analysis-map',
+      EMPTY_FC,
+    );
 
     syncGeoJsonSource(
       'poi-turn-inspection',
@@ -3470,6 +3878,14 @@ export default function App() {
                   analysis={
                     selectedValhallaCandidateAnalysis
                   }
+                  showCandidatesOnMap={
+                    showCandidateMap
+                  }
+                  onToggleCandidatesOnMap={() =>
+                    setShowCandidateMap(
+                      (current) => !current,
+                    )
+                  }
                 />
               )
             ) : selectedOsrmStepView ? (
@@ -3494,6 +3910,14 @@ export default function App() {
                   engine="osrm"
                   analysis={
                     selectedOsrmCandidateAnalysis
+                  }
+                  showCandidatesOnMap={
+                    showCandidateMap
+                  }
+                  onToggleCandidatesOnMap={() =>
+                    setShowCandidateMap(
+                      (current) => !current,
+                    )
                   }
                 />
               )

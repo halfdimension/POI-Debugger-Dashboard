@@ -1387,6 +1387,43 @@ export default function App() {
     selectedOsrmCandidateAnalysis,
   ]);
 
+  // Candidate Analysis owns the turn fan-out visualization while enabled.
+  //
+  // The dashboard already has an older POI <-> turn inspection source:
+  //   poi-turn-inspection-line
+  //   poi-turn-inspection-turn
+  //
+  // Its Valhalla line is blue. If it remains visible together with the new
+  // Candidate Analysis fan-out, one POI can appear to have two relationships.
+  //
+  // Do not delete or mutate the old source. Hide only its rendering layers
+  // while Candidate Analysis is enabled, then restore them afterwards.
+  useEffect(() => {
+    const map = mapRef.current;
+
+    if (!map) {
+      return;
+    }
+
+    const visibility =
+      showCandidateMap
+        ? 'none'
+        : 'visible';
+
+    for (const layerId of [
+      'poi-turn-inspection-line',
+      'poi-turn-inspection-turn',
+    ]) {
+      if (map.getLayer(layerId)) {
+        map.setLayoutProperty(
+          layerId,
+          'visibility',
+          visibility,
+        );
+      }
+    }
+  }, [showCandidateMap]);
+
   const osrmPoiNamesByStep = useMemo(() => {
     const result = new Map<number, string[]>();
 

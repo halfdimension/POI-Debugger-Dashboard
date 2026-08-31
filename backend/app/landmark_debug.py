@@ -7,7 +7,8 @@ from pathlib import Path
 from typing import Any
 
 
-OSRM_DEBUG_SCHEMA = "osrm_landmark_turn_debug_v1"
+OSRM_DEBUG_SCHEMA = "osrm_landmark_turn_debug_v2"
+OSRM_CANDIDATE_SOURCE = "incoming_outgoing_nbg_edge_association"
 NORMALIZED_SCHEMA = "poi_candidate_analysis_v1"
 
 
@@ -121,6 +122,25 @@ class OsrmLandmarkDebugManager:
                                 f"{record.get('schema')!r}"
                             )
 
+                        selector = record.get("selector")
+
+                        if not isinstance(selector, dict):
+                            raise OsrmLandmarkDebugError(
+                                f"{path}:{line_number}: v2 record has no "
+                                f"selector object"
+                            )
+
+                        candidate_source = selector.get(
+                            "candidate_source"
+                        )
+
+                        if candidate_source != OSRM_CANDIDATE_SOURCE:
+                            raise OsrmLandmarkDebugError(
+                                f"{path}:{line_number}: unexpected candidate "
+                                f"source {candidate_source!r}; expected "
+                                f"{OSRM_CANDIDATE_SOURCE!r}"
+                            )
+
                         turn_id = record.get("turn_id")
 
                         if isinstance(turn_id, bool):
@@ -191,24 +211,36 @@ class OsrmLandmarkDebugManager:
             "text": text,
         }
 
-        # Add structured actual/threshold values only where the sidecar
-        # already gives us all authoritative inputs.
-        if code == "distance_threshold":
+        # Do not recreate selector logic here.
+        #
+        # Only attach structured values already emitted by the v2
+        # extraction sidecar. The engine remains authoritative.
+        if (
+            "maneuver_distance" in code
+            and candidate.get("maneuver_distance_m") is not None
+        ):
             reason.update({
-                "actual": candidate.get("distance_m"),
+                "actual": candidate.get("maneuver_distance_m"),
                 "operator": ">",
-                "threshold": selector.get("max_distance_m"),
+                "threshold": selector.get(
+                    "max_maneuver_distance_m"
+                ),
                 "unit": "m",
             })
 
-        elif code == "bearing_threshold":
+        elif (
+            "perpendicular_distance" in code
+            and candidate.get("perpendicular_distance_m") is not None
+        ):
             reason.update({
-                "actual": candidate.get("bearing_deviation_deg"),
+                "actual": candidate.get(
+                    "perpendicular_distance_m"
+                ),
                 "operator": ">",
                 "threshold": selector.get(
-                    "max_bearing_deviation_deg"
+                    "max_perpendicular_distance_m"
                 ),
-                "unit": "deg",
+                "unit": "m",
             })
 
         elif code == "minimum_priority":
@@ -251,11 +283,35 @@ class OsrmLandmarkDebugManager:
             "priority": candidate.get("priority"),
             "priority_raw": candidate.get("priority_raw"),
             "visible": candidate.get("visible"),
-            "distance_m": candidate.get("distance_m"),
-            "poi_bearing_deg": candidate.get("poi_bearing_deg"),
-            "bearing_deviation_deg": candidate.get(
-                "bearing_deviation_deg"
+
+            # Authoritative v2 route-edge membership.
+            "on_incoming": candidate.get("on_incoming"),
+            "on_outgoing": candidate.get("on_outgoing"),
+
+            # Role-specific longitudinal evidence.
+            "incoming_distance_to_turn_m": candidate.get(
+                "incoming_distance_to_turn_m"
             ),
+            "outgoing_distance_from_turn_m": candidate.get(
+                "outgoing_distance_from_turn_m"
+            ),
+
+            # Role-specific lateral road-projection evidence.
+            "incoming_perpendicular_distance_m": candidate.get(
+                "incoming_perpendicular_distance_m"
+            ),
+            "outgoing_perpendicular_distance_m": candidate.get(
+                "outgoing_perpendicular_distance_m"
+            ),
+
+            # Values actually used by the maneuver selector.
+            "maneuver_distance_m": candidate.get(
+                "maneuver_distance_m"
+            ),
+            "perpendicular_distance_m": candidate.get(
+                "perpendicular_distance_m"
+            ),
+
             "eligible": eligible,
             "selected": selected,
             "status": cls._normalized_status(raw_status),
@@ -268,7 +324,8 @@ class OsrmLandmarkDebugManager:
             ),
         }
 
-        # Ranking loss is not a rejection. Keep it explicitly separate.
+        # Ranking loss is not a rejection. Keep the exact engine reason
+        # separately; the debugger does not recompute ranking.
         if raw_status == "eligible_not_selected":
             result["ranking_reason"] = {
                 "code": candidate.get("reason_code"),

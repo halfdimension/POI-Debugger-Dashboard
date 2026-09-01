@@ -288,6 +288,21 @@ class OsrmLandmarkDebugManager:
             "on_incoming": candidate.get("on_incoming"),
             "on_outgoing": candidate.get("on_outgoing"),
 
+            # P2 association provenance emitted directly by OSRM.
+            #
+            # Do not derive these values in the debugger.
+            # None is preserved for older sidecars that predate
+            # provenance support.
+            "incoming_association_augmented": candidate.get(
+                "incoming_association_augmented"
+            ),
+            "outgoing_association_augmented": candidate.get(
+                "outgoing_association_augmented"
+            ),
+            "association_augmented": candidate.get(
+                "association_augmented"
+            ),
+
             # Role-specific longitudinal evidence.
             "incoming_distance_to_turn_m": candidate.get(
                 "incoming_distance_to_turn_m"

@@ -232,6 +232,15 @@ export interface CandidateAnalysisCandidate {
   on_incoming?: boolean | null;
   on_outgoing?: boolean | null;
 
+  // OSRM P2 association provenance.
+  //
+  // association_augmented describes the effective association evidence
+  // used by the selector. The role-specific fields preserve provenance
+  // for incoming and outgoing road membership separately.
+  incoming_association_augmented?: boolean | null;
+  outgoing_association_augmented?: boolean | null;
+  association_augmented?: boolean | null;
+
   incoming_distance_to_turn_m?: number | null;
   outgoing_distance_from_turn_m?: number | null;
 

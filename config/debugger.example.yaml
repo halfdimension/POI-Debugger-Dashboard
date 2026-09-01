@@ -7,15 +7,29 @@ valhalla:
   route_path: "/route"
   timeout_seconds: 20
 
+  # Optional Candidate Analysis build/extraction diagnostics.
+  association_debug_jsonl_path: ""
+
+osrm:
+  service_url: "http://localhost:5000"
+  profile: "driving"
+  route_path: "/route/v1"
+  nearest_path: "/nearest/v1"
+  timeout_seconds: 20
+
+  # Must come from the same osrm-extract execution as the running
+  # .osrm dataset when OSRM Candidate Analysis is enabled.
+  landmark_debug_jsonl_path: ""
+
 engine:
   # Kept configurable now; later phases can use this for tile/build/debug helpers.
-  root: "/path/to/your/valhalla/engine"
+  root: ""
 
 # Relative paths are resolved from the repository root.
 data:
-  pbf_path: "/path/to/your/input.osm.pbf"
+  pbf_path: ""
   poi_geojson_path: "./data/landmarks.geojson"
-  poi_csv_path: "/path/to/your/landmarks.csv"
+  poi_csv_path: ""
 
 frontend:
   map_style_url: "https://tiles.openfreemap.org/styles/liberty"
@@ -24,11 +38,14 @@ frontend:
   default_zoom: 11
 
 backend:
-  host: "127.0.0.1"
+  # Listen on every interface so coworkers can reach the API through this
+  # machine's LAN/VPN IP address. Restrict access at the firewall/VPN layer.
+  host: "0.0.0.0"
   port: 8010
-  allowed_origins:
-    - "http://localhost:5173"
-    - "http://127.0.0.1:5173"
+
+  # Production serves the frontend and /api from the same origin, so CORS
+  # is disabled by default. Add explicit origins only when required.
+  allowed_origins: []
 
 
 # Phase 2A dataset registry example. The old `data:` block still works as a fallback.
@@ -37,13 +54,18 @@ active_dataset: "example"
 datasets:
   example:
     name: "Example landmark dataset"
-    pbf_path: "/path/to/your/input.osm.pbf"
-    poi_csv_path: "/path/to/your/landmarks.csv"
+    pbf_path: ""
+    poi_csv_path: ""
     # Optional fallback if no CSV exists:
     poi_geojson_path: "./data/landmarks.geojson"
     # Metadata only in Phase 2A; activating a dataset does NOT restart Valhalla.
-    tiles_path: "/path/to/your/valhalla_tiles"
-    valhalla_config_path: "/path/to/your/valhalla.json"
+    tiles_path: ""
+    valhalla_config_path: ""
+
+    # Optional dataset-specific Candidate Analysis evidence.
+    # These take precedence over the global engine-side paths above.
+    valhalla_association_debug_jsonl_path: ""
+    osrm_landmark_debug_jsonl_path: ""
 
 # Phase 3A saved route scenarios
 scenarios:

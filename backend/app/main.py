@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 from typing import Any
 
 import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from .config import load_settings
 from .datasets import DatasetError, DatasetManager
@@ -388,3 +390,13 @@ async def compare_route(payload: dict[str, Any]) -> dict[str, Any]:
         "osrm": osrm_result,
     }
 
+
+# A production build can be served by this process, keeping the frontend and
+# API on one origin and leaving only one port for DevOps to expose.
+frontend_dist = settings.get("frontend", {}).get("dist_path")
+if frontend_dist:
+    frontend_dist_path = Path(str(frontend_dist))
+else:
+    frontend_dist_path = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+if frontend_dist_path.is_dir():
+    app.mount("/", StaticFiles(directory=str(frontend_dist_path), html=True), name="frontend")

@@ -515,6 +515,47 @@ function CandidateDecisionList({
                   )}
                 </div>
 
+                {engine === 'osrm' && (
+                  <div className="candidate-metric-grid">
+                    <div>
+                      <span>association confidence</span>
+                      <strong>
+                        {candidate.association_augmented === true
+                          ? 'augmented fallback'
+                          : candidate.association_augmented === false
+                            ? 'normal'
+                            : '—'}
+                      </strong>
+                    </div>
+
+                    <div>
+                      <span>incoming association</span>
+                      <strong>
+                        {!candidate.on_incoming
+                          ? '—'
+                          : candidate.incoming_association_augmented === true
+                            ? 'augmented'
+                            : candidate.incoming_association_augmented === false
+                              ? 'normal'
+                              : 'unknown'}
+                      </strong>
+                    </div>
+
+                    <div>
+                      <span>outgoing association</span>
+                      <strong>
+                        {!candidate.on_outgoing
+                          ? '—'
+                          : candidate.outgoing_association_augmented === true
+                            ? 'augmented'
+                            : candidate.outgoing_association_augmented === false
+                              ? 'normal'
+                              : 'unknown'}
+                      </strong>
+                    </div>
+                  </div>
+                )}
+
                 {candidate.reason && (
                   <div className="candidate-reason">
                     <strong>Decision reason</strong>
@@ -1414,6 +1455,21 @@ export default function App() {
           candidate.on_incoming ?? '',
         on_outgoing:
           candidate.on_outgoing ?? '',
+
+        incoming_association_augmented:
+          candidate.incoming_association_augmented ?? '',
+        outgoing_association_augmented:
+          candidate.outgoing_association_augmented ?? '',
+        association_augmented:
+          candidate.association_augmented ?? '',
+
+        association_confidence:
+          candidate.association_augmented === true
+            ? 'augmented fallback'
+            : candidate.association_augmented === false
+              ? 'normal'
+              : '',
+
         reason:
           candidate.reason ?? '',
       };
@@ -2301,6 +2357,18 @@ export default function App() {
               '',
             route_edge_role:
               properties.route_edge_role ??
+              '',
+            association_confidence:
+              properties.association_confidence ??
+              '',
+            association_augmented:
+              properties.association_augmented ??
+              '',
+            incoming_association_augmented:
+              properties.incoming_association_augmented ??
+              '',
+            outgoing_association_augmented:
+              properties.outgoing_association_augmented ??
               '',
             maneuver_distance_m:
               properties.maneuver_distance_m ??

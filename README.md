@@ -48,9 +48,12 @@ export VPD_PBF_PATH=/path/to/test.osm.pbf
 export VPD_POI_GEOJSON_PATH=/path/to/landmarks.geojson
 ```
 
-## Run backend
+## Run on your company network
 
-From repository root:
+Run both services on the machine that has access to Valhalla, OSRM, and the
+configured data files. They now listen on all network interfaces by default.
+
+Start the backend from the repository root:
 
 ```bash
 python3 -m venv .venv
@@ -62,30 +65,148 @@ pip install -r backend/requirements.txt
 Backend API:
 
 ```text
-http://127.0.0.1:8010
+http://<host-machine-ip>:8010
 ```
 
 FastAPI docs:
 
 ```text
-http://127.0.0.1:8010/docs
+http://<host-machine-ip>:8010/docs
 ```
-
-## Run frontend
 
 Open a second terminal:
 
 ```bash
-cd frontend
-npm install
-npm run dev
+# Vite 8 requires Node.js 20.19 or newer.
+npm --prefix frontend install
+./scripts/run_frontend.sh
 ```
 
-Then open:
+Find the host machine's LAN/VPN address (`hostname -I` on Linux), then coworkers
+can open:
 
 ```text
-http://127.0.0.1:5173
+http://<host-machine-ip>:5173
 ```
+
+The browser sends API requests to the frontend's `/api` path and Vite proxies
+them to the backend on the host machine. Coworkers therefore do not need
+Valhalla, OSRM, Node, Python, or this repository installed locally.
+
+If the backend is on a different machine or port, start the frontend with:
+
+```bash
+VPD_BACKEND_URL=http://<backend-ip>:<backend-port> ./scripts/run_frontend.sh
+```
+
+If coworkers cannot connect, allow inbound TCP ports `5173` (frontend) and
+`8010` (API) in the host firewall and make sure the company LAN/VPN permits
+connections between their machines. Do not expose these ports to the public
+internet: this is an unauthenticated debugger and its API can modify saved
+scenarios.
+
+Optional bind/port overrides for the backend are `VPD_BACKEND_HOST` and
+`VPD_BACKEND_PORT`. For example:
+
+```bash
+VPD_BACKEND_PORT=9010 ./scripts/run_backend.sh
+VPD_BACKEND_URL=http://127.0.0.1:9010 ./scripts/run_frontend.sh
+```
+
+## Production / AWS deployment
+
+For production, do not keep the Vite development server running. Build the
+frontend once; the FastAPI backend will automatically serve `frontend/dist` at
+the root URL and serve the API below `/api`. DevOps then exposes only port
+`8010` (normally through an HTTPS load balancer or reverse proxy).
+
+All deployment-specific values can be supplied as environment variables, so no
+Python or TypeScript source needs to be edited. Start from the tracked template:
+
+```bash
+cp .env.example .env
+# Edit .env with the server/container URLs and mounted data paths.
+set -a
+source .env
+set +a
+
+npm --prefix frontend ci
+npm --prefix frontend run build
+python3 -m venv backend/.venv
+backend/.venv/bin/pip install -r backend/requirements.txt
+./scripts/run_backend.sh
+```
+
+Then open `http://<server>:8010`. In AWS, point the load balancer target group at
+port `8010` and use its HTTPS DNS name instead.
+
+The main deployment variables are:
+
+| Variable | Purpose | Example |
+| --- | --- | --- |
+| `VPD_VALHALLA_URL` | Valhalla URL reachable from the dashboard backend | `http://valhalla.internal:8002` |
+| `VPD_OSRM_URL` | OSRM URL reachable from the dashboard backend | `http://osrm.internal:5000` |
+| `VPD_POI_CSV_PATH` | POI CSV on the dashboard host/container | `/data/landmarks.csv` |
+| `VPD_POI_GEOJSON_PATH` | GeoJSON fallback | `/data/landmarks.geojson` |
+| `VPD_PBF_PATH` | Source PBF metadata path | `/data/map.osm.pbf` |
+| `VPD_TILES_PATH` | Valhalla tiles metadata path | `/data/valhalla_tiles` |
+| `VPD_VALHALLA_CONFIG_PATH` | Valhalla config metadata path | `/data/valhalla.json` |
+| `VPD_SCENARIO_DIR` | Writable saved-scenario directory | `/data/scenarios` |
+| `VPD_BACKEND_PORT` | Dashboard HTTP port | `8010` |
+| `VPD_BACKEND_WORKERS` | Worker count; keep `1` because active-dataset state is in memory | `1` |
+| `VPD_ALLOWED_ORIGINS` | Comma-separated browser origins | `https://debugger.company.com` |
+
+See [.env.example](.env.example) for optional timeout, debug JSONL, map style,
+map center, and route-path settings. Environment variables override YAML,
+including the active named dataset. A clean checkout falls back to the tracked
+`config/debugger.example.yaml`; `VPD_CONFIG` can point to a completely separate
+YAML file if DevOps prefers file-based configuration.
+
+### Candidate Analysis deployment contract
+
+OSRM Candidate Analysis does not recompute landmark selection. It displays extraction-time evidence emitted by the custom OSRM build and joins that evidence to runtime maneuvers using `maneuver.turn_id`.
+
+Therefore the OSRM routing dataset and debugger sidecar must come from the same `osrm-extract` execution. Configure the debugger with:
+
+```bash
+VPD_OSRM_LANDMARK_DEBUG_JSONL=/data/osrm/turn_debug_v2.jsonl
+```
+
+The matching `.osrm` and `.osrm.*` files belong to the OSRM service. The debugger only needs the corresponding JSONL sidecar. Do not mix a sidecar from another extraction, even when the source PBF is the same.
+
+The OSRM v2 sidecar includes P2 association provenance: `incoming_association_augmented`, `outgoing_association_augmented`, and `association_augmented`. The dashboard displays effective evidence as `normal` or `augmented fallback`. Augmented evidence is valid evidence; it is not automatically rejected.
+
+A typical debugger mount contains `/data/landmarks.csv`, `/data/landmarks.geojson`, `/data/osrm/turn_debug_v2.jsonl`, and `/data/scenarios/`. Valhalla association diagnostics may also be mounted when required.
+
+In production the React frontend and FastAPI `/api` endpoints are served from the same origin, so CORS is disabled by default. Set `VPD_ALLOWED_ORIGINS` only when another browser origin must call the API.
+
+### Docker
+
+The included Dockerfile builds the React frontend and packages it with the API:
+
+```bash
+docker build -t valhalla-poi-debugger .
+docker run --rm \
+  --env-file .env \
+  -p 8010:8010 \
+  -v /absolute/host/data:/data \
+  valhalla-poi-debugger
+```
+
+The Valhalla and OSRM URLs are resolved from inside this container. Do not use
+`localhost` for services running in other containers or machines; use their
+Docker/Kubernetes service name, private DNS name, or private IP. Valhalla and
+OSRM remain separate services and must be started with their own tiles/config.
+The dashboard only calls their HTTP endpoints.
+
+The dashboard itself reads the POI CSV or GeoJSON and the writable scenarios
+directory. PBF, tile, and Valhalla-config paths are currently displayed as
+dataset metadata; the Valhalla/OSRM services must receive their actual routing
+files through their own deployment configuration and volume mounts.
+
+For an internet-facing AWS deployment, place the dashboard behind HTTPS and
+company authentication (ALB/OIDC, VPN, or an authenticated reverse proxy). The
+application itself does not provide login protection.
 
 ## POI file expected by Phase 1
 

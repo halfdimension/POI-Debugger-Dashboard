@@ -1,0 +1,13 @@
+.git
+.env
+.venv
+backend/.venv
+config/debugger.yaml
+frontend/node_modules
+frontend/dist
+frontend/*.tsbuildinfo
+__pycache__
+*.pyc
+*.log
+.phase*_backup
+.product_cleanup_backup

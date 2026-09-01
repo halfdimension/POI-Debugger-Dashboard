@@ -228,8 +228,18 @@ export interface CandidateAnalysisCandidate {
   distance_m?: number | null;
   distance_to_maneuver_m?: number | null;
 
-  poi_bearing_deg?: number | null;
-  bearing_deviation_deg?: number | null;
+  // OSRM v2 authoritative maneuver / route-edge evidence.
+  on_incoming?: boolean | null;
+  on_outgoing?: boolean | null;
+
+  incoming_distance_to_turn_m?: number | null;
+  outgoing_distance_from_turn_m?: number | null;
+
+  incoming_perpendicular_distance_m?: number | null;
+  outgoing_perpendicular_distance_m?: number | null;
+
+  maneuver_distance_m?: number | null;
+  perpendicular_distance_m?: number | null;
 
   right?: boolean | null;
 

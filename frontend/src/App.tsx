@@ -349,11 +349,27 @@ function CandidateDecisionList({
                   </div>
 
                   <div>
-                    <span>distance</span>
+                    <span>
+                      {engine === 'osrm'
+                        ? 'maneuver distance'
+                        : 'distance'}
+                    </span>
                     <strong>
-                      {typeof candidate.distance_m === 'number'
-                        ? `${candidate.distance_m.toFixed(2)} m`
-                        : '—'}
+                      {engine === 'osrm'
+                        ? (
+                          typeof candidate.maneuver_distance_m ===
+                          'number'
+                            ? `${
+                                candidate.maneuver_distance_m
+                                  .toFixed(2)
+                              } m`
+                            : '—'
+                        )
+                        : (
+                          typeof candidate.distance_m === 'number'
+                            ? `${candidate.distance_m.toFixed(2)} m`
+                            : '—'
+                        )}
                     </strong>
                   </div>
 
@@ -367,28 +383,86 @@ function CandidateDecisionList({
                   {engine === 'osrm' && (
                     <>
                       <div>
-                        <span>POI bearing</span>
+                        <span>route edge role</span>
                         <strong>
-                          {typeof candidate.poi_bearing_deg ===
+                          {candidate.on_incoming &&
+                          candidate.on_outgoing
+                            ? 'incoming + outgoing'
+                            : candidate.on_incoming
+                              ? 'incoming'
+                              : candidate.on_outgoing
+                                ? 'outgoing'
+                                : '—'}
+                        </strong>
+                      </div>
+
+                      <div>
+                        <span>perpendicular distance</span>
+                        <strong>
+                          {typeof candidate.perpendicular_distance_m ===
                           'number'
-                            ? (
-                              `${candidate.poi_bearing_deg.toFixed(2)}°`
-                            )
+                            ? `${
+                                candidate.perpendicular_distance_m
+                                  .toFixed(2)
+                              } m`
                             : '—'}
                         </strong>
                       </div>
 
                       <div>
-                        <span>bearing deviation</span>
+                        <span>incoming → turn</span>
                         <strong>
-                          {typeof candidate.bearing_deviation_deg ===
-                          'number'
-                            ? (
-                              `${
-                                candidate.bearing_deviation_deg
+                          {typeof candidate
+                            .incoming_distance_to_turn_m === 'number'
+                            ? `${
+                                candidate
+                                  .incoming_distance_to_turn_m
                                   .toFixed(2)
-                              }°`
-                            )
+                              } m`
+                            : '—'}
+                        </strong>
+                      </div>
+
+                      <div>
+                        <span>turn → outgoing</span>
+                        <strong>
+                          {typeof candidate
+                            .outgoing_distance_from_turn_m === 'number'
+                            ? `${
+                                candidate
+                                  .outgoing_distance_from_turn_m
+                                  .toFixed(2)
+                              } m`
+                            : '—'}
+                        </strong>
+                      </div>
+
+                      <div>
+                        <span>incoming perpendicular</span>
+                        <strong>
+                          {typeof candidate
+                            .incoming_perpendicular_distance_m ===
+                          'number'
+                            ? `${
+                                candidate
+                                  .incoming_perpendicular_distance_m
+                                  .toFixed(2)
+                              } m`
+                            : '—'}
+                        </strong>
+                      </div>
+
+                      <div>
+                        <span>outgoing perpendicular</span>
+                        <strong>
+                          {typeof candidate
+                            .outgoing_perpendicular_distance_m ===
+                          'number'
+                            ? `${
+                                candidate
+                                  .outgoing_perpendicular_distance_m
+                                  .toFixed(2)
+                              } m`
                             : '—'}
                         </strong>
                       </div>
@@ -1317,7 +1391,29 @@ export default function App() {
         priority:
           candidate.priority ?? '',
         distance_m:
-          candidate.distance_m ?? '',
+          engine === 'osrm'
+            ? candidate.maneuver_distance_m ?? ''
+            : candidate.distance_m ?? '',
+        maneuver_distance_m:
+          candidate.maneuver_distance_m ?? '',
+        perpendicular_distance_m:
+          candidate.perpendicular_distance_m ?? '',
+        route_edge_role:
+          engine === 'osrm'
+            ? (
+              candidate.on_incoming && candidate.on_outgoing
+                ? 'incoming + outgoing'
+                : candidate.on_incoming
+                  ? 'incoming'
+                  : candidate.on_outgoing
+                    ? 'outgoing'
+                    : ''
+            )
+            : '',
+        on_incoming:
+          candidate.on_incoming ?? '',
+        on_outgoing:
+          candidate.on_outgoing ?? '',
         reason:
           candidate.reason ?? '',
       };
@@ -2202,6 +2298,15 @@ export default function App() {
               false,
             engine:
               properties.engine ??
+              '',
+            route_edge_role:
+              properties.route_edge_role ??
+              '',
+            maneuver_distance_m:
+              properties.maneuver_distance_m ??
+              '',
+            perpendicular_distance_m:
+              properties.perpendicular_distance_m ??
               '',
             distance_m:
               properties.distance_m ??

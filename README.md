@@ -235,6 +235,86 @@ application itself does not provide login protection.
 
 Coordinate order in GeoJSON is `[longitude, latitude]`.
 
+Official company landmarks using the unprefixed tag schema can be regenerated
+as a debugger-compatible CSV with:
+
+```bash
+python3 scripts/extract_official_landmarks.py \
+  /home/cn004231/harsh/poi_official_data/delhi_small_lmg.osm.pbf \
+  data/cp_official_lmg.landmarks.csv
+```
+
+This extraction only affects dashboard visualization. It does not rebuild or
+switch Valhalla tiles or OSRM routing data.
+
+### Rohtak Official LMG
+
+Select **Rohtak - Official LMG** (`rohtak_lmg`) in the existing dataset selector.
+The frontend discovers it from `/api/datasets`, activates it through
+`POST /api/datasets/rohtak_lmg/activate`, and reloads `/api/pois`. Its optional
+`map_bounds` metadata fits the map to the Rohtak bbox; datasets without bounds
+use the existing `frontend.default_center` and `frontend.default_zoom`.
+The configured initial dataset remains unchanged.
+
+Regenerate the 576 landmark rows with the same extractor and 16-column CSV
+schema used by CP Official LMG:
+
+```bash
+cd /home/cn004231/harsh/VALHALLA/custom_debugger_dashboard/valhalla-poi-debugger-phase1
+python3 scripts/extract_official_landmarks.py \
+  /home/cn004231/harsh/poi_official_data/Rohtak/rohtak_lmg.osm.pbf \
+  data/rohtak_lmg.landmarks.csv
+```
+
+This requires `osmium-tool`. A separate GeoJSON file is unnecessary: the
+backend generates the feature collection from CSV in memory, as it does for CP.
+
+OSRM at `http://localhost:5000` is an external service. Dataset activation
+changes debugger POIs and the dataset-specific debug JSONL path; it does not
+preprocess a PBF, start OSRM, change its URL, or switch its routing graph.
+For Rohtak guidance and Candidate Analysis, prepare and serve the matching
+graph separately. The commands below follow the existing engine rebuild
+script's extract/partition/customize/MLD sequence and its custom
+`profiles/adv/fastest/Driving_Fastest.lua` profile (with local paths and port
+5000). They rebuild the Rohtak graph files alongside the PBF:
+
+```bash
+OSRM_ROOT=/home/cn004231/harsh/OSRM/engines/poi_work/route_eta-route_eta_penalty
+ROHTAK_DATA=/home/cn004231/harsh/poi_official_data/Rohtak
+ROHTAK_DEBUG=/home/cn004231/harsh/VALHALLA/custom_debugger_dashboard/valhalla-poi-debugger-phase1/data/rohtak_lmg.turn_debug_v2.jsonl
+
+OSRM_LANDMARK_DEBUG_JSONL="$ROHTAK_DEBUG" \
+  "$OSRM_ROOT/build/osrm-extract" \
+  -p "$OSRM_ROOT/profiles/adv/fastest/Driving_Fastest.lua" \
+  "$ROHTAK_DATA/rohtak_lmg.osm.pbf" && \
+  "$OSRM_ROOT/build/osrm-partition" "$ROHTAK_DATA/rohtak_lmg.osrm" && \
+  "$OSRM_ROOT/build/osrm-customize" "$ROHTAK_DATA/rohtak_lmg.osrm" && \
+  "$OSRM_ROOT/build/osrm-routed" -a MLD -p 5000 "$ROHTAK_DATA/rohtak_lmg.osrm"
+```
+
+Port 5000 must be free before starting this server. The JSONL must be produced
+by the same extraction as the served graph; existing preprocessed Rohtak files
+alone do not supply the matching Candidate Analysis sidecar. Selecting a CP
+dataset later also requires separately serving its matching OSRM graph.
+
+Start the debugger in two terminals using the existing scripts:
+
+```bash
+cd /home/cn004231/harsh/VALHALLA/custom_debugger_dashboard/valhalla-poi-debugger-phase1
+./scripts/run_backend.sh
+```
+
+```bash
+cd /home/cn004231/harsh/VALHALLA/custom_debugger_dashboard/valhalla-poi-debugger-phase1
+./scripts/run_frontend.sh
+```
+
+Open `http://localhost:5173`, select Rohtak, and click START and END on the map.
+The existing route comparison and OSRM instruction/debug display are reused.
+Valhalla remains a separate service with its own tiles; its Rohtak response
+depends on those tiles covering Rohtak, while the OSRM result is displayed
+independently.
+
 ## Planned next phases
 
 ### Phase 2 — PBF → POI extraction

@@ -104,6 +104,7 @@ class DatasetManager:
         summary = {
             "id": dataset_id,
             "name": cfg.get("name", dataset_id),
+            "map_bounds": deepcopy(cfg.get("map_bounds")),
             "pbf_path": cfg.get("pbf_path"),
             "poi_csv_path": cfg.get("poi_csv_path"),
             "poi_geojson_path": cfg.get("poi_geojson_path"),
@@ -177,6 +178,7 @@ class DatasetManager:
             "invalid_coordinates": 0,
             "missing_names": 0,
             "invisible_pois": 0,
+            "duplicate_poi_ids": 0,
             "duplicate_node_ids": 0,
             "landmark_types": {},
         }
@@ -197,6 +199,7 @@ class DatasetManager:
         invalid_coordinates = 0
         missing_names = 0
         invisible_pois = 0
+        poi_ids: Counter[str] = Counter()
         node_ids: Counter[str] = Counter()
         landmark_types: Counter[str] = Counter()
 
@@ -216,6 +219,7 @@ class DatasetManager:
             name_col = str(cfg.get("name_column") or "name")
             visible_col = str(cfg.get("visible_column") or "visible")
             node_id_col = str(cfg.get("node_id_column") or "new_node_id")
+            poi_id_col = str(cfg.get("poi_id_column") or "mappls_poi_id")
             type_col = str(cfg.get("type_column") or "landmark_type")
 
             for row in reader:
@@ -241,6 +245,10 @@ class DatasetManager:
                 if node_id:
                     node_ids[node_id] += 1
 
+                poi_id = clean.get(poi_id_col, "").strip()
+                if poi_id:
+                    poi_ids[poi_id] += 1
+
                 landmark_type = clean.get(type_col, "").strip() or "unknown"
                 landmark_types[landmark_type] += 1
 
@@ -257,6 +265,7 @@ class DatasetManager:
             "invalid_coordinates": invalid_coordinates,
             "missing_names": missing_names,
             "invisible_pois": invisible_pois,
+            "duplicate_poi_ids": sum(count - 1 for count in poi_ids.values() if count > 1),
             "duplicate_node_ids": duplicate_node_ids,
             "landmark_types": dict(sorted(landmark_types.items(), key=lambda item: (-item[1], item[0]))),
         }
@@ -278,6 +287,7 @@ class DatasetManager:
         valid_features: list[dict[str, Any]] = []
         missing_names = 0
         invisible_pois = 0
+        poi_ids: Counter[str] = Counter()
         node_ids: Counter[str] = Counter()
         landmark_types: Counter[str] = Counter()
         invalid_coordinates = 0
@@ -305,6 +315,9 @@ class DatasetManager:
             node_id = str(properties.get("new_node_id", "")).strip()
             if node_id:
                 node_ids[node_id] += 1
+            poi_id = str(properties.get("mappls_poi_id", "")).strip()
+            if poi_id:
+                poi_ids[poi_id] += 1
             landmark_type = str(properties.get("landmark_type", "")).strip() or "unknown"
             landmark_types[landmark_type] += 1
             valid_features.append(feature)
@@ -315,6 +328,7 @@ class DatasetManager:
             "invalid_coordinates": invalid_coordinates,
             "missing_names": missing_names,
             "invisible_pois": invisible_pois,
+            "duplicate_poi_ids": sum(count - 1 for count in poi_ids.values() if count > 1),
             "duplicate_node_ids": sum(count - 1 for count in node_ids.values() if count > 1),
             "landmark_types": dict(sorted(landmark_types.items(), key=lambda item: (-item[1], item[0]))),
         }

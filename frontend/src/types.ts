@@ -6,6 +6,7 @@ export interface DatasetStats {
   invalid_coordinates: number;
   missing_names: number;
   invisible_pois: number;
+  duplicate_poi_ids: number;
   duplicate_node_ids: number;
   landmark_types: Record<string, number>;
 }
@@ -13,6 +14,7 @@ export interface DatasetStats {
 export interface DatasetSummary {
   id: string;
   name: string;
+  map_bounds?: [LngLat, LngLat] | null;
   pbf_path?: string;
   poi_csv_path?: string;
   poi_geojson_path?: string;

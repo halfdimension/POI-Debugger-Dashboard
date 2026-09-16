@@ -67,6 +67,35 @@ datasets:
     valhalla_association_debug_jsonl_path: ""
     osrm_landmark_debug_jsonl_path: ""
 
+  # Official company schema: navigation_landmark, poi_id, landmark_type,
+  # landmark_priority, and landmark_visible. This remains debugger-only metadata.
+  cp_official_lmg:
+    name: "CP - Official LMG"
+    pbf_path: "/home/cn004231/harsh/poi_official_data/delhi_small_lmg.osm.pbf"
+    poi_csv_path: "./data/cp_official_lmg.landmarks.csv"
+
+  rohtak_lmg:
+    name: "Rohtak - Official LMG"
+    pbf_path: "/home/cn004231/harsh/poi_official_data/Rohtak/rohtak_lmg.osm.pbf"
+    poi_csv_path: "./data/rohtak_lmg.landmarks.csv"
+    osrm_landmark_debug_jsonl_path: "./data/rohtak_lmg.turn_debug_v2.jsonl"
+    # MapLibre bounds: [[west, south], [east, north]].
+    map_bounds: [[76.472397, 28.832644], [76.701050, 28.954681]]
+
+  mix_data:
+    name: "Mix Data - Official LMG"
+    pbf_path: "/home/cn004231/harsh/poi_official_data/mix_data/mix_data.osm.pbf"
+    poi_csv_path: "./data/mix_data.landmarks.csv"
+    # MapLibre bounds: [[west, south], [east, north]].
+    map_bounds: [[76.493683, 28.086520], [77.857361, 29.006939]]
+
+  new_data:
+    name: "New Data - 16 SEPT"
+    pbf_path: "/home/cn004231/harsh/poi_official_data/New_Data/NextGen_All_India_Driving_LMG_v2026.08.pbf"
+    poi_csv_path: "./data/weekly_2026_08.landmarks.csv"
+    # MapLibre bounds: [[west, south], [east, north]].
+    map_bounds: [[68.4929560,5.3313580], [97.0461940,36.8764500]]  
+
 # Phase 3A saved route scenarios
 scenarios:
   directory: "./data/scenarios"

@@ -857,6 +857,108 @@ function poiPopupHtml(properties: GeoJSON.GeoJsonProperties): string {
   return `<div class="poi-popup"><div class="poi-popup-title">${escapeHtml(title)}</div>${rows}</div>`;
 }
 
+function makePoiPopupDraggable(
+  popup: maplibregl.Popup,
+  map: maplibregl.Map,
+): () => void {
+  const popupElement = popup.getElement();
+  const title = popupElement.querySelector<HTMLElement>('.poi-popup-title');
+  if (!title) return () => {};
+
+  let dragging = false;
+  let pointerId: number | null = null;
+  let pointerStartX = 0;
+  let pointerStartY = 0;
+  let offsetStartX = 0;
+  let offsetStartY = 0;
+  let offsetX = 0;
+  let offsetY = 0;
+
+  popupElement.classList.add('draggable-poi-popup');
+
+  const setClampedOffset = (nextX: number, nextY: number) => {
+    popupElement.style.translate = `${nextX}px ${nextY}px`;
+
+    const mapRect = map.getContainer().getBoundingClientRect();
+    const popupRect = popupElement.getBoundingClientRect();
+    const padding = 4;
+
+    if (popupRect.width <= mapRect.width - padding * 2) {
+      if (popupRect.left < mapRect.left + padding) {
+        nextX += mapRect.left + padding - popupRect.left;
+      } else if (popupRect.right > mapRect.right - padding) {
+        nextX -= popupRect.right - (mapRect.right - padding);
+      }
+    }
+
+    if (popupRect.height <= mapRect.height - padding * 2) {
+      if (popupRect.top < mapRect.top + padding) {
+        nextY += mapRect.top + padding - popupRect.top;
+      } else if (popupRect.bottom > mapRect.bottom - padding) {
+        nextY -= popupRect.bottom - (mapRect.bottom - padding);
+      }
+    }
+
+    popupElement.style.translate = `${nextX}px ${nextY}px`;
+    offsetX = nextX;
+    offsetY = nextY;
+  };
+
+  const stopDragging = (event: PointerEvent) => {
+    if (!dragging || event.pointerId !== pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    dragging = false;
+    popupElement.classList.remove('is-dragging');
+    if (title.hasPointerCapture(event.pointerId)) {
+      title.releasePointerCapture(event.pointerId);
+    }
+    pointerId = null;
+  };
+
+  const onPointerDown = (event: PointerEvent) => {
+    if (!event.isPrimary || event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    dragging = true;
+    pointerId = event.pointerId;
+    pointerStartX = event.clientX;
+    pointerStartY = event.clientY;
+    offsetStartX = offsetX;
+    offsetStartY = offsetY;
+    popupElement.classList.add('is-dragging');
+    title.setPointerCapture(event.pointerId);
+  };
+
+  const onPointerMove = (event: PointerEvent) => {
+    if (!dragging || event.pointerId !== pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setClampedOffset(
+      offsetStartX + event.clientX - pointerStartX,
+      offsetStartY + event.clientY - pointerStartY,
+    );
+  };
+
+  const stopClickPropagation = (event: MouseEvent) => event.stopPropagation();
+
+  title.addEventListener('pointerdown', onPointerDown);
+  title.addEventListener('pointermove', onPointerMove);
+  title.addEventListener('pointerup', stopDragging);
+  title.addEventListener('pointercancel', stopDragging);
+  title.addEventListener('lostpointercapture', stopDragging);
+  title.addEventListener('click', stopClickPropagation);
+
+  return () => {
+    title.removeEventListener('pointerdown', onPointerDown);
+    title.removeEventListener('pointermove', onPointerMove);
+    title.removeEventListener('pointerup', stopDragging);
+    title.removeEventListener('pointercancel', stopDragging);
+    title.removeEventListener('lostpointercapture', stopDragging);
+    title.removeEventListener('click', stopClickPropagation);
+  };
+}
+
 function pointFeature(feature: GeoJSON.Feature): GeoJSON.Feature<GeoJSON.Point> | null {
   return feature.geometry?.type === 'Point' ? feature as GeoJSON.Feature<GeoJSON.Point> : null;
 }
@@ -1010,8 +1112,10 @@ export default function App() {
       .setLngLat(coordinate)
       .setHTML(poiPopupHtml(properties ?? {}))
       .addTo(map);
+    const removeDragHandlers = makePoiPopupDraggable(popup, map);
 
     popup.on('close', () => {
+      removeDragHandlers();
       if (activePoiPopupRef.current === popup) {
         activePoiPopupRef.current = null;
       }
@@ -1060,6 +1164,8 @@ export default function App() {
   const [valhallaStatus, setValhallaStatus] = useState<'checking' | 'up' | 'down'>('checking');
   const [osrmStatus, setOsrmStatus] = useState<'checking' | 'up' | 'down'>('checking');
   const [routeView, setRouteView] = useState<'both' | 'valhalla' | 'osrm'>('both');
+  const [routeComparisonCollapsed, setRouteComparisonCollapsed] = useState(false);
+  const [routePoiCardCollapsed, setRoutePoiCardCollapsed] = useState(false);
   const [rightPanelCollapsed, setRightPanelCollapsed] = useState(false);
   const [map3D, setMap3D] = useState(false);
   const [showCandidateMap, setShowCandidateMap] = useState(false);
@@ -2418,6 +2524,17 @@ export default function App() {
   }, [config]);
 
   useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !config || !activeDataset) return;
+
+    if (activeDataset.map_bounds) {
+      map.fitBounds(activeDataset.map_bounds, { padding: 60, maxZoom: 16, duration: 0 });
+    } else {
+      map.jumpTo({ center: config.frontend.default_center, zoom: config.frontend.default_zoom });
+    }
+  }, [config, activeDataset?.id]);
+
+  useEffect(() => {
     const map = mapRef.current as (MapLibreMap & { __pickMode?: PickMode }) | null;
     if (map) map.__pickMode = pickMode;
   }, [pickMode]);
@@ -3334,12 +3451,23 @@ export default function App() {
           <div ref={mapContainer} className="map" />
 
           {(route || osrmRoute) && (
-            <div className="route-comparison-overlay">
+            <div className={`route-comparison-overlay ${routeComparisonCollapsed ? 'collapsed' : ''}`}>
               <div className="route-comparison-heading">
                 <strong>Route Comparison</strong>
                 <span>same START / END</span>
+                <button
+                  type="button"
+                  className="route-comparison-toggle"
+                  aria-expanded={!routeComparisonCollapsed}
+                  aria-label={routeComparisonCollapsed ? 'Expand route comparison' : 'Collapse route comparison'}
+                  title={routeComparisonCollapsed ? 'Expand route comparison' : 'Collapse route comparison'}
+                  onClick={() => setRouteComparisonCollapsed((value) => !value)}
+                >
+                  {routeComparisonCollapsed ? '+' : '−'}
+                </button>
               </div>
 
+              <div className="route-comparison-body" aria-hidden={routeComparisonCollapsed}>
               <div className="route-comparison-engines">
                 <div className="route-engine-summary valhalla">
                   <div className="route-engine-name">
@@ -3438,6 +3566,7 @@ export default function App() {
                 <span><i className="comparison-line osrm" />OSRM</span>
                 <span className="overlap-note">Blue + red border = overlap</span>
               </div>
+              </div>
             </div>
           )}
 
@@ -3452,14 +3581,25 @@ export default function App() {
           </div>
 
           {(route || osrmRoute) && (
-            <div className="route-narration-overlay dual-engine-pois">
+            <div className={`route-narration-overlay dual-engine-pois ${routePoiCardCollapsed ? 'collapsed' : ''}`}>
               <div className="route-narration-overlay-heading">
                 <strong>Landmark POIs on this route</strong>
                 <span>
                   V {routeNarrationStrongCount} · O {osrmRouteNarrationPois.length}
                 </span>
+                <button
+                  type="button"
+                  className="route-comparison-toggle route-poi-card-toggle"
+                  aria-expanded={!routePoiCardCollapsed}
+                  aria-label={routePoiCardCollapsed ? 'Expand landmark POIs' : 'Collapse landmark POIs'}
+                  title={routePoiCardCollapsed ? 'Expand landmark POIs' : 'Collapse landmark POIs'}
+                  onClick={() => setRoutePoiCardCollapsed((value) => !value)}
+                >
+                  {routePoiCardCollapsed ? '+' : '−'}
+                </button>
               </div>
 
+              <div className="route-poi-engine-sections" aria-hidden={routePoiCardCollapsed}>
               <div className="route-poi-engine-section valhalla">
                 <div className="route-poi-engine-heading">
                   <span className="route-poi-engine-badge valhalla">
@@ -3477,7 +3617,7 @@ export default function App() {
                   </div>
                 ) : (
                   <div className="route-narration-overlay-list engine-list">
-                    {routeNarrationPois.slice(0, 8).map((item) => {
+                    {routeNarrationPois.map((item) => {
                       const alsoOsrm = osrmRoutePoiKeys.has(item.key);
 
                       return (
@@ -3529,7 +3669,7 @@ export default function App() {
                   </div>
                 ) : (
                   <div className="route-narration-overlay-list engine-list">
-                    {osrmRouteNarrationPois.slice(0, 8).map((item) => {
+                    {osrmRouteNarrationPois.map((item) => {
                       const alsoValhalla =
                         valhallaRoutePoiKeys.has(item.key);
 
@@ -3562,6 +3702,7 @@ export default function App() {
                     })}
                   </div>
                 )}
+              </div>
               </div>
             </div>
           )}
@@ -3620,7 +3761,8 @@ export default function App() {
               <div><strong>{activeDataset?.stats?.total_rows ?? 0}</strong><span>rows</span></div>
               <div><strong>{activeDataset?.stats?.valid_pois ?? 0}</strong><span>valid POIs</span></div>
               <div><strong>{activeDataset?.stats?.invalid_coordinates ?? 0}</strong><span>bad coords</span></div>
-              <div><strong>{activeDataset?.stats?.duplicate_node_ids ?? 0}</strong><span>duplicate IDs</span></div>
+              <div><strong>{activeDataset?.stats?.duplicate_poi_ids ?? 0}</strong><span>duplicate POI IDs</span></div>
+              <div><strong>{activeDataset?.stats?.duplicate_node_ids ?? 0}</strong><span>duplicate node IDs</span></div>
             </div>
             <div className="dataset-note">Dataset switching changes the debugger POI layer only. It does not restart Valhalla or swap the tile set used by the running Valhalla service.</div>
           </section>

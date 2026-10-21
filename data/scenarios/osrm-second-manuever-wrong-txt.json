@@ -1,0 +1,25 @@
+{
+  "id": "osrm-second-manuever-wrong-txt",
+  "name": "OSRM_SECOND_MANUEVER_WRONG.txt",
+  "dataset": "cp_landmarks",
+  "request": {
+    "start": {
+      "lon": 77.21205830816257,
+      "lat": 28.629362989318835
+    },
+    "end": {
+      "lon": 77.21611873294904,
+      "lat": 28.64249081401735
+    },
+    "costing": "auto"
+  },
+  "created_at": "2026-08-25T11:06:02Z",
+  "updated_at": "2026-08-25T11:06:02Z",
+  "notes": "i want to check whether their is bug in this or not",
+  "expectation": {
+    "landmark_name": "left",
+    "instruction_contains": "left",
+    "instruction_not_contains": "merge right",
+    "case_sensitive": false
+  }
+}

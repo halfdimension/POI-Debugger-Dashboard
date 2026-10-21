@@ -1,0 +1,18 @@
+{
+  "id": "3-fork-right",
+  "name": "3_FORK_RIGHT",
+  "dataset": "mix_data",
+  "request": {
+    "start": {
+      "lon": 76.56628910154171,
+      "lat": 28.127288569587463
+    },
+    "end": {
+      "lon": 77.8336783417434,
+      "lat": 28.972956828346682
+    },
+    "costing": "auto"
+  },
+  "created_at": "2026-09-15T10:55:34Z",
+  "updated_at": "2026-09-15T10:55:34Z"
+}

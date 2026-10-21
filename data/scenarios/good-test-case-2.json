@@ -1,0 +1,18 @@
+{
+  "id": "good-test-case-2",
+  "name": "good test case 2",
+  "dataset": "cp_landmarks",
+  "request": {
+    "start": {
+      "lon": 77.22593908917747,
+      "lat": 28.630216072273768
+    },
+    "end": {
+      "lon": 77.21073989367738,
+      "lat": 28.641369999633298
+    },
+    "costing": "auto"
+  },
+  "created_at": "2026-09-01T08:38:06Z",
+  "updated_at": "2026-09-01T08:38:06Z"
+}

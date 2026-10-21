@@ -1,0 +1,18 @@
+{
+  "id": "fork-right2",
+  "name": "Fork_Right2",
+  "dataset": "mix_data",
+  "request": {
+    "start": {
+      "lon": 77.63599923942598,
+      "lat": 28.09557694914632
+    },
+    "end": {
+      "lon": 76.92222775776281,
+      "lat": 28.6722980441034
+    },
+    "costing": "auto"
+  },
+  "created_at": "2026-09-15T10:42:15Z",
+  "updated_at": "2026-09-15T10:42:15Z"
+}

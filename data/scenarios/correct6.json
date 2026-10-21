@@ -1,0 +1,18 @@
+{
+  "id": "correct6",
+  "name": "correct6",
+  "dataset": "cp_official_lmg",
+  "request": {
+    "start": {
+      "lon": 77.2537192249784,
+      "lat": 28.546187479416957
+    },
+    "end": {
+      "lon": 77.2211660101724,
+      "lat": 28.61465544706995
+    },
+    "costing": "auto"
+  },
+  "created_at": "2026-09-15T07:50:46Z",
+  "updated_at": "2026-09-15T07:50:46Z"
+}

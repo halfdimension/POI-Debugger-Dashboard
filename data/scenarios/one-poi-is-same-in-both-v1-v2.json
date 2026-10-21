@@ -1,0 +1,18 @@
+{
+  "id": "one-poi-is-same-in-both-v1-v2",
+  "name": "One POI is same in both V1 & V2",
+  "dataset": "cp_landmarks",
+  "request": {
+    "start": {
+      "lon": 77.21224991177667,
+      "lat": 28.64219568524321
+    },
+    "end": {
+      "lon": 77.22088385508965,
+      "lat": 28.627700149680194
+    },
+    "costing": "auto"
+  },
+  "created_at": "2026-09-01T08:27:57Z",
+  "updated_at": "2026-09-01T08:27:57Z"
+}

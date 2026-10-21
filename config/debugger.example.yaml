@@ -11,7 +11,7 @@ valhalla:
   association_debug_jsonl_path: ""
 
 osrm:
-  service_url: "http://localhost:5000"
+  service_url: "http://10.71.8.14/DE-5000"
   profile: "driving"
   route_path: "/route/v1"
   nearest_path: "/nearest/v1"

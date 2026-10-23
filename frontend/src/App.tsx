@@ -1089,6 +1089,8 @@ function evaluateScenario(scenario: RouteScenario, response: ValhallaRouteRespon
   };
 }
 
+type Basemap = 'openfreemap' | 'mapmyindia';
+
 export default function App() {
   const mapContainer = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
@@ -1151,6 +1153,8 @@ export default function App() {
 
 
   const [config, setConfig] = useState<DebuggerConfig | null>(null);
+  const [basemap, setBasemap] = useState<Basemap>('mapmyindia');
+  const basemapRef = useRef<Basemap>('mapmyindia');
   const [pickMode, setPickMode] = useState<PickMode>('start');
   const [start, setStart] = useState<LngLat | null>(null);
   const [end, setEnd] = useState<LngLat | null>(null);
@@ -1385,6 +1389,45 @@ export default function App() {
     ],
   );
 
+  async function installMapmyindiaBasemap(map: MapLibreMap) {
+    try {
+      const response = await fetch('/mapmyindia-style.json');
+
+      if (!response.ok) {
+        throw new Error(`Style HTTP ${response.status}`);
+      }
+
+      const style = await response.json();
+      const raster = style.sources?.mapmyindia;
+
+      if (raster?.type !== 'raster' || !Array.isArray(raster.tiles)) {
+        throw new Error('Invalid MapmyIndia raster source');
+      }
+
+      if (mapRef.current !== map) return;
+
+      map.addSource('mapmyindia-tiles', {
+        type: 'raster',
+        tiles: raster.tiles,
+        tileSize: raster.tileSize ?? 256,
+        attribution: raster.attribution ?? '© MapmyIndia',
+      });
+
+      map.addLayer(
+        {
+          id: 'mapmyindia-raster',
+          type: 'raster',
+          source: 'mapmyindia-tiles',
+          layout: {
+            visibility: basemapRef.current === 'mapmyindia' ? 'visible' : 'none',
+          },
+        },
+        'osrm-route',
+      );
+    } catch (error) {
+      console.error('MapmyIndia basemap failed:', error);
+    }
+  }
 
   useEffect(() => {
     if (!showCandidateMap) {
@@ -2515,6 +2558,8 @@ export default function App() {
         map.on('mouseenter', layerId, () => { map.getCanvas().style.cursor = 'pointer'; });
         map.on('mouseleave', layerId, () => { map.getCanvas().style.cursor = ''; });
       }
+
+      void installMapmyindiaBasemap(map);
     });
 
     return () => {
@@ -3448,7 +3493,37 @@ export default function App() {
               {' '}{maneuverViews.length} Odin maneuvers · {osrmStepViews.length} OSRM steps
             </span>
           </div>
-          <div ref={mapContainer} className="map" />
+          <div className="map-wrapper">
+            <div ref={mapContainer} className="map" />
+
+            <div className="basemap-picker">
+              <label htmlFor="basemap-select">Basemap</label>
+
+              <select
+                id="basemap-select"
+                value={basemap}
+                onChange={(event) => {
+                  const next = event.target.value as Basemap;
+
+                  basemapRef.current = next;
+                  setBasemap(next);
+
+                  const map = mapRef.current;
+
+                  if (map?.getLayer('mapmyindia-raster')) {
+                    map.setLayoutProperty(
+                      'mapmyindia-raster',
+                      'visibility',
+                      next === 'mapmyindia' ? 'visible' : 'none'
+                    );
+                  }
+                }}
+              >
+                <option value="mapmyindia">MapmyIndia</option>
+                <option value="openfreemap">OpenFreeMap</option>
+              </select>
+            </div>
+          </div>
 
           {(route || osrmRoute) && (
             <div className={`route-comparison-overlay ${routeComparisonCollapsed ? 'collapsed' : ''}`}>

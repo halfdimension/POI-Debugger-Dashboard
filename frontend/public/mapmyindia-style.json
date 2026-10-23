@@ -1,0 +1,21 @@
+{
+  "version": 8,
+  "name": "MapmyIndia Raster",
+  "sources": {
+    "mapmyindia": {
+      "type": "raster",
+      "tiles": [
+        "https://mt4.mapmyindia.com/advancedmaps/v1/0f9f0df68ce6cf464e6a42be9ca4c158/retina_map/{z}/{x}/{y}.png"
+      ],
+      "tileSize": 256,
+      "attribution": "© MapmyIndia / Mappls"
+    }
+  },
+  "layers": [
+    {
+      "id": "mapmyindia-basemap",
+      "type": "raster",
+      "source": "mapmyindia"
+    }
+  ]
+}

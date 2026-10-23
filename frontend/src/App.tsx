@@ -3493,37 +3493,7 @@ export default function App() {
               {' '}{maneuverViews.length} Odin maneuvers · {osrmStepViews.length} OSRM steps
             </span>
           </div>
-          <div className="map-wrapper">
-            <div ref={mapContainer} className="map" />
-
-            <div className="basemap-picker">
-              <label htmlFor="basemap-select">Basemap</label>
-
-              <select
-                id="basemap-select"
-                value={basemap}
-                onChange={(event) => {
-                  const next = event.target.value as Basemap;
-
-                  basemapRef.current = next;
-                  setBasemap(next);
-
-                  const map = mapRef.current;
-
-                  if (map?.getLayer('mapmyindia-raster')) {
-                    map.setLayoutProperty(
-                      'mapmyindia-raster',
-                      'visibility',
-                      next === 'mapmyindia' ? 'visible' : 'none'
-                    );
-                  }
-                }}
-              >
-                <option value="mapmyindia">MapmyIndia</option>
-                <option value="openfreemap">OpenFreeMap</option>
-              </select>
-            </div>
-          </div>
+          <div ref={mapContainer} className="map" />
 
           {(route || osrmRoute) && (
             <div className={`route-comparison-overlay ${routeComparisonCollapsed ? 'collapsed' : ''}`}>
@@ -3808,6 +3778,32 @@ export default function App() {
             </button>
 
           </div>
+          <section className="card basemap-card">
+            <label htmlFor="basemap-select">Basemap</label>
+            <select
+              id="basemap-select"
+              value={basemap}
+              onChange={(event) => {
+                const next = event.target.value as Basemap;
+
+                basemapRef.current = next;
+                setBasemap(next);
+
+                const map = mapRef.current;
+
+                if (map?.getLayer('mapmyindia-raster')) {
+                  map.setLayoutProperty(
+                    'mapmyindia-raster',
+                    'visibility',
+                    next === 'mapmyindia' ? 'visible' : 'none',
+                  );
+                }
+              }}
+            >
+              <option value="mapmyindia">MapmyIndia</option>
+              <option value="openfreemap">OpenFreeMap</option>
+            </select>
+          </section>
           <section className="card dataset-card">
             <div className="maneuver-heading">
               <h2>Dataset Pipeline</h2>

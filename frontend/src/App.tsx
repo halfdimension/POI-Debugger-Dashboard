@@ -1,7 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import maplibregl, { LngLatBounds, Map as MapLibreMap } from 'maplibre-gl';
 import { activateDataset, createScenario, deleteScenario, getConfig, getDatasets, getOsrmStatus, getPois, getScenarios, getValhallaStatus, reloadDatasetPois, requestCompareRoute, updateScenario } from './api';
+import { updateCoordinateValue } from './coordinates';
 import { decodePolyline6 } from './polyline';
+import { filterPoiFeatures, pointFeature, propNumber, propText, rankPoiSearchResults } from './poi';
+import { evaluateScenario, type ScenarioRunResult } from './scenarioAssertions';
+import { AnalysisWorkspace, PanelSection, Sidebar } from './components/DashboardLayout';
+import {
+  initialDashboardLayout,
+  selectAnalysisTab,
+  togglePanel,
+} from './layoutState';
 import type { CandidateAnalysis, CandidateAnalysisCandidate, CandidateAnalysisManeuver, DatasetRegistryResponse, DatasetSummary, DebuggerConfig, LngLat, Maneuver, OsrmRouteResponse, OsrmStep, RouteScenario, ScenarioRegistryResponse, ValhallaRouteResponse } from './types';
 
 type PickMode = 'start' | 'end';
@@ -56,17 +65,6 @@ type OsrmRouteNarrationPoi = {
   evidence: NarrationPoiEvidence;
   stepIndexes: number[];
   primaryStepIndex: number;
-};
-
-type ScenarioRunStatus = 'pass' | 'fail' | 'no-expectation' | 'error';
-
-type ScenarioRunResult = {
-  status: ScenarioRunStatus;
-  checkedAt: string;
-  actualInstructions: string[];
-  matchedInstructions: string[];
-  failures: string[];
-  error?: string;
 };
 
 const EMPTY_FC: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features: [] };
@@ -829,17 +827,6 @@ type PolylineProjection = {
   totalLengthM: number;
 };
 
-function propText(properties: GeoJSON.GeoJsonProperties, key: string, fallback = ''): string {
-  const value = properties?.[key];
-  if (value === undefined || value === null || value === '') return fallback;
-  return String(value);
-}
-
-function propNumber(properties: GeoJSON.GeoJsonProperties, key: string): number | null {
-  const value = Number(properties?.[key]);
-  return Number.isFinite(value) ? value : null;
-}
-
 function poiPopupHtml(properties: GeoJSON.GeoJsonProperties): string {
   const preferred = [
     'name', 'mappls_poi_id', 'new_node_id', 'landmark_type', 'priority', 'visible',
@@ -959,26 +946,6 @@ function makePoiPopupDraggable(
   };
 }
 
-function pointFeature(feature: GeoJSON.Feature): GeoJSON.Feature<GeoJSON.Point> | null {
-  return feature.geometry?.type === 'Point' ? feature as GeoJSON.Feature<GeoJSON.Point> : null;
-}
-
-const POI_SEARCH_FIELDS = [
-  'name', 'mappls_poi_id', 'new_node_id', 'osm_source_id', 'landmark_type',
-];
-
-function poiVisible(properties: GeoJSON.GeoJsonProperties): boolean {
-  const value = propText(properties, 'visible', 'yes').trim().toLowerCase();
-  return !['no', 'false', '0', 'n'].includes(value);
-}
-
-function poiSearchText(properties: GeoJSON.GeoJsonProperties): string {
-  return POI_SEARCH_FIELDS
-    .map((key) => propText(properties, key, ''))
-    .join(' ')
-    .toLowerCase();
-}
-
 function normalizeNarrationText(value: string): string {
   return value
     .normalize('NFKD')
@@ -1016,19 +983,6 @@ function narrationPoiKey(item: NarrationPoiEvidence): string {
   return `name:${normalizeNarrationText(item.name)}|${item.coordinate[0].toFixed(7)}|${item.coordinate[1].toFixed(7)}`;
 }
 
-function odinInstructionTexts(response: ValhallaRouteResponse): string[] {
-  const values: string[] = [];
-  for (const leg of response.trip?.legs ?? []) {
-    for (const maneuver of leg.maneuvers ?? []) {
-      for (const value of [maneuver.instruction, maneuver.verbal_pre_transition_instruction]) {
-        const text = String(value ?? '').trim();
-        if (text && !values.includes(text)) values.push(text);
-      }
-    }
-  }
-  return values;
-}
-
 function osrmInstructionText(step: OsrmStep): string {
   const detailed = String(step.maneuver?.instruction ?? '').trim();
   if (detailed) return detailed;
@@ -1043,50 +997,6 @@ function osrmInstructionText(step: OsrmStep): string {
 
   if (structured) return structured;
   return String(step.name ?? '').trim() || 'Unnamed OSRM step';
-}
-
-function evaluateScenario(scenario: RouteScenario, response: ValhallaRouteResponse): ScenarioRunResult {
-  const expectation = scenario.expectation;
-  const actualInstructions = odinInstructionTexts(response);
-  const checkedAt = new Date().toISOString();
-
-  const landmarkName = expectation?.landmark_name?.trim() ?? '';
-  const required = expectation?.instruction_contains?.trim() || landmarkName;
-  const forbidden = expectation?.instruction_not_contains?.trim() ?? '';
-
-  if (!required && !forbidden) {
-    return { status: 'no-expectation', checkedAt, actualInstructions, matchedInstructions: [], failures: [] };
-  }
-
-  const caseSensitive = expectation?.case_sensitive ?? false;
-  const normalize = (value: string) => caseSensitive ? value : value.toLowerCase();
-  const normalizedInstructions = actualInstructions.map((text) => ({ raw: text, normalized: normalize(text) }));
-  const failures: string[] = [];
-  const matchedInstructions: string[] = [];
-
-  if (required) {
-    const needle = normalize(required);
-    const matches = normalizedInstructions.filter((item) => item.normalized.includes(needle)).map((item) => item.raw);
-    if (matches.length === 0) failures.push(`No Odin instruction contained "${required}".`);
-    else matchedInstructions.push(...matches);
-  }
-
-  if (forbidden) {
-    const needle = normalize(forbidden);
-    const matches = normalizedInstructions.filter((item) => item.normalized.includes(needle)).map((item) => item.raw);
-    if (matches.length > 0) {
-      failures.push(`Forbidden Odin text "${forbidden}" was present.`);
-      matchedInstructions.push(...matches);
-    }
-  }
-
-  return {
-    status: failures.length === 0 ? 'pass' : 'fail',
-    checkedAt,
-    actualInstructions,
-    matchedInstructions: Array.from(new Set(matchedInstructions)),
-    failures,
-  };
 }
 
 type Basemap = 'openfreemap' | 'mapmyindia';
@@ -1170,7 +1080,7 @@ export default function App() {
   const [routeView, setRouteView] = useState<'both' | 'valhalla' | 'osrm'>('both');
   const [routeComparisonCollapsed, setRouteComparisonCollapsed] = useState(false);
   const [routePoiCardCollapsed, setRoutePoiCardCollapsed] = useState(false);
-  const [rightPanelCollapsed, setRightPanelCollapsed] = useState(false);
+  const [layout, setLayout] = useState(initialDashboardLayout);
   const [map3D, setMap3D] = useState(false);
   const [showCandidateMap, setShowCandidateMap] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -1197,6 +1107,10 @@ export default function App() {
   const [minPriority, setMinPriority] = useState(0);
   const [visibleOnly, setVisibleOnly] = useState(true);
   const [showPois, setShowPois] = useState(true);
+
+  const toggleLayoutPanel = (panel: 'left' | 'right' | 'analysis') => {
+    setLayout((current) => togglePanel(current, panel));
+  };
 
   const activeDataset = useMemo<DatasetSummary | null>(() => {
     if (!datasetRegistry) return null;
@@ -1227,30 +1141,12 @@ export default function App() {
   }, [pois]);
 
   const filteredPoiFeatures = useMemo<GeoJSON.Feature<GeoJSON.Point>[]>(() => {
-    const query = poiSearch.trim().toLowerCase();
-    const result: GeoJSON.Feature<GeoJSON.Point>[] = [];
-
-    for (const rawFeature of pois.features) {
-      const feature = pointFeature(rawFeature);
-      if (!feature) continue;
-      const properties = feature.properties ?? {};
-
-      if (visibleOnly && !poiVisible(properties)) continue;
-
-      const landmarkType = propText(properties, 'landmark_type', '').trim();
-      if (poiType !== 'all' && landmarkType !== poiType) continue;
-
-      if (minPriority > 0) {
-        const priority = propNumber(properties, 'priority');
-        if (priority === null || priority < minPriority) continue;
-      }
-
-      if (query && !poiSearchText(properties).includes(query)) continue;
-
-      result.push(feature);
-    }
-
-    return result;
+    return filterPoiFeatures(pois.features, {
+      search: poiSearch,
+      landmarkType: poiType,
+      minimumPriority: minPriority,
+      visibleOnly,
+    });
   }, [pois, poiSearch, poiType, minPriority, visibleOnly]);
 
   const filteredPois = useMemo<GeoJSON.FeatureCollection>(() => ({
@@ -1259,20 +1155,7 @@ export default function App() {
   }), [filteredPoiFeatures]);
 
   const searchResults = useMemo(() => {
-    if (!poiSearch.trim()) return [] as GeoJSON.Feature<GeoJSON.Point>[];
-    const query = poiSearch.trim().toLowerCase();
-    return [...filteredPoiFeatures]
-      .sort((a, b) => {
-        const aName = propText(a.properties, 'name', '').toLowerCase();
-        const bName = propText(b.properties, 'name', '').toLowerCase();
-        const aStarts = aName.startsWith(query) ? 1 : 0;
-        const bStarts = bName.startsWith(query) ? 1 : 0;
-        if (aStarts !== bStarts) return bStarts - aStarts;
-        const priorityDiff = (propNumber(b.properties, 'priority') ?? -1) - (propNumber(a.properties, 'priority') ?? -1);
-        if (priorityDiff !== 0) return priorityDiff;
-        return aName.localeCompare(bName);
-      })
-      .slice(0, 10);
+    return rankPoiSearchResults(filteredPoiFeatures, poiSearch);
   }, [filteredPoiFeatures, poiSearch]);
 
   const maneuverViews = useMemo<ManeuverView[]>(() => {
@@ -2569,6 +2452,30 @@ export default function App() {
   }, [config]);
 
   useEffect(() => {
+    const container = mapContainer.current;
+    if (!container || typeof ResizeObserver === 'undefined') return;
+
+    let frame = 0;
+    const resizeMap = () => {
+      window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(() => mapRef.current?.resize());
+    };
+    const observer = new ResizeObserver(resizeMap);
+    observer.observe(container);
+    resizeMap();
+
+    return () => {
+      window.cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
+  }, [config]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => mapRef.current?.resize(), 240);
+    return () => window.clearTimeout(timer);
+  }, [layout.leftCollapsed, layout.rightCollapsed, layout.analysisCollapsed]);
+
+  useEffect(() => {
     const map = mapRef.current;
     if (!map || !config || !activeDataset) return;
 
@@ -3283,11 +3190,9 @@ export default function App() {
   }
 
   function updateCoord(kind: PickMode, axis: 0 | 1, text: string) {
-    const value = Number(text);
-    if (!Number.isFinite(value)) return;
     const current = kind === 'start' ? start : end;
-    const next: LngLat = current ? [...current] as LngLat : [0, 0];
-    next[axis] = value;
+    const next = updateCoordinateValue(current, axis, text);
+    if (next === current) return;
     if (kind === 'start') setStart(next);
     else setEnd(next);
   }
@@ -3442,21 +3347,149 @@ export default function App() {
   return (
     <div className="app-shell">
       <header className="topbar">
-        <div>
-          <h1>{config.project.name ?? 'Valhalla + OSRM POI Debugger'}</h1>
-          <div className="subtitle">Dual-engine route, guidance and landmark POI verification</div>
+        <div className="product-identity">
+          <span className="product-mark" aria-hidden="true">PD</span>
+          <div>
+            <div className="product-kicker">Routing quality workspace</div>
+            <h1>{config.project.name ?? 'POI Debugger Dashboard'}</h1>
+          </div>
         </div>
-        <div className="engine-statuses">
-          <div className={`status-pill ${valhallaStatus}`}>
-            Valhalla: {valhallaStatus === 'checking' ? 'checking' : valhallaStatus === 'up' ? 'connected' : 'offline'}
+
+        <button
+          className="primary-route-action"
+          onClick={runRoute}
+          disabled={busy || !start || !end}
+        >
+          {busy ? 'Running both engines…' : 'Run route comparison'}
+        </button>
+
+        <div className="toolbar-cluster" aria-label="Map view controls">
+          <label className="toolbar-select">
+            <span>Basemap</span>
+            <select
+              value={basemap}
+              onChange={(event) => {
+                const next = event.target.value as Basemap;
+                basemapRef.current = next;
+                setBasemap(next);
+                const map = mapRef.current;
+                if (map?.getLayer('mapmyindia-raster')) {
+                  map.setLayoutProperty('mapmyindia-raster', 'visibility', next === 'mapmyindia' ? 'visible' : 'none');
+                }
+              }}
+            >
+              <option value="mapmyindia">MapmyIndia</option>
+              <option value="openfreemap">OpenFreeMap</option>
+            </select>
+          </label>
+          <div className="toolbar-segmented" role="group" aria-label="Map dimension">
+            <button className={!map3D ? 'is-active' : ''} aria-pressed={!map3D} onClick={() => set3DView(false)}>2D</button>
+            <button className={map3D ? 'is-active' : ''} aria-pressed={map3D} onClick={() => set3DView(true)}>3D</button>
           </div>
-          <div className={`status-pill ${osrmStatus}`}>
-            OSRM: {osrmStatus === 'checking' ? 'checking' : osrmStatus === 'up' ? 'connected' : 'offline'}
-          </div>
+        </div>
+
+        <div className="engine-statuses" aria-label="Routing engine status">
+          <div className={`status-pill ${valhallaStatus}`}><i />Valhalla</div>
+          <div className={`status-pill ${osrmStatus}`}><i />OSRM</div>
+        </div>
+
+        <div className="user-nav-reserved" aria-label="User navigation reserved">
+          <span aria-hidden="true">Workspace</span>
         </div>
       </header>
 
-      <main className={`workspace ${rightPanelCollapsed ? 'right-collapsed' : ''}`}>
+      <main
+        className={`workspace${layout.leftCollapsed ? ' left-collapsed' : ''}${layout.rightCollapsed ? ' right-collapsed' : ''}${layout.analysisCollapsed ? ' analysis-collapsed' : ''}`}
+      >
+        <Sidebar
+          side="left"
+          label="Route and dataset controls"
+          collapsed={layout.leftCollapsed}
+          onToggle={() => toggleLayoutPanel('left')}
+        >
+          <PanelSection title="Route setup" meta="START / END">
+            <div className="pick-mode-row" role="group" aria-label="Map coordinate target">
+              <button className={pickMode === 'start' ? 'active' : ''} aria-pressed={pickMode === 'start'} onClick={() => setPickMode('start')}>Pick start</button>
+              <button className={pickMode === 'end' ? 'active' : ''} aria-pressed={pickMode === 'end'} onClick={() => setPickMode('end')}>Pick end</button>
+            </div>
+            <label>Start <span>[longitude, latitude]</span></label>
+            <div className="coord-row">
+              <input aria-label="Start longitude" value={fmtCoord(start?.[0])} placeholder="Longitude" onChange={(event) => updateCoord('start', 0, event.target.value)} />
+              <input aria-label="Start latitude" value={fmtCoord(start?.[1])} placeholder="Latitude" onChange={(event) => updateCoord('start', 1, event.target.value)} />
+            </div>
+            <label>End <span>[longitude, latitude]</span></label>
+            <div className="coord-row">
+              <input aria-label="End longitude" value={fmtCoord(end?.[0])} placeholder="Longitude" onChange={(event) => updateCoord('end', 0, event.target.value)} />
+              <input aria-label="End latitude" value={fmtCoord(end?.[1])} placeholder="Latitude" onChange={(event) => updateCoord('end', 1, event.target.value)} />
+            </div>
+            <button className="route-button" onClick={runRoute} disabled={busy || !start || !end}>
+              {busy ? 'Routing both engines…' : 'Run route comparison'}
+            </button>
+            {error && <div className="error-box" role="alert">{error}</div>}
+          </PanelSection>
+
+          <PanelSection title="Dataset" meta={activeDataset?.stats?.valid_pois ?? 0}>
+            <div className="dataset-actions">
+              <select
+                aria-label="Active POI dataset"
+                value={datasetRegistry?.active_dataset ?? ''}
+                disabled={datasetBusy || !datasetRegistry}
+                onChange={(event) => changeDataset(event.target.value)}
+              >
+                {(datasetRegistry?.datasets ?? []).map((dataset) => <option key={dataset.id} value={dataset.id}>{dataset.name}</option>)}
+              </select>
+              <button onClick={reloadActiveDataset} disabled={datasetBusy || !activeDataset}>{datasetBusy ? 'Working…' : 'Reload'}</button>
+            </div>
+            {datasetMessage && <div className="dataset-message" role="status">{datasetMessage}</div>}
+            {activeDataset?.error && <div className="dataset-warning">{activeDataset.error}</div>}
+            <details className="panel-disclosure">
+              <summary>Dataset details</summary>
+              <div className="kv"><span>Source</span><code title={activeDataset?.source_path ?? ''}>{activeDataset?.source_kind ?? '—'} · {basename(activeDataset?.source_path ?? undefined)}</code></div>
+              <div className="kv"><span>PBF</span><code title={activeDataset?.pbf_path ?? config.data.pbf_path}>{basename(activeDataset?.pbf_path ?? config.data.pbf_path)}</code></div>
+              <div className="dataset-note">Dataset switching changes the debugger POI layer only; it does not restart either routing engine.</div>
+            </details>
+          </PanelSection>
+
+          <PanelSection title="POI explorer" meta={`${filteredPoiFeatures.length} / ${pois.features.length}`}>
+            <div className="poi-search-row">
+              <input aria-label="Search POIs" value={poiSearch} placeholder="Name, POI ID, node ID or type" onChange={(event) => setPoiSearch(event.target.value)} />
+              <button onClick={resetPoiFilters}>Reset</button>
+            </div>
+            <div className="poi-filter-grid">
+              <label>Type<select value={poiType} onChange={(event) => setPoiType(event.target.value)}><option value="all">All types</option>{availablePoiTypes.map((type) => <option key={type} value={type}>{type}</option>)}</select></label>
+              <label>Priority <strong>{minPriority}</strong><input className="priority-slider" type="range" min="0" max="100" step="5" value={minPriority} onChange={(event) => setMinPriority(Number(event.target.value))} /></label>
+            </div>
+            <div className="poi-checkboxes">
+              <label><input type="checkbox" checked={visibleOnly} onChange={(event) => setVisibleOnly(event.target.checked)} /> Visible map area</label>
+              <label><input type="checkbox" checked={showPois} onChange={(event) => setShowPois(event.target.checked)} /> Show on map</label>
+            </div>
+            {poiSearch.trim() && <div className="poi-search-results">{searchResults.length === 0 ? <div className="empty-state">No matching POIs.</div> : searchResults.map((feature, index) => <button key={`${propText(feature.properties, 'new_node_id', '')}-${index}`} className="poi-search-result" onClick={() => focusPoiFeature(feature)}><span><strong>{propText(feature.properties, 'name', 'Unnamed POI')}</strong><small>{propText(feature.properties, 'landmark_type', 'unknown')}</small></span><span className="poi-search-meta"><strong>{propText(feature.properties, 'priority', '—')}</strong><small>priority</small></span></button>)}</div>}
+          </PanelSection>
+
+          <details className="sidebar-disclosure" open>
+            <summary><span>Saved scenarios</span><small>{scenarioRegistry?.count ?? 0}</small></summary>
+            <div className="sidebar-disclosure__body">
+              <div className="scenario-save-grid">
+                <input aria-label="Scenario name" value={scenarioName} placeholder="Scenario name" onChange={(event) => setScenarioName(event.target.value)} />
+                <button onClick={saveCurrentScenario} disabled={scenarioBusy || !start || !end}>{scenarioBusy ? 'Working…' : 'Save current'}</button>
+              </div>
+              <input className="full-width-input" aria-label="Expected instruction text" value={scenarioExpectedText} placeholder="Expected instruction text (optional)" onChange={(event) => setScenarioExpectedText(event.target.value)} />
+              <input className="full-width-input" aria-label="Forbidden instruction text" value={scenarioForbiddenText} placeholder="Forbidden instruction text (optional)" onChange={(event) => setScenarioForbiddenText(event.target.value)} />
+              <textarea className="scenario-notes" aria-label="Scenario notes" value={scenarioNotes} placeholder="Notes (optional)" rows={2} onChange={(event) => setScenarioNotes(event.target.value)} />
+              <button className="secondary-full-button" onClick={runAllScenarios} disabled={runAllBusy || scenarioBusy || busy || !(scenarioRegistry?.scenarios.length)}>{runAllBusy ? 'Running suite…' : 'Run matching scenarios'}</button>
+              {scenarioMessage && <div className="scenario-message" role="status">{scenarioMessage}</div>}
+              <div className="compact-scenario-list">
+                {(scenarioRegistry?.scenarios ?? []).map((scenario) => {
+                  const activeId = datasetRegistry?.active_dataset ?? config?.active_dataset ?? '';
+                  const datasetMismatch = scenario.dataset !== activeId;
+                  const result = scenarioRunResults[scenario.id];
+                  return <div className="compact-scenario" key={scenario.id}><span><strong>{scenario.name}</strong><small>{scenario.dataset}{result ? ` · ${result.status.toUpperCase()}` : ''}</small></span><div><button onClick={() => loadScenario(scenario)}>Load</button><button onClick={() => runSavedScenario(scenario)} disabled={scenarioBusy || runAllBusy || busy || datasetMismatch}>Run</button><button onClick={() => editScenarioExpectation(scenario)}>Expect</button><button className="danger-button" onClick={() => removeScenario(scenario)}>Delete</button></div></div>;
+                })}
+              </div>
+            </div>
+          </details>
+        </Sidebar>
+
         <section className="map-section">
           <div className="map-toolbar">
             <button className={pickMode === 'start' ? 'active' : ''} onClick={() => setPickMode('start')}>Click map → START</button>
@@ -3753,31 +3786,26 @@ export default function App() {
           )}
         </section>
 
-        <aside className="side-panel">
+        <Sidebar
+          side="right"
+          label="Route inspection"
+          collapsed={layout.rightCollapsed}
+          onToggle={() => toggleLayoutPanel('right')}
+        >
 
-          <div className="right-panel-toggle-row">
-
-            <button
-
-              className="right-panel-toggle"
-
-              onClick={() => setRightPanelCollapsed((value) => !value)}
-
-              title={rightPanelCollapsed ? 'Expand analysis panel' : 'Collapse analysis panel'}
-
-            >
-
-              {rightPanelCollapsed ? '‹' : '›'}
-
-              <span>
-
-                {rightPanelCollapsed ? 'Expand' : 'Collapse'}
-
-              </span>
-
-            </button>
-
-          </div>
+          <PanelSection title="Route comparison" meta={route || osrmRoute ? 'Latest run' : 'No route'} className="right-route-summary">
+            {!route && !osrmRoute ? (
+              <div className="empty-state">Run a route to compare engine distance, duration and guidance.</div>
+            ) : (
+              <>
+                <div className="engine-summary-grid">
+                  <div className="engine-summary valhalla"><span>Valhalla</span><strong>{routeComparison.valhallaDistanceKm === null ? '—' : `${routeComparison.valhallaDistanceKm.toFixed(2)} km`}</strong><small>{routeComparison.valhallaDurationMin === null ? 'Time unavailable' : `${routeComparison.valhallaDurationMin.toFixed(1)} min`} · {maneuverViews.length} maneuvers</small></div>
+                  <div className="engine-summary osrm"><span>OSRM</span><strong>{routeComparison.osrmDistanceKm === null ? '—' : `${routeComparison.osrmDistanceKm.toFixed(2)} km`}</strong><small>{routeComparison.osrmDurationMin === null ? 'Time unavailable' : `${routeComparison.osrmDurationMin.toFixed(1)} min`} · {osrmStepViews.length} steps</small></div>
+                </div>
+                <button className="text-action" onClick={() => setLayout((current) => selectAnalysisTab(current, 'comparison'))}>Open full comparison</button>
+              </>
+            )}
+          </PanelSection>
           <section className="card basemap-card">
             <label htmlFor="basemap-select">Basemap</label>
             <select
@@ -3923,7 +3951,7 @@ export default function App() {
             </div>
           </section>
 
-          <section className="card">
+          <section className="card legacy-configuration">
             <h2>Configuration</h2>
             <div className="kv"><span>Valhalla</span><code>{config.valhalla.service_url}</code></div>
             <div className="kv"><span>OSRM</span><code>{config.osrm.service_url}</code></div>
@@ -3931,7 +3959,7 @@ export default function App() {
             <div className="kv"><span>Dataset</span><code>{datasetRegistry?.active_dataset ?? config?.active_dataset ?? 'default'}</code></div>
           </section>
 
-          <section className="card">
+          <section className="card legacy-route-request">
             <h2>Route Request</h2>
             <label>Start [lon, lat]</label>
             <div className="coord-row">
@@ -4375,7 +4403,51 @@ export default function App() {
             <summary>Raw OSRM JSON</summary>
             <pre>{osrmRoute ? JSON.stringify(osrmRoute, null, 2) : 'No OSRM route response yet.'}</pre>
           </details>
-        </aside>
+        </Sidebar>
+
+        <AnalysisWorkspace
+          activeTab={layout.activeAnalysisTab}
+          collapsed={layout.analysisCollapsed}
+          onSelectTab={(tab) => setLayout((current) => selectAnalysisTab(current, tab))}
+          onToggle={() => toggleLayoutPanel('analysis')}
+        >
+          {layout.activeAnalysisTab === 'comparison' && (
+            <div className="analysis-comparison">
+              <div className="analysis-metric"><span>Valhalla distance</span><strong>{routeComparison.valhallaDistanceKm === null ? '—' : `${routeComparison.valhallaDistanceKm.toFixed(2)} km`}</strong></div>
+              <div className="analysis-metric"><span>OSRM distance</span><strong>{routeComparison.osrmDistanceKm === null ? '—' : `${routeComparison.osrmDistanceKm.toFixed(2)} km`}</strong></div>
+              <div className="analysis-metric"><span>Distance delta</span><strong>{routeComparison.distanceDeltaKm === null ? '—' : `${fmtSigned(routeComparison.distanceDeltaKm)} km`}</strong></div>
+              <div className="analysis-metric"><span>Time delta</span><strong>{routeComparison.timeDeltaMin === null ? '—' : `${fmtSigned(routeComparison.timeDeltaMin, 1)} min`}</strong></div>
+              {!route && !osrmRoute && <div className="analysis-empty">Run a route comparison to populate engine metrics.</div>}
+            </div>
+          )}
+
+          {layout.activeAnalysisTab === 'maneuvers' && (
+            <div className="analysis-columns">
+              <section><div className="analysis-column-heading"><h3>Valhalla / Odin</h3><span>{maneuverViews.length} maneuvers</span></div>{maneuverViews.length === 0 ? <div className="analysis-empty">No Valhalla maneuvers yet.</div> : <ol className="maneuver-list">{maneuverViews.map((item) => <li key={item.index} className={selectedManeuverIndex === item.index ? 'selected' : ''}><button className="maneuver-button" onClick={() => focusManeuver(item)}><strong>{item.maneuver.instruction ?? 'Unnamed maneuver'}</strong><small>{typeof item.maneuver.length === 'number' ? `${item.maneuver.length.toFixed(2)} km` : ''}{item.coordinate ? ` · ${item.coordinate[1].toFixed(6)}, ${item.coordinate[0].toFixed(6)}` : ''}</small></button></li>)}</ol>}</section>
+              <section><div className="analysis-column-heading"><h3>OSRM</h3><span>{osrmStepViews.length} steps</span></div>{osrmStepViews.length === 0 ? <div className="analysis-empty">No OSRM steps yet.</div> : <ol className="maneuver-list osrm-maneuver-list">{osrmStepViews.map((item) => <li key={item.index} className={selectedOsrmStepIndex === item.index ? 'selected' : ''}><button className="osrm-step" onClick={() => focusOsrmStep(item)}><strong>{osrmInstructionText(item.step)}</strong><small>{typeof item.step.distance === 'number' ? `${item.step.distance.toFixed(1)} m` : ''}{item.coordinate ? ` · ${item.coordinate[1].toFixed(6)}, ${item.coordinate[0].toFixed(6)}` : ''}</small></button></li>)}</ol>}</section>
+            </div>
+          )}
+
+          {layout.activeAnalysisTab === 'candidates' && (
+            <div className="analysis-columns candidate-overview">
+              <section><div className="analysis-column-heading"><h3>Valhalla evidence</h3><span>Authoritative only</span></div>{!selectedManeuver ? <div className="analysis-empty">Select an Odin maneuver to inspect its embedded landmark_debug record.</div> : !selectedValhallaCandidateAnalysis ? <div className="analysis-empty">No authoritative candidate record exists for this maneuver. The UI does not infer a selection.</div> : <CandidateDecisionList engine="valhalla" analysis={selectedValhallaCandidateAnalysis} showCandidatesOnMap={showCandidateMap} onToggleCandidatesOnMap={() => setShowCandidateMap((current) => !current)} />}</section>
+              <section><div className="analysis-column-heading"><h3>OSRM evidence</h3><span>Authoritative only</span></div>{!selectedOsrmStepView ? <div className="analysis-empty">Select an OSRM step to inspect its turn_id candidate record.</div> : !selectedOsrmCandidateAnalysis ? <div className="analysis-empty">No authoritative turn_id candidate record exists for this step.</div> : <CandidateDecisionList engine="osrm" analysis={selectedOsrmCandidateAnalysis} showCandidatesOnMap={showCandidateMap} onToggleCandidatesOnMap={() => setShowCandidateMap((current) => !current)} />}</section>
+            </div>
+          )}
+
+          {layout.activeAnalysisTab === 'scenarios' && (
+            <div className="analysis-scenarios">
+              {(scenarioRegistry?.scenarios ?? []).length === 0 ? <div className="analysis-empty">No saved scenarios. Create one from the left panel.</div> : (scenarioRegistry?.scenarios ?? []).map((scenario) => { const result = scenarioRunResults[scenario.id]; return <div className="analysis-scenario-row" key={scenario.id}><span><strong>{scenario.name}</strong><small>{scenario.dataset} · {scenario.request.costing}</small></span><code>{scenario.request.start.lon.toFixed(5)}, {scenario.request.start.lat.toFixed(5)} → {scenario.request.end.lon.toFixed(5)}, {scenario.request.end.lat.toFixed(5)}</code><b className={result ? `scenario-result-badge ${result.status}` : 'scenario-result-badge'}>{result ? result.status.toUpperCase() : 'NOT RUN'}</b></div>; })}
+            </div>
+          )}
+
+          {layout.activeAnalysisTab === 'raw' && (
+            <div className="analysis-columns raw-response-grid">
+              <section><div className="analysis-column-heading"><h3>Valhalla response</h3><span>{route ? 'Available' : 'Empty'}</span></div><pre>{route ? JSON.stringify(route, null, 2) : 'No Valhalla route response yet.'}</pre></section>
+              <section><div className="analysis-column-heading"><h3>OSRM response</h3><span>{osrmRoute ? 'Available' : 'Empty'}</span></div><pre>{osrmRoute ? JSON.stringify(osrmRoute, null, 2) : 'No OSRM route response yet.'}</pre></section>
+            </div>
+          )}
+        </AnalysisWorkspace>
       </main>
     </div>
   );

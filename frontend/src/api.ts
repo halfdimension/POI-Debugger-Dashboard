@@ -6,12 +6,6 @@ export async function getConfig(): Promise<DebuggerConfig> {
   return response.json();
 }
 
-export async function getPois(): Promise<GeoJSON.FeatureCollection> {
-  const response = await fetch('/api/pois');
-  if (!response.ok) throw new Error(`POI request failed: ${response.status}`);
-  return response.json();
-}
-
 export async function getDatasets(): Promise<DatasetRegistryResponse> {
   const response = await fetch('/api/datasets');
   if (!response.ok) throw new Error(`Dataset registry request failed: ${response.status}`);

@@ -25,6 +25,27 @@ describe('development mock API contracts', () => {
     expect((registry?.body as any).datasets.find((item: any) => item.id === 'mock-error').error).toContain('Synthetic');
   });
 
+  it('implements bounded, filtered and paginated POI search', async () => {
+    const state = createMockApiState();
+    const first = await handleMockApi('GET', '/api/pois/search?dataset_id=mock-demo&visible=true&min_priority=70&bbox=77.21,28.62,77.23,28.64&limit=2', {}, state);
+    expect(first?.status).toBe(200);
+    expect((first?.body as any).features).toHaveLength(2);
+    expect((first?.body as any).has_more).toBe(true);
+    const cursor = (first?.body as any).next_cursor;
+    const second = await handleMockApi('GET', `/api/pois/search?dataset_id=mock-demo&visible=true&min_priority=70&bbox=77.21,28.62,77.23,28.64&limit=2&cursor=${cursor}`, {}, state);
+    expect((second?.body as any).features).toHaveLength(1);
+    expect((second?.body as any).has_more).toBe(false);
+  });
+
+  it('supports identifier/type searches and contract errors', async () => {
+    const state = createMockApiState();
+    const result = await handleMockApi('GET', '/api/pois/search?dataset_id=mock-demo&q=910002&type=restaurant', {}, state);
+    expect((result?.body as any).features[0].properties.name).toBe('Clock Tower Cafe');
+    expect((await handleMockApi('GET', '/api/pois/search?dataset_id=missing', {}, state))?.status).toBe(404);
+    expect((await handleMockApi('GET', '/api/pois/search?dataset_id=mock-error', {}, state))?.status).toBe(503);
+    expect((await handleMockApi('GET', '/api/pois/search?dataset_id=mock-demo&bbox=170,-10,-170,10', {}, state))?.status).toBe(400);
+  });
+
   it('is opt-in and cannot activate for builds or preview', () => {
     expect(shouldEnableMockApi('serve', 'development', false, undefined)).toBe(false);
     expect(shouldEnableMockApi('serve', 'development', false, '1')).toBe(true);

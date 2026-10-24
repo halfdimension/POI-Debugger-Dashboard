@@ -184,6 +184,8 @@ function send(res: ServerResponse, status: number, body: unknown): void {
 }
 
 export async function handleMockApi(method: string, pathname: string, body: JsonObject, state: MockApiState): Promise<{ status: number; body: unknown } | null> {
+  const requestUrl = new URL(pathname, 'http://vite.local');
+  pathname = requestUrl.pathname;
   const ok = (responseBody: unknown, status = 200) => ({ status, body: responseBody });
   if (method === 'GET' && pathname === '/api/config') return ok({
     project: { name: 'POI Debugger Dashboard' },
@@ -198,6 +200,47 @@ export async function handleMockApi(method: string, pathname: string, body: Json
   if (method === 'GET' && pathname === '/api/datasets') return ok({ active_dataset: state.activeDataset, datasets: DATASETS });
   if (method === 'GET' && pathname === '/api/pois') {
     return ok(state.activeDataset === 'mock-demo' ? DEMO_POIS : { type: 'FeatureCollection', features: [] });
+  }
+  if (method === 'GET' && pathname === '/api/pois/search') {
+    const datasetId = requestUrl.searchParams.get('dataset_id') ?? '';
+    const selected = DATASETS.find((item) => item.id === datasetId);
+    if (!datasetId) return ok({ detail: 'dataset_id is required' }, 422);
+    if (!selected) return ok({ detail: `Dataset not found: ${datasetId}` }, 404);
+    if (datasetId === 'mock-error') return ok({ detail: 'Synthetic POI index error' }, 503);
+    const limit = Number(requestUrl.searchParams.get('limit') ?? 100);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 500) return ok({ detail: 'limit must be between 1 and 500' }, 400);
+    let bbox: LngLat[] | null = null;
+    const rawBbox = requestUrl.searchParams.get('bbox');
+    if (rawBbox) {
+      const values = rawBbox.split(',').map(Number);
+      if (values.length !== 4 || values.some((value) => !Number.isFinite(value)) || values[0] > values[2] || values[1] > values[3]) {
+        return ok({ detail: 'bbox must be west,south,east,north without antimeridian crossing' }, 400);
+      }
+      bbox = [[values[0], values[1]], [values[2], values[3]]];
+    }
+    const query = (requestUrl.searchParams.get('q') ?? '').trim().toLowerCase();
+    const type = requestUrl.searchParams.get('type');
+    const minPriority = requestUrl.searchParams.has('min_priority') ? Number(requestUrl.searchParams.get('min_priority')) : null;
+    if (minPriority !== null && !Number.isFinite(minPriority)) return ok({ detail: 'min_priority must be a number' }, 400);
+    const visible = requestUrl.searchParams.get('visible');
+    const allFeatures = datasetId === 'mock-demo' ? DEMO_POIS.features : [];
+    const matches = allFeatures.filter((feature) => {
+      const properties = feature.properties;
+      const text = [properties.name, properties.mappls_poi_id, properties.new_node_id, properties.osm_source_id, properties.landmark_type].join(' ').toLowerCase();
+      const [lon, lat] = feature.geometry.coordinates;
+      return (!query || text.includes(query)) && (!type || properties.landmark_type === type) &&
+        (minPriority === null || properties.priority >= minPriority) &&
+        (visible === null || (visible === 'true') === !['no', 'false', '0', 'n'].includes(String(properties.visible).toLowerCase())) &&
+        (!bbox || (lon >= bbox[0][0] && lon <= bbox[1][0] && lat >= bbox[0][1] && lat <= bbox[1][1]));
+    }).sort((a, b) => query
+      ? Number(String(b.properties.name).toLowerCase().startsWith(query)) - Number(String(a.properties.name).toLowerCase().startsWith(query)) || b.properties.priority - a.properties.priority || String(a.properties.name).localeCompare(String(b.properties.name))
+      : String(a.id).localeCompare(String(b.id)));
+    const cursor = requestUrl.searchParams.get('cursor');
+    const offset = cursor ? Number(cursor) : 0;
+    if (!Number.isInteger(offset) || offset < 0) return ok({ detail: 'Invalid pagination cursor' }, 400);
+    const features = matches.slice(offset, offset + limit);
+    const hasMore = offset + limit < matches.length;
+    return ok({ type: 'FeatureCollection', dataset_id: datasetId, features, returned: features.length, has_more: hasMore, next_cursor: hasMore ? String(offset + limit) : null });
   }
   if (method === 'GET' && pathname === '/api/scenarios') return ok({ directory: '[mock]', count: state.scenarios.length, scenarios: state.scenarios, errors: [] });
   if (method === 'GET' && (pathname === '/api/valhalla/status' || pathname === '/api/osrm/status')) return ok({ ok: true, url: `mock://${pathname.includes('valhalla') ? 'valhalla' : 'osrm'}/status`, response: { version: 'synthetic' } });
@@ -246,7 +289,7 @@ export function mockApiPlugin(): Plugin {
         if (!pathname.startsWith('/api/')) return next();
         try {
           const body = ['POST', 'PUT', 'PATCH'].includes(req.method ?? '') ? await parseBody(req) : {};
-          const response = await handleMockApi(req.method ?? 'GET', pathname, body, state);
+          const response = await handleMockApi(req.method ?? 'GET', req.url ?? pathname, body, state);
           if (!response) return send(res, 404, { detail: `No development mock for ${req.method} ${pathname}` });
           send(res, response.status, response.body);
         } catch (error) {

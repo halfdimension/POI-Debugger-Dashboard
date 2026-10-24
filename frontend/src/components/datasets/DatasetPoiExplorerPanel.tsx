@@ -7,7 +7,6 @@ export interface DatasetPoiExplorerPanelProps {
   datasetBusy: boolean;
   datasetMessage: string;
   config: DebuggerConfig;
-  pois: GeoJSON.FeatureCollection;
   filteredPoiFeatures: GeoJSON.Feature<GeoJSON.Point>[];
   searchResults: GeoJSON.Feature<GeoJSON.Point>[];
   availablePoiTypes: string[];
@@ -17,6 +16,10 @@ export interface DatasetPoiExplorerPanelProps {
   minPriority: number;
   visibleOnly: boolean;
   showPois: boolean;
+  searchLoading: boolean;
+  searchLoadingMore: boolean;
+  searchError: string;
+  searchHasMore: boolean;
   onChangeDataset: (datasetId: string) => void;
   onReloadDataset: () => void;
   onSearchChange: (value: string) => void;
@@ -26,6 +29,8 @@ export interface DatasetPoiExplorerPanelProps {
   onShowPoisChange: (value: boolean) => void;
   onResetFilters: () => void;
   onFocusPoi: (feature: GeoJSON.Feature<GeoJSON.Point>) => void;
+  onLoadMore: () => void;
+  onRetrySearch: () => void;
 }
 
 function basename(path?: string): string {
@@ -36,13 +41,15 @@ function basename(path?: string): string {
 
 export function DatasetPoiExplorerPanel({
   activeDataset, datasetRegistry, datasetBusy, datasetMessage, config,
-  pois, filteredPoiFeatures, searchResults, availablePoiTypes, fullTypeStats,
+  filteredPoiFeatures, searchResults, availablePoiTypes, fullTypeStats,
   poiSearch, poiType, minPriority, visibleOnly, showPois,
+  searchLoading, searchLoadingMore, searchError, searchHasMore,
   onChangeDataset: changeDataset, onReloadDataset: reloadActiveDataset,
   onSearchChange: setPoiSearch, onTypeChange: setPoiType,
   onMinimumPriorityChange: setMinPriority, onVisibleOnlyChange: setVisibleOnly,
   onShowPoisChange: setShowPois, onResetFilters: resetPoiFilters,
   onFocusPoi: focusPoiFeature,
+  onLoadMore, onRetrySearch,
 }: DatasetPoiExplorerPanelProps) {
   return (
     <>
@@ -83,7 +90,7 @@ export function DatasetPoiExplorerPanel({
       <section className="card poi-explorer-card">
         <div className="maneuver-heading">
           <h2>POI Explorer</h2>
-          <span>{filteredPoiFeatures.length} / {pois.features.length}</span>
+          <span>{filteredPoiFeatures.length} in view</span>
         </div>
   
         <label>Search name / Mappls ID / node ID / OSM ID / type</label>
@@ -126,14 +133,16 @@ export function DatasetPoiExplorerPanel({
         </div>
   
         <div className="poi-filter-summary">
-          <strong>{filteredPoiFeatures.length}</strong> POIs match the current filters.
-          <span>Filters affect debugger visualization/nearby inspection only; they do not change Valhalla or Odin.</span>
+          <strong>{filteredPoiFeatures.length}</strong> POIs loaded in the current viewport.
+          <span>Map/search filters do not change either routing engine.</span>
         </div>
   
         {poiSearch.trim() && (
           <div className="poi-search-results">
             <div className="poi-section-title">Search results</div>
-            {searchResults.length === 0 ? (
+            {searchLoading && <div className="empty-state" role="status">Searching POIs…</div>}
+            {searchError && <div className="dataset-warning" role="alert">{searchError} <button onClick={onRetrySearch}>Retry</button></div>}
+            {!searchLoading && !searchError && searchResults.length === 0 ? (
               <div className="empty-state">No POIs match the current search and filters.</div>
             ) : searchResults.map((feature, index) => (
               <button
@@ -151,6 +160,8 @@ export function DatasetPoiExplorerPanel({
                 </span>
               </button>
             ))}
+            {searchHasMore && <button onClick={onLoadMore} disabled={searchLoadingMore}>{searchLoadingMore ? 'Loading…' : 'Load more results'}</button>}
+            {!searchLoading && searchResults.length > 0 && <small>{searchResults.length}{searchHasMore ? '+' : ''} results loaded</small>}
           </div>
         )}
   

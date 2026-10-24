@@ -438,6 +438,34 @@ latencies, index size, Python-tracked peak memory, and response sizes:
 python3 -m backend.tests.benchmark_poi_search --rows 700000
 ```
 
+## Stage 2B — bounded frontend POI loading
+
+The frontend no longer downloads `/api/pois` during startup or dataset refresh.
+It uses the explicit `dataset_id` search contract for three separate data flows:
+
+- viewport POIs: a debounced query after MapLibre `moveend`, bounded by the
+  visible west/south/east/north coordinates and capped at 500 features;
+- explorer results: a debounced global query, 50 results per page, with
+  explicit cursor-driven “Load more” pagination;
+- route diagnostics: a separate bounding box expanded 500 m around route
+  maneuvers, independent of the current viewport and explorer page.
+
+Requests are cancelled when their bounds, dataset, or filters become stale.
+Selected POI details are stored separately, so panning or changing filters does
+not discard the selection. Candidate-analysis features remain sourced from the
+routing response and are not reconstructed from POI search pages.
+
+Dense viewport and route-diagnostic queries are deliberately not auto-paged.
+The dashboard displays a warning when the 500-feature cap is reached. In that
+case map display, nearby-POI inspection, and narration correlation may be
+incomplete. Fully authoritative dense route correlation needs a future bounded
+route-corridor/identifier lookup contract (or a backend diagnostic endpoint);
+the frontend does not fall back to downloading the complete dataset.
+
+Stage 2B has been exercised with the development mock and frontend unit/build
+checks. It still requires Linux FastAPI integration testing and the real
+700,000-row dataset benchmark described above.
+
 ## Phase 3A — saved route scenarios
 
 Phase 3A adds file-backed route scenarios for repeatable landmark testing.

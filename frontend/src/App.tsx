@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import maplibregl, { LngLatBounds, Map as MapLibreMap } from 'maplibre-gl';
-import { activateDataset, createScenario, deleteScenario, getDatasets, getOsrmStatus, getPois, getScenarios, getValhallaStatus, reloadDatasetPois, requestCompareRoute, updateScenario } from './api';
+import { activateDataset, createScenario, deleteScenario, getDatasets, getOsrmStatus, getScenarios, getValhallaStatus, reloadDatasetPois, requestCompareRoute, updateScenario } from './api';
 import { updateCoordinateValue } from './coordinates';
 import { decodePolyline6 } from './polyline';
-import { filterPoiFeatures, pointFeature, propNumber, propText, rankPoiSearchResults } from './poi';
+import { pointFeature, propNumber, propText } from './poi';
+import { mergePoiPages, searchPois, type PoiBounds, type PoiSearchResponse } from './poiSearchApi';
 import { evaluateScenario, type ScenarioRunResult } from './scenarioAssertions';
 import { loadInitialDashboard } from './initialization';
 import { AnalysisWorkspace, Sidebar } from './components/DashboardLayout';
@@ -36,6 +37,35 @@ const EMPTY_FC: GeoJSON.FeatureCollection = { type: 'FeatureCollection', feature
 const NEARBY_POI_RADIUS_M = 100;
 const NEARBY_POI_LIMIT = 12;
 const NARRATION_POI_MAX_DISTANCE_M = 500;
+const VIEWPORT_POI_LIMIT = 500;
+const SEARCH_POI_LIMIT = 50;
+
+function boundsAround(coordinates: LngLat[], radiusM: number): PoiBounds | null {
+  if (coordinates.length === 0) return null;
+  const lons = coordinates.map(([lon]) => lon);
+  const lats = coordinates.map(([, lat]) => lat);
+  const middleLat = (Math.min(...lats) + Math.max(...lats)) / 2;
+  const latPadding = radiusM / 111_320;
+  const lonPadding = radiusM / (111_320 * Math.max(0.01, Math.cos(middleLat * Math.PI / 180)));
+  return [
+    Math.max(-180, Math.min(...lons) - lonPadding),
+    Math.max(-90, Math.min(...lats) - latPadding),
+    Math.min(180, Math.max(...lons) + lonPadding),
+    Math.min(90, Math.max(...lats) + latPadding),
+  ];
+}
+
+function visibleMapBounds(map: MapLibreMap): PoiBounds | null {
+  const bounds = map.getBounds();
+  let west = bounds.getWest();
+  let east = bounds.getEast();
+  const width = east - west;
+  if (width >= 360) return [-180, bounds.getSouth(), 180, bounds.getNorth()];
+  while (west < -180 && east <= -180) { west += 360; east += 360; }
+  while (east > 180 && west >= 180) { west -= 360; east -= 360; }
+  if (west < -180 || east > 180 || west > east) return null;
+  return [west, Math.max(-90, bounds.getSouth()), east, Math.min(90, bounds.getNorth())];
+}
 
 function fmtCoord(value: number | undefined): string {
   return typeof value === 'number' ? value.toFixed(6) : '';
@@ -328,6 +358,15 @@ export default function App() {
   const [end, setEnd] = useState<LngLat | null>(null);
   const [mapContextMenu, setMapContextMenu] = useState<MapContextMenuLocation | null>(null);
   const [pois, setPois] = useState<GeoJSON.FeatureCollection>(EMPTY_FC);
+  const [viewportMeta, setViewportMeta] = useState({ loading: false, error: '', capped: false });
+  const [viewportRevision, setViewportRevision] = useState(0);
+  const [searchResponse, setSearchResponse] = useState<PoiSearchResponse | null>(null);
+  const [searchFeatures, setSearchFeatures] = useState<GeoJSON.Feature<GeoJSON.Point>[]>([]);
+  const [searchState, setSearchState] = useState({ loading: false, loadingMore: false, error: '' });
+  const [searchRetry, setSearchRetry] = useState(0);
+  const loadMoreControllerRef = useRef<AbortController | null>(null);
+  const [diagnosticPois, setDiagnosticPois] = useState<GeoJSON.FeatureCollection>(EMPTY_FC);
+  const [diagnosticWarning, setDiagnosticWarning] = useState('');
   const [route, setRoute] = useState<ValhallaRouteResponse | null>(null);
   const [routeGeoJson, setRouteGeoJson] = useState<GeoJSON.FeatureCollection>(EMPTY_FC);
   const [osrmRoute, setOsrmRoute] = useState<OsrmRouteResponse | null>(null);
@@ -362,14 +401,23 @@ export default function App() {
   const [runAllBusy, setRunAllBusy] = useState(false);
 
   const [poiSearch, setPoiSearch] = useState('');
+  const [debouncedPoiSearch, setDebouncedPoiSearch] = useState('');
   const [poiType, setPoiType] = useState('all');
   const [minPriority, setMinPriority] = useState(0);
   const [visibleOnly, setVisibleOnly] = useState(true);
   const [showPois, setShowPois] = useState(true);
+  const searchCriteriaKey = `${datasetRegistry?.active_dataset ?? ''}|${poiSearch.trim()}|${poiType}|${minPriority}|${visibleOnly}`;
+  const searchCriteriaRef = useRef(searchCriteriaKey);
+  searchCriteriaRef.current = searchCriteriaKey;
 
   const toggleLayoutPanel = (panel: 'left' | 'right' | 'analysis') => {
     setLayout((current) => togglePanel(current, panel));
   };
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedPoiSearch(poiSearch), 300);
+    return () => window.clearTimeout(timer);
+  }, [poiSearch]);
 
   const activeDataset = useMemo<DatasetSummary | null>(() => {
     if (!datasetRegistry) return null;
@@ -377,45 +425,24 @@ export default function App() {
   }, [datasetRegistry]);
 
   const availablePoiTypes = useMemo(() => {
-    const types = new Set<string>();
-    for (const rawFeature of pois.features) {
-      const feature = pointFeature(rawFeature);
-      if (!feature) continue;
-      const type = propText(feature.properties, 'landmark_type', '').trim();
-      if (type) types.add(type);
-    }
-    return Array.from(types).sort((a, b) => a.localeCompare(b));
-  }, [pois]);
+    return Object.keys(activeDataset?.stats?.landmark_types ?? {}).sort((a, b) => a.localeCompare(b));
+  }, [activeDataset]);
 
   const fullTypeStats = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const rawFeature of pois.features) {
-      const feature = pointFeature(rawFeature);
-      if (!feature) continue;
-      const type = propText(feature.properties, 'landmark_type', 'unknown') || 'unknown';
-      counts.set(type, (counts.get(type) ?? 0) + 1);
-    }
-    return Array.from(counts.entries())
+    return Object.entries(activeDataset?.stats?.landmark_types ?? {})
       .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
-  }, [pois]);
+  }, [activeDataset]);
 
   const filteredPoiFeatures = useMemo<GeoJSON.Feature<GeoJSON.Point>[]>(() => {
-    return filterPoiFeatures(pois.features, {
-      search: poiSearch,
-      landmarkType: poiType,
-      minimumPriority: minPriority,
-      visibleOnly,
-    });
-  }, [pois, poiSearch, poiType, minPriority, visibleOnly]);
+    return pois.features.map(pointFeature).filter((feature): feature is GeoJSON.Feature<GeoJSON.Point> => feature !== null);
+  }, [pois]);
 
   const filteredPois = useMemo<GeoJSON.FeatureCollection>(() => ({
     type: 'FeatureCollection',
     features: filteredPoiFeatures,
   }), [filteredPoiFeatures]);
 
-  const searchResults = useMemo(() => {
-    return rankPoiSearchResults(filteredPoiFeatures, poiSearch);
-  }, [filteredPoiFeatures, poiSearch]);
+  const searchResults = searchFeatures;
 
   const maneuverViews = useMemo<ManeuverView[]>(() => {
     const result: ManeuverView[] = [];
@@ -874,7 +901,7 @@ export default function App() {
       const instruction = osrmInstructionText(item.step);
       const names: string[] = [];
 
-      for (const rawFeature of pois.features) {
+      for (const rawFeature of diagnosticPois.features) {
         const feature = pointFeature(rawFeature);
         if (!feature) continue;
 
@@ -894,7 +921,7 @@ export default function App() {
     }
 
     return result;
-  }, [osrmStepViews, pois]);
+  }, [osrmStepViews, diagnosticPois]);
 
   const osrmRouteNarrationPois = useMemo<OsrmRouteNarrationPoi[]>(() => {
     const grouped = new Map<string, OsrmRouteNarrationPoi>();
@@ -906,7 +933,7 @@ export default function App() {
 
       const matches: NarrationPoiEvidence[] = [];
 
-      for (const rawFeature of pois.features) {
+      for (const rawFeature of diagnosticPois.features) {
         const feature = pointFeature(rawFeature);
         if (!feature) continue;
 
@@ -996,7 +1023,7 @@ export default function App() {
     return Array.from(grouped.values()).sort(
       (a, b) => a.primaryStepIndex - b.primaryStepIndex,
     );
-  }, [osrmStepViews, pois]);
+  }, [osrmStepViews, diagnosticPois]);
 
   const osrmGeometryPointCount =
     osrmRoute?.routes?.[0]?.geometry?.coordinates?.length ?? 0;
@@ -1065,7 +1092,7 @@ export default function App() {
     if (!selectedManeuver?.coordinate) return [];
     const result: NearbyPoi[] = [];
 
-    for (const rawFeature of filteredPois.features) {
+    for (const rawFeature of diagnosticPois.features) {
       const feature = pointFeature(rawFeature);
       if (!feature) continue;
       const coordinate = feature.geometry.coordinates as LngLat;
@@ -1084,7 +1111,7 @@ export default function App() {
 
     result.sort((a, b) => a.distanceM - b.distanceM || (b.priority ?? -1) - (a.priority ?? -1));
     return result.slice(0, NEARBY_POI_LIMIT);
-  }, [filteredPois, selectedManeuver]);
+  }, [diagnosticPois, selectedManeuver]);
 
   const narrationEvidenceByManeuver = useMemo(() => {
     const result = new Map<number, NarrationPoiEvidence[]>();
@@ -1098,7 +1125,7 @@ export default function App() {
 
       const matches: NarrationPoiEvidence[] = [];
 
-      for (const rawFeature of pois.features) {
+      for (const rawFeature of diagnosticPois.features) {
         const feature = pointFeature(rawFeature);
         if (!feature) continue;
 
@@ -1150,7 +1177,7 @@ export default function App() {
     }
 
     return result;
-  }, [maneuverViews, pois]);
+  }, [maneuverViews, diagnosticPois]);
 
   const routeNarrationPois = useMemo<RouteNarrationPoi[]>(() => {
     const grouped = new Map<string, RouteNarrationPoi>();
@@ -1230,7 +1257,6 @@ export default function App() {
         const initial = await loadInitialDashboard();
         if (cancelled) return;
         setConfig(initial.config);
-        setPois(initial.pois);
         setDatasetRegistry(initial.datasets);
         setScenarioRegistry(initial.scenarios);
 
@@ -1755,6 +1781,106 @@ export default function App() {
   }, [config, activeDataset?.id]);
 
   useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const settled = () => setViewportRevision((revision) => revision + 1);
+    map.on('moveend', settled);
+    if (map.loaded()) settled();
+    else map.once('load', settled);
+    return () => { map.off('moveend', settled); map.off('load', settled); };
+  }, [config]);
+
+  useEffect(() => {
+    const datasetId = datasetRegistry?.active_dataset;
+    const map = mapRef.current;
+    if (!datasetId || !map) return;
+    const bbox = visibleMapBounds(map);
+    if (!bbox) {
+      setPois(EMPTY_FC);
+      setViewportMeta({ loading: false, capped: false, error: 'POIs are unavailable for a viewport crossing the antimeridian.' });
+      return;
+    }
+    const controller = new AbortController();
+    let current = true;
+    setViewportMeta((state) => ({ ...state, loading: true, error: '' }));
+    searchPois({
+      datasetId,
+      q: debouncedPoiSearch || undefined,
+      type: poiType === 'all' ? undefined : poiType,
+      minPriority: minPriority > 0 ? minPriority : undefined,
+      visible: visibleOnly ? true : undefined,
+      bbox,
+      limit: VIEWPORT_POI_LIMIT,
+    }, controller.signal).then((response) => {
+      if (!current) return;
+      setPois(response);
+      setViewportMeta({ loading: false, error: '', capped: response.has_more });
+    }).catch((err) => {
+      if (!current || err instanceof DOMException && err.name === 'AbortError') return;
+      setViewportMeta({ loading: false, capped: false, error: err instanceof Error ? err.message : String(err) });
+    });
+    return () => { current = false; controller.abort(); };
+  }, [datasetRegistry?.active_dataset, viewportRevision, debouncedPoiSearch, poiType, minPriority, visibleOnly]);
+
+  useEffect(() => {
+    const datasetId = datasetRegistry?.active_dataset;
+    const query = poiSearch.trim();
+    loadMoreControllerRef.current?.abort();
+    setSearchFeatures([]);
+    setSearchResponse(null);
+    setSearchState({ loading: Boolean(datasetId && query), loadingMore: false, error: '' });
+    if (!datasetId || !query) return;
+    const controller = new AbortController();
+    let current = true;
+    const timer = window.setTimeout(() => {
+      searchPois({
+        datasetId, q: query,
+        type: poiType === 'all' ? undefined : poiType,
+        minPriority: minPriority > 0 ? minPriority : undefined,
+        visible: visibleOnly ? true : undefined,
+        limit: SEARCH_POI_LIMIT,
+      }, controller.signal).then((response) => {
+        if (!current) return;
+        setSearchResponse(response);
+        setSearchFeatures(response.features);
+        setSearchState({ loading: false, loadingMore: false, error: '' });
+      }).catch((err) => {
+        if (!current || err instanceof DOMException && err.name === 'AbortError') return;
+        setSearchState({ loading: false, loadingMore: false, error: err instanceof Error ? err.message : String(err) });
+      });
+    }, 300);
+    return () => { current = false; window.clearTimeout(timer); controller.abort(); };
+  }, [datasetRegistry?.active_dataset, poiSearch, poiType, minPriority, visibleOnly, searchRetry]);
+
+  useEffect(() => {
+    const datasetId = datasetRegistry?.active_dataset;
+    const coordinates = [
+      ...maneuverViews.map((item) => item.coordinate),
+      ...osrmStepViews.map((item) => item.coordinate),
+    ].filter((coordinate): coordinate is LngLat => coordinate !== null);
+    const bbox = boundsAround(coordinates, NARRATION_POI_MAX_DISTANCE_M);
+    if (!datasetId || !bbox) {
+      setDiagnosticPois(EMPTY_FC);
+      setDiagnosticWarning('');
+      return;
+    }
+    const controller = new AbortController();
+    let current = true;
+    searchPois({ datasetId, bbox, limit: VIEWPORT_POI_LIMIT }, controller.signal).then((response) => {
+      if (!current) return;
+      setDiagnosticPois(response);
+      setDiagnosticWarning(response.has_more
+        ? 'Route diagnostic POIs are capped at 500; nearby and narration matches may be incomplete in this dense route area.'
+        : '');
+    }).catch((err) => {
+      if (!current || err instanceof DOMException && err.name === 'AbortError') return;
+      setDiagnosticPois(EMPTY_FC);
+      setDiagnosticWarning(`Route diagnostic POIs could not be loaded: ${err instanceof Error ? err.message : String(err)}`);
+    });
+    return () => { current = false; controller.abort(); };
+  }, [datasetRegistry?.active_dataset, maneuverViews, osrmStepViews]);
+
+  useEffect(() => {
     const map = mapRef.current as (MapLibreMap & { __pickMode?: PickMode }) | null;
     if (map) map.__pickMode = pickMode;
   }, [pickMode]);
@@ -1980,11 +2106,42 @@ export default function App() {
   }, [availablePoiTypes, poiType]);
 
   async function refreshActiveDataset(message = '') {
-    const [poiData, registry] = await Promise.all([getPois(), getDatasets()]);
-    setPois(poiData);
+    const registry = await getDatasets();
     setDatasetRegistry(registry);
+    setPois(EMPTY_FC);
+    setDiagnosticPois(EMPTY_FC);
     setSelectedPoi(null);
+    setViewportRevision((revision) => revision + 1);
     if (message) setDatasetMessage(message);
+  }
+
+  async function loadMoreSearchResults() {
+    const datasetId = datasetRegistry?.active_dataset;
+    const cursor = searchResponse?.next_cursor;
+    if (!datasetId || !cursor || searchState.loadingMore) return;
+    const requestCriteria = searchCriteriaKey;
+    const controller = new AbortController();
+    loadMoreControllerRef.current?.abort();
+    loadMoreControllerRef.current = controller;
+    setSearchState((state) => ({ ...state, loadingMore: true, error: '' }));
+    try {
+      const response = await searchPois({
+        datasetId, q: poiSearch.trim(),
+        type: poiType === 'all' ? undefined : poiType,
+        minPriority: minPriority > 0 ? minPriority : undefined,
+        visible: visibleOnly ? true : undefined,
+        limit: SEARCH_POI_LIMIT, cursor,
+      }, controller.signal);
+      if (searchCriteriaRef.current !== requestCriteria) return;
+      setSearchFeatures((features) => mergePoiPages(features, response.features));
+      setSearchResponse(response);
+      setSearchState({ loading: false, loadingMore: false, error: '' });
+    } catch (err) {
+      if (controller.signal.aborted) return;
+      setSearchState({ loading: false, loadingMore: false, error: err instanceof Error ? err.message : String(err) });
+    } finally {
+      if (loadMoreControllerRef.current === controller) loadMoreControllerRef.current = null;
+    }
   }
 
   async function changeDataset(datasetId: string) {
@@ -2628,7 +2785,6 @@ export default function App() {
     setMinPriority(0);
     setVisibleOnly(true);
     setShowPois(true);
-    setSelectedPoi(null);
   }
 
   if (!config) {
@@ -2737,7 +2893,6 @@ export default function App() {
           />
 
           <CompactPoiExplorer
-            pois={pois}
             filteredPoiFeatures={filteredPoiFeatures}
             searchResults={searchResults}
             availablePoiTypes={availablePoiTypes}
@@ -2746,6 +2901,10 @@ export default function App() {
             minPriority={minPriority}
             visibleOnly={visibleOnly}
             showPois={showPois}
+            searchLoading={searchState.loading}
+            searchLoadingMore={searchState.loadingMore}
+            searchError={searchState.error}
+            searchHasMore={searchResponse?.has_more === true}
             onSearchChange={setPoiSearch}
             onTypeChange={setPoiType}
             onMinimumPriorityChange={setMinPriority}
@@ -2753,6 +2912,8 @@ export default function App() {
             onShowPoisChange={setShowPois}
             onResetFilters={resetPoiFilters}
             onFocusPoi={focusPoiFeature}
+            onLoadMore={loadMoreSearchResults}
+            onRetrySearch={() => setSearchRetry((value) => value + 1)}
           />
 
           <SavedScenarioControls
@@ -2815,12 +2976,17 @@ export default function App() {
             </div>
 
             <span>
-              {filteredPoiFeatures.length}/{pois.features.length} POIs shown ·
+              {viewportMeta.loading ? 'Loading POIs…' : `${filteredPoiFeatures.length}${viewportMeta.capped ? '+' : ''} viewport POIs`} ·
               {' '}{maneuverViews.length} Odin maneuvers · {osrmStepViews.length} OSRM steps
             </span>
           </div>
           <div className="map-surface">
             <div ref={mapContainer} className="map" />
+            {(viewportMeta.error || viewportMeta.capped || diagnosticWarning) && (
+              <div className="map-data-warning" role="status">
+                {[viewportMeta.error, viewportMeta.capped ? 'Viewport POIs are capped at 500; zoom in to inspect dense areas.' : '', diagnosticWarning].filter(Boolean).join(' ')}
+              </div>
+            )}
             {mapContextMenu && (
               <MapContextMenu
                 {...mapContextMenu}
@@ -3135,7 +3301,6 @@ export default function App() {
             datasetBusy={datasetBusy}
             datasetMessage={datasetMessage}
             config={config}
-            pois={pois}
             filteredPoiFeatures={filteredPoiFeatures}
             searchResults={searchResults}
             availablePoiTypes={availablePoiTypes}
@@ -3145,6 +3310,10 @@ export default function App() {
             minPriority={minPriority}
             visibleOnly={visibleOnly}
             showPois={showPois}
+            searchLoading={searchState.loading}
+            searchLoadingMore={searchState.loadingMore}
+            searchError={searchState.error}
+            searchHasMore={searchResponse?.has_more === true}
             onChangeDataset={changeDataset}
             onReloadDataset={reloadActiveDataset}
             onSearchChange={setPoiSearch}
@@ -3154,6 +3323,8 @@ export default function App() {
             onShowPoisChange={setShowPois}
             onResetFilters={resetPoiFilters}
             onFocusPoi={focusPoiFeature}
+            onLoadMore={loadMoreSearchResults}
+            onRetrySearch={() => setSearchRetry((value) => value + 1)}
           />
 
           <section className="card legacy-configuration">

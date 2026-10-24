@@ -47,6 +47,9 @@ backend:
   # is disabled by default. Add explicit origins only when required.
   allowed_origins: []
 
+  # Persistent, rebuildable SQLite POI indexes. Relative paths use the repo root.
+  poi_index_dir: "./.cache/poi-search"
+
 
 # Phase 2A dataset registry example. The old `data:` block still works as a fallback.
 active_dataset: "example"

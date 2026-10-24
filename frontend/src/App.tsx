@@ -6,69 +6,30 @@ import { decodePolyline6 } from './polyline';
 import { filterPoiFeatures, pointFeature, propNumber, propText, rankPoiSearchResults } from './poi';
 import { evaluateScenario, type ScenarioRunResult } from './scenarioAssertions';
 import { loadInitialDashboard } from './initialization';
-import { AnalysisWorkspace, PanelSection, Sidebar } from './components/DashboardLayout';
+import { AnalysisWorkspace, Sidebar } from './components/DashboardLayout';
+import { CandidateAnalysisPanel } from './components/analysis/CandidateAnalysisPanel';
+import { RawResponseCards } from './components/analysis/RawResponseInspection';
+import { AnalysisTabContent } from './components/analysis/AnalysisTabContent';
+import { CompactDatasetSelector } from './components/datasets/DatasetSelector';
+import { CompactPoiExplorer } from './components/datasets/PoiExplorer';
+import { DatasetPoiExplorerPanel } from './components/datasets/DatasetPoiExplorerPanel';
+import type { ManeuverView, NarrationPoiEvidence, NearbyPoi, OsrmRouteNarrationPoi, OsrmStepView, RouteNarrationPoi } from './components/inspection/viewModels';
+import { ManeuverInspection } from './components/inspection/ManeuverInspection';
+import { SelectedPoiDetails } from './components/inspection/SelectedPoiDetails';
+import { RouteSetupControls } from './components/route/RouteSetupControls';
+import { RouteComparisonSummary } from './components/route/RouteComparisonSummary';
+import { SavedScenarioControls } from './components/scenarios/SavedScenarioControls';
+import { ScenarioManagementPanel } from './components/scenarios/ScenarioManagementPanel';
 import {
   initialDashboardLayout,
   selectAnalysisTab,
   togglePanel,
 } from './layoutState';
-import type { CandidateAnalysis, CandidateAnalysisCandidate, CandidateAnalysisManeuver, DatasetRegistryResponse, DatasetSummary, DebuggerConfig, LngLat, Maneuver, OsrmRouteResponse, OsrmStep, RouteScenario, ScenarioRegistryResponse, ValhallaRouteResponse } from './types';
+import type { CandidateAnalysis, CandidateAnalysisManeuver, DatasetRegistryResponse, DatasetSummary, DebuggerConfig, LngLat, Maneuver, OsrmRouteResponse, OsrmStep, RouteScenario, ScenarioRegistryResponse, ValhallaRouteResponse } from './types';
 
 declare const __VPD_MOCK_API__: boolean;
 
 type PickMode = 'start' | 'end';
-
-type ManeuverView = {
-  index: number;
-  legIndex: number;
-  maneuverIndex: number;
-  maneuver: Maneuver;
-  coordinate: LngLat | null;
-};
-
-type OsrmStepView = {
-  index: number;
-  legIndex: number;
-  stepIndex: number;
-  step: OsrmStep;
-  coordinate: LngLat | null;
-};
-
-type NearbyPoi = {
-  feature: GeoJSON.Feature<GeoJSON.Point>;
-  coordinate: LngLat;
-  distanceM: number;
-  priority: number | null;
-  name: string;
-  landmarkType: string;
-};
-
-type NarrationPoiEvidence = {
-  feature: GeoJSON.Feature<GeoJSON.Point>;
-  coordinate: LngLat;
-  distanceM: number | null;
-  priority: number | null;
-  name: string;
-  landmarkType: string;
-  poiId: string;
-  sourceNodeId: string;
-  evidence: 'strong' | 'ambiguous';
-  matchedInstruction: string;
-};
-
-type RouteNarrationPoi = {
-  key: string;
-  evidence: NarrationPoiEvidence;
-  maneuverIndexes: number[];
-  primaryManeuverIndex: number;
-};
-
-type OsrmRouteNarrationPoi = {
-  key: string;
-  evidence: NarrationPoiEvidence;
-  stepIndexes: number[];
-  primaryStepIndex: number;
-};
 
 const EMPTY_FC: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features: [] };
 const NEARBY_POI_RADIUS_M = 100;
@@ -85,715 +46,6 @@ function fmtSigned(value: number | null, digits = 2): string {
 }
 
 
-function analysisValue(value: unknown, digits = 2): string {
-  if (value === null || value === undefined || value === '') {
-    return '—';
-  }
-
-  if (typeof value === 'boolean') {
-    return value ? 'yes' : 'no';
-  }
-
-  if (typeof value === 'number') {
-    if (!Number.isFinite(value)) return '—';
-
-    return Number.isInteger(value)
-      ? String(value)
-      : value.toFixed(digits);
-  }
-
-  return String(value);
-}
-
-function candidateStatusClass(status?: string): string {
-  if (status === 'SELECTED') {
-    return 'selected';
-  }
-
-  if (status === 'ELIGIBLE / LOST RANKING') {
-    return 'eligible';
-  }
-
-  if (status === 'REJECTED') {
-    return 'rejected';
-  }
-
-  if (status === 'DEDUPLICATED') {
-    return 'deduplicated';
-  }
-
-  return 'unknown';
-}
-
-function candidateCoordinateText(
-  candidate: CandidateAnalysisCandidate,
-): string {
-  const coordinate = candidate.coordinate;
-
-  if (
-    !Array.isArray(coordinate) ||
-    coordinate.length < 2 ||
-    !Number.isFinite(Number(coordinate[0])) ||
-    !Number.isFinite(Number(coordinate[1]))
-  ) {
-    return '—';
-  }
-
-  return (
-    `${Number(coordinate[1]).toFixed(6)}, ` +
-    `${Number(coordinate[0]).toFixed(6)}`
-  );
-}
-
-function CandidateDecisionList({
-  engine,
-  analysis,
-  showCandidatesOnMap,
-  onToggleCandidatesOnMap,
-}: {
-  engine: 'valhalla' | 'osrm';
-  analysis: CandidateAnalysisManeuver;
-  showCandidatesOnMap: boolean;
-  onToggleCandidatesOnMap: () => void;
-}) {
-  const candidates = analysis.candidates ?? [];
-
-  const selected =
-    candidates.find((candidate) => candidate.selected) ?? null;
-
-  const identity = analysis.identity ?? {};
-  const maneuver = analysis.maneuver ?? {};
-  const selector = analysis.selector ?? {};
-
-  return (
-    <div className={`candidate-analysis-engine ${engine}`}>
-      <div className="candidate-analysis-engine-header">
-        <span className={`candidate-engine-badge ${engine}`}>
-          {engine === 'valhalla' ? 'VALHALLA' : 'OSRM'}
-        </span>
-
-        <div>
-          <strong>
-            {selected?.name
-              ? `Selected: ${selected.name}`
-              : 'No candidate selected'}
-          </strong>
-
-          <small>
-            {candidates.length} candidate
-            {candidates.length === 1 ? '' : 's'} considered
-          </small>
-        </div>
-      </div>
-
-      {engine === 'osrm' ? (
-        <div className="candidate-context-grid">
-          <div>
-            <span>turn_id</span>
-            <strong>{analysisValue(identity.turn_id)}</strong>
-          </div>
-
-          <div>
-            <span>intersection node</span>
-            <strong>
-              {analysisValue(identity.intersection_node)}
-            </strong>
-          </div>
-
-          <div>
-            <span>maneuver coordinate</span>
-            <strong>
-              {Array.isArray(maneuver.coordinate)
-                ? (
-                  `${Number(maneuver.coordinate[1]).toFixed(6)}, ` +
-                  `${Number(maneuver.coordinate[0]).toFixed(6)}`
-                )
-                : '—'}
-            </strong>
-          </div>
-
-          <div>
-            <span>incoming bearing</span>
-            <strong>
-              {typeof maneuver.incoming_bearing === 'number'
-                ? `${maneuver.incoming_bearing.toFixed(2)}°`
-                : '—'}
-            </strong>
-          </div>
-
-          <div>
-            <span>outgoing bearing</span>
-            <strong>
-              {typeof maneuver.outgoing_bearing === 'number'
-                ? `${maneuver.outgoing_bearing.toFixed(2)}°`
-                : '—'}
-            </strong>
-          </div>
-
-          <div>
-            <span>delayed turn</span>
-            <strong>{analysisValue(identity.delayed)}</strong>
-          </div>
-        </div>
-      ) : (
-        <div className="candidate-analysis-limitation">
-          Valhalla's current runtime landmark debug does not expose an
-          authoritative maneuver coordinate or incoming/outgoing bearings.
-          They are intentionally not reconstructed here.
-        </div>
-      )}
-
-      {Object.keys(selector).length > 0 && (
-        <details className="candidate-selector-details">
-          <summary>Engine selection policy</summary>
-
-          <div className="candidate-policy-grid">
-            {Object.entries(selector).map(([key, value]) => (
-              <div key={key}>
-                <span>{key}</span>
-                <code>{analysisValue(value, 3)}</code>
-              </div>
-            ))}
-          </div>
-        </details>
-      )}
-
-      <button
-        type="button"
-        className={
-          showCandidatesOnMap
-            ? 'candidate-map-toggle active'
-            : 'candidate-map-toggle'
-        }
-        disabled={candidates.length === 0}
-        onClick={onToggleCandidatesOnMap}
-      >
-        <span>
-          {showCandidatesOnMap ? 'Hide' : 'Show'}
-          {' '}candidate POIs on map
-        </span>
-
-        <small>
-          Draw the selected maneuver → every engine candidate
-        </small>
-      </button>
-
-      {candidates.length === 0 ? (
-        <div className="empty-state">
-          The engine emitted no candidate decisions for this maneuver.
-        </div>
-      ) : (
-        <div className="candidate-decision-list">
-          {candidates.map((candidate, index) => {
-            const runtimeAssociation =
-              candidate.association?.runtime;
-
-            const buildAssociation =
-              candidate.association?.build;
-
-            const selectedBuildEvent =
-              buildAssociation?.selected_event;
-
-            return (
-              <div
-                className={
-                  `candidate-decision ` +
-                  `${candidateStatusClass(candidate.status)}`
-                }
-                key={
-                  `${
-                    candidate.poi_id ??
-                    candidate.osm_node_id ??
-                    candidate.name ??
-                    'candidate'
-                  }-${index}`
-                }
-              >
-                <div className="candidate-decision-heading">
-                  <span className="candidate-rank">
-                    {index + 1}
-                  </span>
-
-                  <div className="candidate-name">
-                    <strong>
-                      {candidate.name || 'Unnamed POI'}
-                    </strong>
-
-                    <small>
-                      {candidate.poi_id
-                        ? candidate.poi_id
-                        : (
-                          candidate.osm_node_id !== null &&
-                          candidate.osm_node_id !== undefined
-                        )
-                          ? `OSM node ${candidate.osm_node_id}`
-                          : 'no POI identifier'}
-                    </small>
-                  </div>
-
-                  <span
-                    className={
-                      `candidate-status ` +
-                      `${candidateStatusClass(candidate.status)}`
-                    }
-                  >
-                    {candidate.status || 'UNKNOWN'}
-                  </span>
-                </div>
-
-                <div className="candidate-metric-grid">
-                  <div>
-                    <span>priority</span>
-                    <strong>
-                      {analysisValue(candidate.priority)}
-                    </strong>
-                  </div>
-
-                  <div>
-                    <span>
-                      {engine === 'osrm'
-                        ? 'maneuver distance'
-                        : 'distance'}
-                    </span>
-                    <strong>
-                      {engine === 'osrm'
-                        ? (
-                          typeof candidate.maneuver_distance_m ===
-                          'number'
-                            ? `${
-                                candidate.maneuver_distance_m
-                                  .toFixed(2)
-                              } m`
-                            : '—'
-                        )
-                        : (
-                          typeof candidate.distance_m === 'number'
-                            ? `${candidate.distance_m.toFixed(2)} m`
-                            : '—'
-                        )}
-                    </strong>
-                  </div>
-
-                  <div>
-                    <span>coordinate</span>
-                    <strong>
-                      {candidateCoordinateText(candidate)}
-                    </strong>
-                  </div>
-
-                  {engine === 'osrm' && (
-                    <>
-                      <div>
-                        <span>route edge role</span>
-                        <strong>
-                          {candidate.on_incoming &&
-                          candidate.on_outgoing
-                            ? 'incoming + outgoing'
-                            : candidate.on_incoming
-                              ? 'incoming'
-                              : candidate.on_outgoing
-                                ? 'outgoing'
-                                : '—'}
-                        </strong>
-                      </div>
-
-                      <div>
-                        <span>perpendicular distance</span>
-                        <strong>
-                          {typeof candidate.perpendicular_distance_m ===
-                          'number'
-                            ? `${
-                                candidate.perpendicular_distance_m
-                                  .toFixed(2)
-                              } m`
-                            : '—'}
-                        </strong>
-                      </div>
-
-                      <div>
-                        <span>incoming → turn</span>
-                        <strong>
-                          {typeof candidate
-                            .incoming_distance_to_turn_m === 'number'
-                            ? `${
-                                candidate
-                                  .incoming_distance_to_turn_m
-                                  .toFixed(2)
-                              } m`
-                            : '—'}
-                        </strong>
-                      </div>
-
-                      <div>
-                        <span>turn → outgoing</span>
-                        <strong>
-                          {typeof candidate
-                            .outgoing_distance_from_turn_m === 'number'
-                            ? `${
-                                candidate
-                                  .outgoing_distance_from_turn_m
-                                  .toFixed(2)
-                              } m`
-                            : '—'}
-                        </strong>
-                      </div>
-
-                      <div>
-                        <span>incoming perpendicular</span>
-                        <strong>
-                          {typeof candidate
-                            .incoming_perpendicular_distance_m ===
-                          'number'
-                            ? `${
-                                candidate
-                                  .incoming_perpendicular_distance_m
-                                  .toFixed(2)
-                              } m`
-                            : '—'}
-                        </strong>
-                      </div>
-
-                      <div>
-                        <span>outgoing perpendicular</span>
-                        <strong>
-                          {typeof candidate
-                            .outgoing_perpendicular_distance_m ===
-                          'number'
-                            ? `${
-                                candidate
-                                  .outgoing_perpendicular_distance_m
-                                  .toFixed(2)
-                              } m`
-                            : '—'}
-                        </strong>
-                      </div>
-
-                      <div>
-                        <span>visible</span>
-                        <strong>
-                          {analysisValue(candidate.visible)}
-                        </strong>
-                      </div>
-
-                      <div>
-                        <span>eligible</span>
-                        <strong>
-                          {analysisValue(candidate.eligible)}
-                        </strong>
-                      </div>
-
-                      <div>
-                        <span>OSM node</span>
-                        <strong>
-                          {analysisValue(candidate.osm_node_id)}
-                        </strong>
-                      </div>
-                    </>
-                  )}
-
-                  {engine === 'valhalla' && (
-                    <>
-                      <div>
-                        <span>side</span>
-                        <strong>
-                          {candidate.right === true
-                            ? 'right'
-                            : candidate.right === false
-                              ? 'left'
-                              : '—'}
-                        </strong>
-                      </div>
-
-                      <div>
-                        <span>route edge role</span>
-                        <strong>
-                          {analysisValue(
-                            runtimeAssociation?.route_edge_role,
-                          )}
-                        </strong>
-                      </div>
-                    </>
-                  )}
-                </div>
-
-                {engine === 'osrm' && (
-                  <div className="candidate-metric-grid">
-                    <div>
-                      <span>association confidence</span>
-                      <strong>
-                        {candidate.association_augmented === true
-                          ? 'augmented fallback'
-                          : candidate.association_augmented === false
-                            ? 'normal'
-                            : '—'}
-                      </strong>
-                    </div>
-
-                    <div>
-                      <span>incoming association</span>
-                      <strong>
-                        {!candidate.on_incoming
-                          ? '—'
-                          : candidate.incoming_association_augmented === true
-                            ? 'augmented'
-                            : candidate.incoming_association_augmented === false
-                              ? 'normal'
-                              : 'unknown'}
-                      </strong>
-                    </div>
-
-                    <div>
-                      <span>outgoing association</span>
-                      <strong>
-                        {!candidate.on_outgoing
-                          ? '—'
-                          : candidate.outgoing_association_augmented === true
-                            ? 'augmented'
-                            : candidate.outgoing_association_augmented === false
-                              ? 'normal'
-                              : 'unknown'}
-                      </strong>
-                    </div>
-                  </div>
-                )}
-
-                {candidate.reason && (
-                  <div className="candidate-reason">
-                    <strong>Decision reason</strong>
-                    <span>{candidate.reason}</span>
-                  </div>
-                )}
-
-                {(candidate.rejection_reasons?.length ?? 0) > 0 && (
-                  <div className="candidate-structured-reasons">
-                    {(candidate.rejection_reasons ?? []).map(
-                      (reason, reasonIndex) => (
-                        <code
-                          key={
-                            `${
-                              reason.code ?? 'reason'
-                            }-${reasonIndex}`
-                          }
-                        >
-                          {reason.code || 'rejection'}
-
-                          {reason.actual !== undefined
-                            ? (
-                              ` · actual=${
-                                analysisValue(
-                                  reason.actual,
-                                  3,
-                                )
-                              }`
-                            )
-                            : ''}
-
-                          {reason.operator
-                            ? ` ${reason.operator}`
-                            : ''}
-
-                          {reason.threshold !== undefined
-                            ? (
-                              ` ${
-                                analysisValue(
-                                  reason.threshold,
-                                  3,
-                                )
-                              }`
-                            )
-                            : ''}
-
-                          {reason.unit
-                            ? ` ${reason.unit}`
-                            : ''}
-                        </code>
-                      ),
-                    )}
-                  </div>
-                )}
-
-                {engine === 'valhalla' &&
-                  runtimeAssociation && (
-                    <details className="candidate-association-details">
-                      <summary>
-                        Route / build association
-                        {buildAssociation?.matched
-                          ? (
-                            ` · MATCHED (${
-                              buildAssociation.match_kind ??
-                              'unknown'
-                            })`
-                          )
-                          : ' · UNMATCHED'}
-                      </summary>
-
-                      <div className="candidate-association-grid">
-                        <div>
-                          <span>runtime graph_id</span>
-                          <code>
-                            {analysisValue(
-                              runtimeAssociation.graph_id,
-                            )}
-                          </code>
-                        </div>
-
-                        <div>
-                          <span>directed edge</span>
-                          <code>
-                            {analysisValue(
-                              runtimeAssociation
-                                .directed_edge_id,
-                            )}
-                          </code>
-                        </div>
-
-                        <div>
-                          <span>way_id</span>
-                          <code>
-                            {analysisValue(
-                              runtimeAssociation.way_id,
-                            )}
-                          </code>
-                        </div>
-
-                        <div>
-                          <span>trip edge node</span>
-                          <code>
-                            {analysisValue(
-                              runtimeAssociation
-                                .trip_edge_node_index,
-                            )}
-                          </code>
-                        </div>
-
-                        <div>
-                          <span>distance along edge</span>
-                          <code>
-                            {typeof runtimeAssociation
-                              .distance_along_used_edge_m ===
-                            'number'
-                              ? (
-                                `${
-                                  runtimeAssociation
-                                    .distance_along_used_edge_m
-                                    .toFixed(3)
-                                } m`
-                              )
-                              : '—'}
-                          </code>
-                        </div>
-
-                        <div>
-                          <span>full-edge fraction</span>
-                          <code>
-                            {analysisValue(
-                              runtimeAssociation
-                                .fraction_along_full_edge,
-                              4,
-                            )}
-                          </code>
-                        </div>
-
-                        <div>
-                          <span>build match</span>
-                          <code>
-                            {buildAssociation?.matched
-                              ? (
-                                buildAssociation.match_kind ??
-                                'matched'
-                              )
-                              : 'unmatched'}
-                          </code>
-                        </div>
-
-                        <div>
-                          <span>POI build events</span>
-                          <code>
-                            {analysisValue(
-                              buildAssociation
-                                ?.poi_event_count,
-                            )}
-                          </code>
-                        </div>
-                      </div>
-
-                      {selectedBuildEvent && (
-                        <div className="candidate-build-selected">
-                          <strong>
-                            Selected Mjolnir association
-                          </strong>
-
-                          <span>
-                            {selectedBuildEvent.road_name ||
-                              'unnamed road'}
-
-                            {typeof selectedBuildEvent
-                              .distance_m === 'number'
-                              ? (
-                                ` · ${
-                                  selectedBuildEvent
-                                    .distance_m
-                                    .toFixed(3)
-                                } m`
-                              )
-                              : ''}
-                          </span>
-
-                          <small>
-                            edge{' '}
-                            {analysisValue(
-                              selectedBuildEvent.edge
-                                ?.graph_id,
-                            )}
-                            {' · opposing '}
-                            {analysisValue(
-                              selectedBuildEvent
-                                .opposing_edge
-                                ?.graph_id,
-                            )}
-                          </small>
-
-                          {selectedBuildEvent.reason && (
-                            <small>
-                              {selectedBuildEvent.reason}
-                            </small>
-                          )}
-                        </div>
-                      )}
-
-                      {(buildAssociation?.warnings?.length ??
-                        0) > 0 && (
-                        <div className="candidate-association-warnings">
-                          {(buildAssociation?.warnings ?? [])
-                            .map(
-                              (warning, warningIndex) => (
-                                <span key={warningIndex}>
-                                  {warning}
-                                </span>
-                              ),
-                            )}
-                        </div>
-                      )}
-                    </details>
-                  )}
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      {(analysis.warnings?.length ?? 0) > 0 && (
-        <div className="candidate-analysis-warnings">
-          {(analysis.warnings ?? []).map(
-            (warning, index) => (
-              <span key={index}>{warning}</span>
-            ),
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
 
 function basename(path?: string): string {
   if (!path) return 'not configured';
@@ -3438,87 +2690,72 @@ export default function App() {
           collapsed={layout.leftCollapsed}
           onToggle={() => toggleLayoutPanel('left')}
         >
-          <PanelSection title="Route setup" meta="START / END">
-            <div className="pick-mode-row" role="group" aria-label="Map coordinate target">
-              <button className={pickMode === 'start' ? 'active' : ''} aria-pressed={pickMode === 'start'} onClick={() => setPickMode('start')}>Pick start</button>
-              <button className={pickMode === 'end' ? 'active' : ''} aria-pressed={pickMode === 'end'} onClick={() => setPickMode('end')}>Pick end</button>
-            </div>
-            <label>Start <span>[longitude, latitude]</span></label>
-            <div className="coord-row">
-              <input aria-label="Start longitude" value={fmtCoord(start?.[0])} placeholder="Longitude" onChange={(event) => updateCoord('start', 0, event.target.value)} />
-              <input aria-label="Start latitude" value={fmtCoord(start?.[1])} placeholder="Latitude" onChange={(event) => updateCoord('start', 1, event.target.value)} />
-            </div>
-            <label>End <span>[longitude, latitude]</span></label>
-            <div className="coord-row">
-              <input aria-label="End longitude" value={fmtCoord(end?.[0])} placeholder="Longitude" onChange={(event) => updateCoord('end', 0, event.target.value)} />
-              <input aria-label="End latitude" value={fmtCoord(end?.[1])} placeholder="Latitude" onChange={(event) => updateCoord('end', 1, event.target.value)} />
-            </div>
-            <button className="route-button" onClick={runRoute} disabled={busy || !start || !end}>
-              {busy ? 'Routing both engines…' : 'Run route comparison'}
-            </button>
-            {error && <div className="error-box" role="alert">{error}</div>}
-          </PanelSection>
+          <RouteSetupControls
+            pickMode={pickMode}
+            start={start}
+            end={end}
+            busy={busy}
+            error={error}
+            onPickModeChange={setPickMode}
+            onCoordinateChange={updateCoord}
+            onRunRoute={runRoute}
+          />
 
-          <PanelSection title="Dataset" meta={activeDataset?.stats?.valid_pois ?? 0}>
-            <div className="dataset-actions">
-              <select
-                aria-label="Active POI dataset"
-                value={datasetRegistry?.active_dataset ?? ''}
-                disabled={datasetBusy || !datasetRegistry}
-                onChange={(event) => changeDataset(event.target.value)}
-              >
-                {(datasetRegistry?.datasets ?? []).map((dataset) => <option key={dataset.id} value={dataset.id}>{dataset.name}</option>)}
-              </select>
-              <button onClick={reloadActiveDataset} disabled={datasetBusy || !activeDataset}>{datasetBusy ? 'Working…' : 'Reload'}</button>
-            </div>
-            {datasetMessage && <div className="dataset-message" role="status">{datasetMessage}</div>}
-            {activeDataset?.error && <div className="dataset-warning">{activeDataset.error}</div>}
-            <details className="panel-disclosure">
-              <summary>Dataset details</summary>
-              <div className="kv"><span>Source</span><code title={activeDataset?.source_path ?? ''}>{activeDataset?.source_kind ?? '—'} · {basename(activeDataset?.source_path ?? undefined)}</code></div>
-              <div className="kv"><span>PBF</span><code title={activeDataset?.pbf_path ?? config.data.pbf_path}>{basename(activeDataset?.pbf_path ?? config.data.pbf_path)}</code></div>
-              <div className="dataset-note">Dataset switching changes the debugger POI layer only; it does not restart either routing engine.</div>
-            </details>
-          </PanelSection>
+          <CompactDatasetSelector
+            activeDataset={activeDataset}
+            datasetRegistry={datasetRegistry}
+            datasetBusy={datasetBusy}
+            datasetMessage={datasetMessage}
+            config={config}
+            onChangeDataset={changeDataset}
+            onReloadDataset={reloadActiveDataset}
+          />
 
-          <PanelSection title="POI explorer" meta={`${filteredPoiFeatures.length} / ${pois.features.length}`}>
-            <div className="poi-search-row">
-              <input aria-label="Search POIs" value={poiSearch} placeholder="Name, POI ID, node ID or type" onChange={(event) => setPoiSearch(event.target.value)} />
-              <button onClick={resetPoiFilters}>Reset</button>
-            </div>
-            <div className="poi-filter-grid">
-              <label>Type<select value={poiType} onChange={(event) => setPoiType(event.target.value)}><option value="all">All types</option>{availablePoiTypes.map((type) => <option key={type} value={type}>{type}</option>)}</select></label>
-              <label>Priority <strong>{minPriority}</strong><input className="priority-slider" type="range" min="0" max="100" step="5" value={minPriority} onChange={(event) => setMinPriority(Number(event.target.value))} /></label>
-            </div>
-            <div className="poi-checkboxes">
-              <label><input type="checkbox" checked={visibleOnly} onChange={(event) => setVisibleOnly(event.target.checked)} /> Visible map area</label>
-              <label><input type="checkbox" checked={showPois} onChange={(event) => setShowPois(event.target.checked)} /> Show on map</label>
-            </div>
-            {poiSearch.trim() && <div className="poi-search-results">{searchResults.length === 0 ? <div className="empty-state">No matching POIs.</div> : searchResults.map((feature, index) => <button key={`${propText(feature.properties, 'new_node_id', '')}-${index}`} className="poi-search-result" onClick={() => focusPoiFeature(feature)}><span><strong>{propText(feature.properties, 'name', 'Unnamed POI')}</strong><small>{propText(feature.properties, 'landmark_type', 'unknown')}</small></span><span className="poi-search-meta"><strong>{propText(feature.properties, 'priority', '—')}</strong><small>priority</small></span></button>)}</div>}
-          </PanelSection>
+          <CompactPoiExplorer
+            pois={pois}
+            filteredPoiFeatures={filteredPoiFeatures}
+            searchResults={searchResults}
+            availablePoiTypes={availablePoiTypes}
+            poiSearch={poiSearch}
+            poiType={poiType}
+            minPriority={minPriority}
+            visibleOnly={visibleOnly}
+            showPois={showPois}
+            onSearchChange={setPoiSearch}
+            onTypeChange={setPoiType}
+            onMinimumPriorityChange={setMinPriority}
+            onVisibleOnlyChange={setVisibleOnly}
+            onShowPoisChange={setShowPois}
+            onResetFilters={resetPoiFilters}
+            onFocusPoi={focusPoiFeature}
+          />
 
-          <details className="sidebar-disclosure" open>
-            <summary><span>Saved scenarios</span><small>{scenarioRegistry?.count ?? 0}</small></summary>
-            <div className="sidebar-disclosure__body">
-              <div className="scenario-save-grid">
-                <input aria-label="Scenario name" value={scenarioName} placeholder="Scenario name" onChange={(event) => setScenarioName(event.target.value)} />
-                <button onClick={saveCurrentScenario} disabled={scenarioBusy || !start || !end}>{scenarioBusy ? 'Working…' : 'Save current'}</button>
-              </div>
-              <input className="full-width-input" aria-label="Expected instruction text" value={scenarioExpectedText} placeholder="Expected instruction text (optional)" onChange={(event) => setScenarioExpectedText(event.target.value)} />
-              <input className="full-width-input" aria-label="Forbidden instruction text" value={scenarioForbiddenText} placeholder="Forbidden instruction text (optional)" onChange={(event) => setScenarioForbiddenText(event.target.value)} />
-              <textarea className="scenario-notes" aria-label="Scenario notes" value={scenarioNotes} placeholder="Notes (optional)" rows={2} onChange={(event) => setScenarioNotes(event.target.value)} />
-              <button className="secondary-full-button" onClick={runAllScenarios} disabled={runAllBusy || scenarioBusy || busy || !(scenarioRegistry?.scenarios.length)}>{runAllBusy ? 'Running suite…' : 'Run matching scenarios'}</button>
-              {scenarioMessage && <div className="scenario-message" role="status">{scenarioMessage}</div>}
-              <div className="compact-scenario-list">
-                {(scenarioRegistry?.scenarios ?? []).map((scenario) => {
-                  const activeId = datasetRegistry?.active_dataset ?? config?.active_dataset ?? '';
-                  const datasetMismatch = scenario.dataset !== activeId;
-                  const result = scenarioRunResults[scenario.id];
-                  return <div className="compact-scenario" key={scenario.id}><span><strong>{scenario.name}</strong><small>{scenario.dataset}{result ? ` · ${result.status.toUpperCase()}` : ''}</small></span><div><button onClick={() => loadScenario(scenario)}>Load</button><button onClick={() => runSavedScenario(scenario)} disabled={scenarioBusy || runAllBusy || busy || datasetMismatch}>Run</button><button onClick={() => editScenarioExpectation(scenario)}>Expect</button><button className="danger-button" onClick={() => removeScenario(scenario)}>Delete</button></div></div>;
-                })}
-              </div>
-            </div>
-          </details>
+          <SavedScenarioControls
+            registry={scenarioRegistry}
+            datasetRegistry={datasetRegistry}
+            config={config}
+            start={start}
+            end={end}
+            scenarioName={scenarioName}
+            scenarioNotes={scenarioNotes}
+            expectedText={scenarioExpectedText}
+            forbiddenText={scenarioForbiddenText}
+            scenarioBusy={scenarioBusy}
+            scenarioMessage={scenarioMessage}
+            runAllBusy={runAllBusy}
+            routeBusy={busy}
+            runResults={scenarioRunResults}
+            setScenarioName={setScenarioName}
+            setScenarioNotes={setScenarioNotes}
+            setExpectedText={setScenarioExpectedText}
+            setForbiddenText={setScenarioForbiddenText}
+            onSave={saveCurrentScenario}
+            onRunAll={runAllScenarios}
+            onLoad={loadScenario}
+            onRun={runSavedScenario}
+            onEditExpectation={editScenarioExpectation}
+            onDelete={removeScenario}
+          />
         </Sidebar>
 
         <section className="map-section">
@@ -3824,19 +3061,13 @@ export default function App() {
           onToggle={() => toggleLayoutPanel('right')}
         >
 
-          <PanelSection title="Route comparison" meta={route || osrmRoute ? 'Latest run' : 'No route'} className="right-route-summary">
-            {!route && !osrmRoute ? (
-              <div className="empty-state">Run a route to compare engine distance, duration and guidance.</div>
-            ) : (
-              <>
-                <div className="engine-summary-grid">
-                  <div className="engine-summary valhalla"><span>Valhalla</span><strong>{routeComparison.valhallaDistanceKm === null ? '—' : `${routeComparison.valhallaDistanceKm.toFixed(2)} km`}</strong><small>{routeComparison.valhallaDurationMin === null ? 'Time unavailable' : `${routeComparison.valhallaDurationMin.toFixed(1)} min`} · {maneuverViews.length} maneuvers</small></div>
-                  <div className="engine-summary osrm"><span>OSRM</span><strong>{routeComparison.osrmDistanceKm === null ? '—' : `${routeComparison.osrmDistanceKm.toFixed(2)} km`}</strong><small>{routeComparison.osrmDurationMin === null ? 'Time unavailable' : `${routeComparison.osrmDurationMin.toFixed(1)} min`} · {osrmStepViews.length} steps</small></div>
-                </div>
-                <button className="text-action" onClick={() => setLayout((current) => selectAnalysisTab(current, 'comparison'))}>Open full comparison</button>
-              </>
-            )}
-          </PanelSection>
+          <RouteComparisonSummary
+            hasRoute={Boolean(route || osrmRoute)}
+            comparison={routeComparison}
+            maneuverCount={maneuverViews.length}
+            osrmStepCount={osrmStepViews.length}
+            onOpenComparison={() => setLayout((current) => selectAnalysisTab(current, 'comparison'))}
+          />
           <section className="card basemap-card">
             <label htmlFor="basemap-select">Basemap</label>
             <select
@@ -3863,124 +3094,32 @@ export default function App() {
               <option value="openfreemap">OpenFreeMap</option>
             </select>
           </section>
-          <section className="card dataset-card">
-            <div className="maneuver-heading">
-              <h2>Dataset Pipeline</h2>
-              <span>POI data</span>
-            </div>
-            <label>Active POI dataset</label>
-            <div className="dataset-actions">
-              <select
-                value={datasetRegistry?.active_dataset ?? ''}
-                disabled={datasetBusy || !datasetRegistry}
-                onChange={(event) => changeDataset(event.target.value)}
-              >
-                {(datasetRegistry?.datasets ?? []).map((dataset) => (
-                  <option key={dataset.id} value={dataset.id}>{dataset.name}</option>
-                ))}
-              </select>
-              <button onClick={reloadActiveDataset} disabled={datasetBusy || !activeDataset}>
-                {datasetBusy ? 'Working…' : 'Reload POIs'}
-              </button>
-            </div>
-            {datasetMessage && <div className="dataset-message">{datasetMessage}</div>}
-            {activeDataset?.error && <div className="dataset-warning">{activeDataset.error}</div>}
-            <div className="kv"><span>Source</span><code title={activeDataset?.source_path ?? ''}>{activeDataset?.source_kind ?? '—'} · {basename(activeDataset?.source_path ?? undefined)}</code></div>
-            <div className="kv"><span>PBF</span><code title={activeDataset?.pbf_path ?? config.data.pbf_path}>{basename(activeDataset?.pbf_path ?? config.data.pbf_path)}</code></div>
-            <div className="dataset-stats">
-              <div><strong>{activeDataset?.stats?.total_rows ?? 0}</strong><span>rows</span></div>
-              <div><strong>{activeDataset?.stats?.valid_pois ?? 0}</strong><span>valid POIs</span></div>
-              <div><strong>{activeDataset?.stats?.invalid_coordinates ?? 0}</strong><span>bad coords</span></div>
-              <div><strong>{activeDataset?.stats?.duplicate_poi_ids ?? 0}</strong><span>duplicate POI IDs</span></div>
-              <div><strong>{activeDataset?.stats?.duplicate_node_ids ?? 0}</strong><span>duplicate node IDs</span></div>
-            </div>
-            <div className="dataset-note">Dataset switching changes the debugger POI layer only. It does not restart Valhalla or swap the tile set used by the running Valhalla service.</div>
-          </section>
-
-          <section className="card poi-explorer-card">
-            <div className="maneuver-heading">
-              <h2>POI Explorer</h2>
-              <span>{filteredPoiFeatures.length} / {pois.features.length}</span>
-            </div>
-
-            <label>Search name / Mappls ID / node ID / OSM ID / type</label>
-            <div className="poi-search-row">
-              <input
-                value={poiSearch}
-                placeholder="Indian Oil, POI-CP-000123, 900000123…"
-                onChange={(event) => setPoiSearch(event.target.value)}
-              />
-              <button onClick={resetPoiFilters}>Reset</button>
-            </div>
-
-            <div className="poi-filter-grid">
-              <div>
-                <label>Landmark type</label>
-                <select value={poiType} onChange={(event) => setPoiType(event.target.value)}>
-                  <option value="all">All types</option>
-                  {availablePoiTypes.map((type) => (
-                    <option key={type} value={type}>{type}</option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label>Minimum priority <strong>{minPriority}</strong></label>
-                <input
-                  className="priority-slider"
-                  type="range"
-                  min="0"
-                  max="100"
-                  step="5"
-                  value={minPriority}
-                  onChange={(event) => setMinPriority(Number(event.target.value))}
-                />
-              </div>
-            </div>
-
-            <div className="poi-checkboxes">
-              <label><input type="checkbox" checked={visibleOnly} onChange={(event) => setVisibleOnly(event.target.checked)} /> Visible only</label>
-              <label><input type="checkbox" checked={showPois} onChange={(event) => setShowPois(event.target.checked)} /> Show POIs on map</label>
-            </div>
-
-            <div className="poi-filter-summary">
-              <strong>{filteredPoiFeatures.length}</strong> POIs match the current filters.
-              <span>Filters affect debugger visualization/nearby inspection only; they do not change Valhalla or Odin.</span>
-            </div>
-
-            {poiSearch.trim() && (
-              <div className="poi-search-results">
-                <div className="poi-section-title">Search results</div>
-                {searchResults.length === 0 ? (
-                  <div className="empty-state">No POIs match the current search and filters.</div>
-                ) : searchResults.map((feature, index) => (
-                  <button
-                    key={`${propText(feature.properties, 'new_node_id', '')}-${index}`}
-                    className="poi-search-result"
-                    onClick={() => focusPoiFeature(feature)}
-                  >
-                    <span>
-                      <strong>{propText(feature.properties, 'name', 'Unnamed POI')}</strong>
-                      <small>{propText(feature.properties, 'landmark_type', 'unknown')} · {propText(feature.properties, 'mappls_poi_id', 'no Mappls ID')}</small>
-                    </span>
-                    <span className="poi-search-meta">
-                      <strong>{propText(feature.properties, 'priority', '—')}</strong>
-                      <small>priority</small>
-                    </span>
-                  </button>
-                ))}
-              </div>
-            )}
-
-            <div className="poi-type-stats">
-              <div className="poi-section-title">Dataset type distribution</div>
-              {fullTypeStats.slice(0, 8).map(([type, count]) => (
-                <button key={type} onClick={() => setPoiType(type)} title={`Filter to ${type}`}>
-                  <span>{type}</span><strong>{count}</strong>
-                </button>
-              ))}
-              {fullTypeStats.length > 8 && <small>+ {fullTypeStats.length - 8} more landmark types</small>}
-            </div>
-          </section>
+          <DatasetPoiExplorerPanel
+            activeDataset={activeDataset}
+            datasetRegistry={datasetRegistry}
+            datasetBusy={datasetBusy}
+            datasetMessage={datasetMessage}
+            config={config}
+            pois={pois}
+            filteredPoiFeatures={filteredPoiFeatures}
+            searchResults={searchResults}
+            availablePoiTypes={availablePoiTypes}
+            fullTypeStats={fullTypeStats}
+            poiSearch={poiSearch}
+            poiType={poiType}
+            minPriority={minPriority}
+            visibleOnly={visibleOnly}
+            showPois={showPois}
+            onChangeDataset={changeDataset}
+            onReloadDataset={reloadActiveDataset}
+            onSearchChange={setPoiSearch}
+            onTypeChange={setPoiType}
+            onMinimumPriorityChange={setMinPriority}
+            onVisibleOnlyChange={setVisibleOnly}
+            onShowPoisChange={setShowPois}
+            onResetFilters={resetPoiFilters}
+            onFocusPoi={focusPoiFeature}
+          />
 
           <section className="card legacy-configuration">
             <h2>Configuration</h2>
@@ -4008,432 +3147,68 @@ export default function App() {
             {error && <div className="error-box">{error}</div>}
           </section>
 
-          <section className="card scenarios-card">
-            <div className="maneuver-heading">
-              <h2>Test Scenarios</h2>
-              <span>{scenarioRegistry?.count ?? 0} saved</span>
-            </div>
-            <div className="scenario-save-grid">
-              <input
-                value={scenarioName}
-                placeholder="Scenario name, e.g. Indian Oil right turn"
-                onChange={(event) => setScenarioName(event.target.value)}
-              />
-              <button onClick={saveCurrentScenario} disabled={scenarioBusy || !start || !end}>
-                {scenarioBusy ? 'Working…' : 'Save Current Route'}
-              </button>
-            </div>
-            <div className="scenario-expectation-grid">
-              <input
-                value={scenarioExpectedText}
-                placeholder="Expected Odin text / landmark, e.g. Indian Oil"
-                onChange={(event) => setScenarioExpectedText(event.target.value)}
-              />
-              <input
-                value={scenarioForbiddenText}
-                placeholder="Forbidden Odin text (optional)"
-                onChange={(event) => setScenarioForbiddenText(event.target.value)}
-              />
-            </div>
-            <textarea
-              className="scenario-notes"
-              value={scenarioNotes}
-              placeholder="Optional note about why this route is useful"
-              rows={2}
-              onChange={(event) => setScenarioNotes(event.target.value)}
-            />
-            <div className="scenario-suite-actions">
-              <button onClick={runAllScenarios} disabled={runAllBusy || scenarioBusy || busy || !(scenarioRegistry?.scenarios.length)}>
-                {runAllBusy ? 'Running suite…' : 'Run All Matching Dataset'}
-              </button>
-              <span>Assertions inspect Odin maneuver instruction + verbal pre-transition text.</span>
-            </div>
-            {scenarioMessage && <div className="scenario-message">{scenarioMessage}</div>}
-            {(scenarioRegistry?.errors ?? []).map((message) => (
-              <div className="scenario-warning" key={message}>{message}</div>
-            ))}
-            <div className="scenario-note">
-              Saved scenarios can verify required or forbidden Odin instruction text. A scenario without assertions still runs but reports NO EXPECTATION.
-            </div>
-            {(scenarioRegistry?.scenarios ?? []).length === 0 ? (
-              <div className="empty-state">Set START/END, give the route a name and optionally an expected landmark, then save it.</div>
-            ) : (
-              <div className="scenario-list">
-                {(scenarioRegistry?.scenarios ?? []).map((scenario) => {
-                  const activeId = datasetRegistry?.active_dataset ?? config?.active_dataset ?? '';
-                  const datasetMismatch = scenario.dataset !== activeId;
-                  const result = scenarioRunResults[scenario.id];
-                  const expectedText = scenario.expectation?.instruction_contains ?? scenario.expectation?.landmark_name ?? '';
-                  const forbiddenText = scenario.expectation?.instruction_not_contains ?? '';
-                  return (
-                    <div className={`scenario-item ${datasetMismatch ? 'dataset-mismatch' : ''} ${result ? `result-${result.status}` : ''}`} key={scenario.id}>
-                      <div className="scenario-main">
-                        <div className="scenario-title-row">
-                          <strong>{scenario.name}</strong>
-                          {result && <span className={`scenario-result-badge ${result.status}`}>{result.status === 'no-expectation' ? 'NO EXPECTATION' : result.status.toUpperCase()}</span>}
-                        </div>
-                        <small>{scenario.dataset} · {scenario.request.costing}</small>
-                        <code>
-                          {scenario.request.start.lon.toFixed(6)}, {scenario.request.start.lat.toFixed(6)} → {scenario.request.end.lon.toFixed(6)}, {scenario.request.end.lat.toFixed(6)}
-                        </code>
-                        {(expectedText || forbiddenText) ? (
-                          <div className="scenario-expectation-summary">
-                            {expectedText && <span><b>Must contain:</b> {expectedText}</span>}
-                            {forbiddenText && <span><b>Must not contain:</b> {forbiddenText}</span>}
-                          </div>
-                        ) : <span className="scenario-no-expectation">No PASS/FAIL expectation configured.</span>}
-                        {scenario.notes && <span>{scenario.notes}</span>}
-                        {result?.matchedInstructions.length ? (
-                          <span className="scenario-match"><b>Matched:</b> {result.matchedInstructions[0]}</span>
-                        ) : null}
-                        {result?.failures.map((failure) => <em className="scenario-failure" key={failure}>{failure}</em>)}
-                        {result?.error && <em className="scenario-failure">{result.error}</em>}
-                        {datasetMismatch && <em>Dataset mismatch: activate {scenario.dataset} before Run.</em>}
-                      </div>
-                      <div className="scenario-actions">
-                        <button onClick={() => loadScenario(scenario)} disabled={scenarioBusy || runAllBusy}>Load</button>
-                        <button className="scenario-run" onClick={() => runSavedScenario(scenario)} disabled={scenarioBusy || runAllBusy || busy || datasetMismatch}>Run</button>
-                        <button className="scenario-expect" onClick={() => editScenarioExpectation(scenario)} disabled={scenarioBusy || runAllBusy}>Expect</button>
-                        <button className="scenario-delete" onClick={() => removeScenario(scenario)} disabled={scenarioBusy || runAllBusy}>Delete</button>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </section>
+          <ScenarioManagementPanel
+            registry={scenarioRegistry}
+            datasetRegistry={datasetRegistry}
+            config={config}
+            start={start}
+            end={end}
+            scenarioName={scenarioName}
+            scenarioNotes={scenarioNotes}
+            expectedText={scenarioExpectedText}
+            forbiddenText={scenarioForbiddenText}
+            scenarioBusy={scenarioBusy}
+            scenarioMessage={scenarioMessage}
+            runAllBusy={runAllBusy}
+            routeBusy={busy}
+            runResults={scenarioRunResults}
+            setScenarioName={setScenarioName}
+            setScenarioNotes={setScenarioNotes}
+            setExpectedText={setScenarioExpectedText}
+            setForbiddenText={setScenarioForbiddenText}
+            onSave={saveCurrentScenario}
+            onRunAll={runAllScenarios}
+            onLoad={loadScenario}
+            onRun={runSavedScenario}
+            onEditExpectation={editScenarioExpectation}
+            onDelete={removeScenario}
+          />
 
-          <section className="card maneuvers-card">
-            <div className="maneuver-heading">
-              <h2>Odin Maneuvers</h2>
-              {route?.trip?.summary && (
-                <span>{route.trip.summary.length?.toFixed(2)} km · {Math.round((route.trip.summary.time ?? 0) / 60)} min</span>
-              )}
-            </div>
-            {maneuverViews.length === 0 ? (
-              <div className="empty-state">Run a route to inspect Odin instructions.</div>
-            ) : (
-              <ol className="maneuver-list">
-                {maneuverViews.map((item) => (
-                  <li key={item.index} data-maneuver-index={item.index} className={selectedManeuverIndex === item.index ? 'selected' : ''}>
-                    <button className="maneuver-button" onClick={() => focusManeuver(item)}>
-                      <strong>{item.maneuver.instruction ?? 'Unnamed maneuver'}</strong>
-                      {(() => {
-                        const evidence = narrationEvidenceByManeuver.get(item.index) ?? [];
-                        if (evidence.some((match) => match.evidence === 'strong')) {
-                          return <span className="narration-mini-badge strong">POI in instruction</span>;
-                        }
-                        return null;
-                      })()}
-                      {item.maneuver.verbal_pre_transition_instruction && (
-                        <div>{item.maneuver.verbal_pre_transition_instruction}</div>
-                      )}
-                      <small>
-                        {typeof item.maneuver.length === 'number' ? `${item.maneuver.length.toFixed(2)} km` : ''}
-                        {typeof item.maneuver.time === 'number' ? ` · ${Math.round(item.maneuver.time)} s` : ''}
-                        {item.coordinate ? ` · ${item.coordinate[1].toFixed(6)}, ${item.coordinate[0].toFixed(6)}` : ''}
-                      </small>
-                    </button>
-                  </li>
-                ))}
-              </ol>
-            )}
-          </section>
+          <ManeuverInspection
+            route={route}
+            osrmRoute={osrmRoute}
+            maneuverViews={maneuverViews}
+            osrmStepViews={osrmStepViews}
+            selectedManeuverIndex={selectedManeuverIndex}
+            selectedOsrmStepIndex={selectedOsrmStepIndex}
+            selectedManeuver={selectedManeuver}
+            narrationEvidenceByManeuver={narrationEvidenceByManeuver}
+            osrmPoiNamesByStep={osrmPoiNamesByStep}
+            primaryNarrationEvidence={primaryNarrationEvidence}
+            selectedNarrationEvidence={selectedNarrationEvidence}
+            nearbyPois={nearbyPois}
+            getOsrmInstruction={osrmInstructionText}
+            onFocusManeuver={focusManeuver}
+            onFocusOsrmStep={focusOsrmStep}
+            onFocusNarrationEvidence={focusNarrationEvidence}
+            onFocusPoi={focusPoi}
+          />
 
-          <section className="card maneuvers-card osrm-maneuvers-card">
-            <div className="maneuver-heading">
-              <h2>OSRM Maneuvers</h2>
-              {osrmRoute?.routes?.[0] && (
-                <span>
-                  {((osrmRoute.routes[0].distance ?? 0) / 1000).toFixed(2)} km ·
-                  {' '}{Math.round((osrmRoute.routes[0].duration ?? 0) / 60)} min
-                </span>
-              )}
-            </div>
-
-            {osrmStepViews.length === 0 ? (
-              <div className="empty-state">
-                Run a route to inspect OSRM instructions.
-              </div>
-            ) : (
-              <ol className="maneuver-list osrm-maneuver-list">
-                {osrmStepViews.map((item) => {
-                  const poiNames = osrmPoiNamesByStep.get(item.index) ?? [];
-
-                  return (
-                    <li
-                      key={item.index}
-                      data-osrm-step-index={item.index}
-                      className={selectedOsrmStepIndex === item.index ? 'selected' : ''}
-                    >
-                      <button
-                        className="osrm-step"
-                        onClick={() => focusOsrmStep(item)}
-                      >
-                        <strong>{osrmInstructionText(item.step)}</strong>
-
-                        {poiNames.length > 0 && (
-                          <span className="narration-mini-badge osrm">
-                            POI in instruction: {poiNames.join(', ')}
-                          </span>
-                        )}
-
-                        <small>
-                          {typeof item.step.distance === 'number'
-                            ? `${item.step.distance.toFixed(1)} m`
-                            : ''}
-                          {typeof item.step.duration === 'number'
-                            ? ` · ${Math.round(item.step.duration)} s`
-                            : ''}
-                          {item.coordinate
-                            ? ` · ${item.coordinate[1].toFixed(6)}, ${item.coordinate[0].toFixed(6)}`
-                            : ''}
-                        </small>
-
-                        {(item.step.maneuver?.type || item.step.maneuver?.modifier) && (
-                          <code>
-                            {item.step.maneuver?.type ?? ''}
-                            {item.step.maneuver?.modifier
-                              ? ` / ${item.step.maneuver.modifier}`
-                              : ''}
-                          </code>
-                        )}
-                      </button>
-                    </li>
-                  );
-                })}
-              </ol>
-            )}
-          </section>
-
-          <section className="card inspection-card">
-            <div className="maneuver-heading">
-              <h2>Landmark Details</h2>
-              <span>{NEARBY_POI_RADIUS_M} m radius</span>
-            </div>
-            {!selectedManeuver ? (
-              <div className="empty-state">Click an Odin maneuver or a black maneuver marker on the map.</div>
-            ) : (
-              <>
-                <div className="selected-maneuver-summary">
-                  <strong>#{selectedManeuver.index + 1} {selectedManeuver.maneuver.instruction ?? 'Unnamed maneuver'}</strong>
-                  <span>
-                    {selectedManeuver.coordinate
-                      ? `${selectedManeuver.coordinate[1].toFixed(6)}, ${selectedManeuver.coordinate[0].toFixed(6)}`
-                      : 'No begin_shape_index coordinate available'}
-                  </span>
-                </div>
-                <div className="narration-verification">
-                  <div className="narration-verification-heading">
-                    <strong>POI in Odin Instruction</strong>
-                    {!primaryNarrationEvidence ? (
-                      <span className="narration-status none">NO POI FOUND</span>
-                    ) : (
-                      <span className="narration-status strong">POI FOUND</span>
-                    )}
-                  </div>
-
-                  {!primaryNarrationEvidence ? (
-                    <p>No landmark POI was identified in this maneuver's Odin instruction.</p>
-                  ) : (
-                    <>
-                      <button className="narration-primary-match" onClick={() => focusNarrationEvidence(primaryNarrationEvidence)}>
-                        <span>
-                          <strong>{primaryNarrationEvidence.name}</strong>
-                          <small>{primaryNarrationEvidence.landmarkType} · {primaryNarrationEvidence.poiId || 'no mappls_poi_id'}</small>
-                        </span>
-                        <span>
-                          <strong>{primaryNarrationEvidence.distanceM === null ? 'distance n/a' : `${primaryNarrationEvidence.distanceM.toFixed(1)} m`}</strong>
-                          <small>priority {primaryNarrationEvidence.priority ?? '—'}</small>
-                        </span>
-                      </button>
-                      <code className="narration-matched-instruction">{primaryNarrationEvidence.matchedInstruction}</code>
-                      {primaryNarrationEvidence.evidence === 'ambiguous' && (
-                        <p className="narration-caution">The POI name appears in narration, but not in the strong “at &lt;POI&gt;” landmark pattern. It may be a road/place-name coincidence.</p>
-                      )}
-                      {selectedNarrationEvidence.length > 1 && (
-                        <details className="narration-other-matches">
-                          <summary>{selectedNarrationEvidence.length - 1} additional source-name match(es)</summary>
-                          {selectedNarrationEvidence.slice(1).map((match, index) => (
-                            <button key={`${match.poiId}-${match.sourceNodeId}-${index}`} onClick={() => focusNarrationEvidence(match)}>
-                              <span>{match.name}</span>
-                              <small>{match.distanceM === null ? 'n/a' : `${match.distanceM.toFixed(1)} m`} · priority {match.priority ?? '—'}</small>
-                            </button>
-                          ))}
-                        </details>
-                      )}
-                    </>
-                  )}
-                </div>
-                {nearbyPois.length === 0 ? (
-                  <div className="empty-state">No source POIs within {NEARBY_POI_RADIUS_M} m.</div>
-                ) : (
-                  <div className="nearby-list">
-                    {nearbyPois.map((item, index) => (
-                      <button key={`${item.feature.id ?? item.name}-${index}`} className="nearby-poi" onClick={() => focusPoi(item)}>
-                        <span className="nearby-rank">{index + 1}</span>
-                        <span className="nearby-main">
-                          <strong>{item.name}</strong>
-                          <small>{item.landmarkType}</small>
-                        </span>
-                        <span className="nearby-metrics">
-                          <strong>{item.distanceM.toFixed(1)} m</strong>
-                          <small>priority {item.priority ?? '—'}</small>
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </>
-            )}
-          </section>
-
-          {selectedPoi && (
-            <section className="card selected-poi-card">
-              <div className="maneuver-heading">
-                <h2>Selected POI</h2>
-                <span>{propText(selectedPoi.properties, 'landmark_type', '')}</span>
-              </div>
-              <strong className="selected-poi-name">{propText(selectedPoi.properties, 'name', 'Unnamed POI')}</strong>
-              <div className="property-grid">
-                {Object.entries(selectedPoi.properties ?? {})
-                  .filter(([, value]) => value !== '')
-                  .map(([key, value]) => (
-                    <div className="property-row" key={key}>
-                      <span>{key}</span><code>{String(value)}</code>
-                    </div>
-                  ))}
-              </div>
-            </section>
-          )}
+          <SelectedPoiDetails poi={selectedPoi} />
 
 
-          <section className="card candidate-analysis-card">
-            <div className="maneuver-heading">
-              <h2>Candidate Analysis</h2>
+          <CandidateAnalysisPanel
+            selectedManeuver={selectedManeuver}
+            selectedOsrmStep={selectedOsrmStepView}
+            valhallaAnalysis={valhallaCandidateAnalysis}
+            osrmAnalysis={osrmCandidateAnalysis}
+            selectedValhallaAnalysis={selectedValhallaCandidateAnalysis}
+            selectedOsrmAnalysis={selectedOsrmCandidateAnalysis}
+            showCandidatesOnMap={showCandidateMap}
+            onToggleCandidatesOnMap={() => setShowCandidateMap((current) => !current)}
+          />
 
-              {selectedManeuver ? (
-                <span>
-                  Valhalla · Odin #
-                  {selectedManeuver.index + 1}
-                </span>
-              ) : selectedOsrmStepView ? (
-                <span>
-                  OSRM · step #
-                  {selectedOsrmStepView.index + 1}
-                </span>
-              ) : (
-                <span>
-                  authoritative engine evidence
-                </span>
-              )}
-            </div>
-
-            {!selectedManeuver &&
-            !selectedOsrmStepView ? (
-              <div className="empty-state">
-                Click a Valhalla maneuver or an OSRM step
-                to inspect the candidates actually considered
-                by that engine.
-              </div>
-            ) : selectedManeuver ? (
-              !valhallaCandidateAnalysis ? (
-                <div className="empty-state">
-                  No Valhalla candidate-analysis response was
-                  returned.
-                </div>
-              ) : !valhallaCandidateAnalysis.available ? (
-                <div className="candidate-analysis-error">
-                  {valhallaCandidateAnalysis.error ??
-                    'Valhalla candidate analysis is unavailable.'}
-                </div>
-              ) : !selectedValhallaCandidateAnalysis ? (
-                <div className="empty-state">
-                  This Odin maneuver has no embedded
-                  authoritative landmark_debug candidate
-                  record. No candidate decision is inferred
-                  by the frontend.
-                </div>
-              ) : (
-                <CandidateDecisionList
-                  engine="valhalla"
-                  analysis={
-                    selectedValhallaCandidateAnalysis
-                  }
-                  showCandidatesOnMap={
-                    showCandidateMap
-                  }
-                  onToggleCandidatesOnMap={() =>
-                    setShowCandidateMap(
-                      (current) => !current,
-                    )
-                  }
-                />
-              )
-            ) : selectedOsrmStepView ? (
-              !osrmCandidateAnalysis ? (
-                <div className="empty-state">
-                  No OSRM candidate-analysis response was
-                  returned.
-                </div>
-              ) : !osrmCandidateAnalysis.available ? (
-                <div className="candidate-analysis-error">
-                  {osrmCandidateAnalysis.error ??
-                    'OSRM candidate analysis is unavailable.'}
-                </div>
-              ) : !selectedOsrmCandidateAnalysis ? (
-                <div className="empty-state">
-                  This OSRM step has no authoritative turn_id
-                  candidate record. Depart/arrive steps normally
-                  do not carry a guidance turn_id.
-                </div>
-              ) : (
-                <CandidateDecisionList
-                  engine="osrm"
-                  analysis={
-                    selectedOsrmCandidateAnalysis
-                  }
-                  showCandidatesOnMap={
-                    showCandidateMap
-                  }
-                  onToggleCandidatesOnMap={() =>
-                    setShowCandidateMap(
-                      (current) => !current,
-                    )
-                  }
-                />
-              )
-            ) : null}
-
-            {selectedManeuver &&
-            (valhallaCandidateAnalysis?.limitations
-              ?.length ?? 0) > 0 ? (
-              <details className="candidate-analysis-limitations">
-                <summary>
-                  Valhalla diagnostic limitations
-                </summary>
-
-                {(valhallaCandidateAnalysis
-                  ?.limitations ?? []).map(
-                    (limitation, index) => (
-                      <p key={index}>
-                        {limitation}
-                      </p>
-                    ),
-                  )}
-              </details>
-            ) : null}
-          </section>
-
-          <details className="card raw-card">
-            <summary>Raw Valhalla JSON</summary>
-            <pre>{route ? JSON.stringify(route, null, 2) : 'No Valhalla route response yet.'}</pre>
-          </details>
-
-          <details className="card raw-card">
-            <summary>Raw OSRM JSON</summary>
-            <pre>{osrmRoute ? JSON.stringify(osrmRoute, null, 2) : 'No OSRM route response yet.'}</pre>
-          </details>
+          <RawResponseCards valhallaRoute={route} osrmRoute={osrmRoute} />
         </Sidebar>
 
         <AnalysisWorkspace
@@ -4442,42 +3217,27 @@ export default function App() {
           onSelectTab={(tab) => setLayout((current) => selectAnalysisTab(current, tab))}
           onToggle={() => toggleLayoutPanel('analysis')}
         >
-          {layout.activeAnalysisTab === 'comparison' && (
-            <div className="analysis-comparison">
-              <div className="analysis-metric"><span>Valhalla distance</span><strong>{routeComparison.valhallaDistanceKm === null ? '—' : `${routeComparison.valhallaDistanceKm.toFixed(2)} km`}</strong></div>
-              <div className="analysis-metric"><span>OSRM distance</span><strong>{routeComparison.osrmDistanceKm === null ? '—' : `${routeComparison.osrmDistanceKm.toFixed(2)} km`}</strong></div>
-              <div className="analysis-metric"><span>Distance delta</span><strong>{routeComparison.distanceDeltaKm === null ? '—' : `${fmtSigned(routeComparison.distanceDeltaKm)} km`}</strong></div>
-              <div className="analysis-metric"><span>Time delta</span><strong>{routeComparison.timeDeltaMin === null ? '—' : `${fmtSigned(routeComparison.timeDeltaMin, 1)} min`}</strong></div>
-              {!route && !osrmRoute && <div className="analysis-empty">Run a route comparison to populate engine metrics.</div>}
-            </div>
-          )}
-
-          {layout.activeAnalysisTab === 'maneuvers' && (
-            <div className="analysis-columns">
-              <section><div className="analysis-column-heading"><h3>Valhalla / Odin</h3><span>{maneuverViews.length} maneuvers</span></div>{maneuverViews.length === 0 ? <div className="analysis-empty">No Valhalla maneuvers yet.</div> : <ol className="maneuver-list">{maneuverViews.map((item) => <li key={item.index} className={selectedManeuverIndex === item.index ? 'selected' : ''}><button className="maneuver-button" onClick={() => focusManeuver(item)}><strong>{item.maneuver.instruction ?? 'Unnamed maneuver'}</strong><small>{typeof item.maneuver.length === 'number' ? `${item.maneuver.length.toFixed(2)} km` : ''}{item.coordinate ? ` · ${item.coordinate[1].toFixed(6)}, ${item.coordinate[0].toFixed(6)}` : ''}</small></button></li>)}</ol>}</section>
-              <section><div className="analysis-column-heading"><h3>OSRM</h3><span>{osrmStepViews.length} steps</span></div>{osrmStepViews.length === 0 ? <div className="analysis-empty">No OSRM steps yet.</div> : <ol className="maneuver-list osrm-maneuver-list">{osrmStepViews.map((item) => <li key={item.index} className={selectedOsrmStepIndex === item.index ? 'selected' : ''}><button className="osrm-step" onClick={() => focusOsrmStep(item)}><strong>{osrmInstructionText(item.step)}</strong><small>{typeof item.step.distance === 'number' ? `${item.step.distance.toFixed(1)} m` : ''}{item.coordinate ? ` · ${item.coordinate[1].toFixed(6)}, ${item.coordinate[0].toFixed(6)}` : ''}</small></button></li>)}</ol>}</section>
-            </div>
-          )}
-
-          {layout.activeAnalysisTab === 'candidates' && (
-            <div className="analysis-columns candidate-overview">
-              <section><div className="analysis-column-heading"><h3>Valhalla evidence</h3><span>Authoritative only</span></div>{!selectedManeuver ? <div className="analysis-empty">Select an Odin maneuver to inspect its embedded landmark_debug record.</div> : !selectedValhallaCandidateAnalysis ? <div className="analysis-empty">No authoritative candidate record exists for this maneuver. The UI does not infer a selection.</div> : <CandidateDecisionList engine="valhalla" analysis={selectedValhallaCandidateAnalysis} showCandidatesOnMap={showCandidateMap} onToggleCandidatesOnMap={() => setShowCandidateMap((current) => !current)} />}</section>
-              <section><div className="analysis-column-heading"><h3>OSRM evidence</h3><span>Authoritative only</span></div>{!selectedOsrmStepView ? <div className="analysis-empty">Select an OSRM step to inspect its turn_id candidate record.</div> : !selectedOsrmCandidateAnalysis ? <div className="analysis-empty">No authoritative turn_id candidate record exists for this step.</div> : <CandidateDecisionList engine="osrm" analysis={selectedOsrmCandidateAnalysis} showCandidatesOnMap={showCandidateMap} onToggleCandidatesOnMap={() => setShowCandidateMap((current) => !current)} />}</section>
-            </div>
-          )}
-
-          {layout.activeAnalysisTab === 'scenarios' && (
-            <div className="analysis-scenarios">
-              {(scenarioRegistry?.scenarios ?? []).length === 0 ? <div className="analysis-empty">No saved scenarios. Create one from the left panel.</div> : (scenarioRegistry?.scenarios ?? []).map((scenario) => { const result = scenarioRunResults[scenario.id]; return <div className="analysis-scenario-row" key={scenario.id}><span><strong>{scenario.name}</strong><small>{scenario.dataset} · {scenario.request.costing}</small></span><code>{scenario.request.start.lon.toFixed(5)}, {scenario.request.start.lat.toFixed(5)} → {scenario.request.end.lon.toFixed(5)}, {scenario.request.end.lat.toFixed(5)}</code><b className={result ? `scenario-result-badge ${result.status}` : 'scenario-result-badge'}>{result ? result.status.toUpperCase() : 'NOT RUN'}</b></div>; })}
-            </div>
-          )}
-
-          {layout.activeAnalysisTab === 'raw' && (
-            <div className="analysis-columns raw-response-grid">
-              <section><div className="analysis-column-heading"><h3>Valhalla response</h3><span>{route ? 'Available' : 'Empty'}</span></div><pre>{route ? JSON.stringify(route, null, 2) : 'No Valhalla route response yet.'}</pre></section>
-              <section><div className="analysis-column-heading"><h3>OSRM response</h3><span>{osrmRoute ? 'Available' : 'Empty'}</span></div><pre>{osrmRoute ? JSON.stringify(osrmRoute, null, 2) : 'No OSRM route response yet.'}</pre></section>
-            </div>
-          )}
+          <AnalysisTabContent
+            activeTab={layout.activeAnalysisTab}
+            comparison={routeComparison}
+            route={route}
+            osrmRoute={osrmRoute}
+            maneuverViews={maneuverViews}
+            osrmStepViews={osrmStepViews}
+            selectedManeuverIndex={selectedManeuverIndex}
+            selectedOsrmStepIndex={selectedOsrmStepIndex}
+            selectedManeuver={selectedManeuver}
+            selectedOsrmStep={selectedOsrmStepView}
+            selectedValhallaAnalysis={selectedValhallaCandidateAnalysis}
+            selectedOsrmAnalysis={selectedOsrmCandidateAnalysis}
+            showCandidatesOnMap={showCandidateMap}
+            scenarioRegistry={scenarioRegistry}
+            scenarioRunResults={scenarioRunResults}
+            getOsrmInstruction={osrmInstructionText}
+            onFocusManeuver={focusManeuver}
+            onFocusOsrmStep={focusOsrmStep}
+            onToggleCandidatesOnMap={() => setShowCandidateMap((current) => !current)}
+          />
         </AnalysisWorkspace>
       </main>
     </div>

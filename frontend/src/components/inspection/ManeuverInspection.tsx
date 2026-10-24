@@ -1,0 +1,225 @@
+import type { OsrmRouteResponse, OsrmStep, ValhallaRouteResponse } from '../../types';
+import type { ManeuverView, NarrationPoiEvidence, NearbyPoi, OsrmStepView } from './viewModels';
+
+const NEARBY_POI_RADIUS_M = 100;
+
+export interface ManeuverInspectionProps {
+  route: ValhallaRouteResponse | null;
+  osrmRoute: OsrmRouteResponse | null;
+  maneuverViews: ManeuverView[];
+  osrmStepViews: OsrmStepView[];
+  selectedManeuverIndex: number | null;
+  selectedOsrmStepIndex: number | null;
+  selectedManeuver: ManeuverView | null;
+  narrationEvidenceByManeuver: Map<number, NarrationPoiEvidence[]>;
+  osrmPoiNamesByStep: Map<number, string[]>;
+  primaryNarrationEvidence: NarrationPoiEvidence | null;
+  selectedNarrationEvidence: NarrationPoiEvidence[];
+  nearbyPois: NearbyPoi[];
+  getOsrmInstruction: (step: OsrmStep) => string;
+  onFocusManeuver: (item: ManeuverView) => void;
+  onFocusOsrmStep: (item: OsrmStepView) => void;
+  onFocusNarrationEvidence: (item: NarrationPoiEvidence) => void;
+  onFocusPoi: (item: NearbyPoi) => void;
+}
+
+export function ManeuverInspection({
+  route, osrmRoute, maneuverViews, osrmStepViews,
+  selectedManeuverIndex, selectedOsrmStepIndex, selectedManeuver,
+  narrationEvidenceByManeuver, osrmPoiNamesByStep,
+  primaryNarrationEvidence, selectedNarrationEvidence, nearbyPois,
+  getOsrmInstruction: osrmInstructionText,
+  onFocusManeuver: focusManeuver,
+  onFocusOsrmStep: focusOsrmStep,
+  onFocusNarrationEvidence: focusNarrationEvidence,
+  onFocusPoi: focusPoi,
+}: ManeuverInspectionProps) {
+  return (
+    <>
+      <section className="card maneuvers-card">
+        <div className="maneuver-heading">
+          <h2>Odin Maneuvers</h2>
+          {route?.trip?.summary && (
+            <span>{route.trip.summary.length?.toFixed(2)} km · {Math.round((route.trip.summary.time ?? 0) / 60)} min</span>
+          )}
+        </div>
+        {maneuverViews.length === 0 ? (
+          <div className="empty-state">Run a route to inspect Odin instructions.</div>
+        ) : (
+          <ol className="maneuver-list">
+            {maneuverViews.map((item) => (
+              <li key={item.index} data-maneuver-index={item.index} className={selectedManeuverIndex === item.index ? 'selected' : ''}>
+                <button className="maneuver-button" onClick={() => focusManeuver(item)}>
+                  <strong>{item.maneuver.instruction ?? 'Unnamed maneuver'}</strong>
+                  {(() => {
+                    const evidence = narrationEvidenceByManeuver.get(item.index) ?? [];
+                    if (evidence.some((match) => match.evidence === 'strong')) {
+                      return <span className="narration-mini-badge strong">POI in instruction</span>;
+                    }
+                    return null;
+                  })()}
+                  {item.maneuver.verbal_pre_transition_instruction && (
+                    <div>{item.maneuver.verbal_pre_transition_instruction}</div>
+                  )}
+                  <small>
+                    {typeof item.maneuver.length === 'number' ? `${item.maneuver.length.toFixed(2)} km` : ''}
+                    {typeof item.maneuver.time === 'number' ? ` · ${Math.round(item.maneuver.time)} s` : ''}
+                    {item.coordinate ? ` · ${item.coordinate[1].toFixed(6)}, ${item.coordinate[0].toFixed(6)}` : ''}
+                  </small>
+                </button>
+              </li>
+            ))}
+          </ol>
+        )}
+      </section>
+  
+      <section className="card maneuvers-card osrm-maneuvers-card">
+        <div className="maneuver-heading">
+          <h2>OSRM Maneuvers</h2>
+          {osrmRoute?.routes?.[0] && (
+            <span>
+              {((osrmRoute.routes[0].distance ?? 0) / 1000).toFixed(2)} km ·
+              {' '}{Math.round((osrmRoute.routes[0].duration ?? 0) / 60)} min
+            </span>
+          )}
+        </div>
+  
+        {osrmStepViews.length === 0 ? (
+          <div className="empty-state">
+            Run a route to inspect OSRM instructions.
+          </div>
+        ) : (
+          <ol className="maneuver-list osrm-maneuver-list">
+            {osrmStepViews.map((item) => {
+              const poiNames = osrmPoiNamesByStep.get(item.index) ?? [];
+  
+              return (
+                <li
+                  key={item.index}
+                  data-osrm-step-index={item.index}
+                  className={selectedOsrmStepIndex === item.index ? 'selected' : ''}
+                >
+                  <button
+                    className="osrm-step"
+                    onClick={() => focusOsrmStep(item)}
+                  >
+                    <strong>{osrmInstructionText(item.step)}</strong>
+  
+                    {poiNames.length > 0 && (
+                      <span className="narration-mini-badge osrm">
+                        POI in instruction: {poiNames.join(', ')}
+                      </span>
+                    )}
+  
+                    <small>
+                      {typeof item.step.distance === 'number'
+                        ? `${item.step.distance.toFixed(1)} m`
+                        : ''}
+                      {typeof item.step.duration === 'number'
+                        ? ` · ${Math.round(item.step.duration)} s`
+                        : ''}
+                      {item.coordinate
+                        ? ` · ${item.coordinate[1].toFixed(6)}, ${item.coordinate[0].toFixed(6)}`
+                        : ''}
+                    </small>
+  
+                    {(item.step.maneuver?.type || item.step.maneuver?.modifier) && (
+                      <code>
+                        {item.step.maneuver?.type ?? ''}
+                        {item.step.maneuver?.modifier
+                          ? ` / ${item.step.maneuver.modifier}`
+                          : ''}
+                      </code>
+                    )}
+                  </button>
+                </li>
+              );
+            })}
+          </ol>
+        )}
+      </section>
+  
+      <section className="card inspection-card">
+        <div className="maneuver-heading">
+          <h2>Landmark Details</h2>
+          <span>{NEARBY_POI_RADIUS_M} m radius</span>
+        </div>
+        {!selectedManeuver ? (
+          <div className="empty-state">Click an Odin maneuver or a black maneuver marker on the map.</div>
+        ) : (
+          <>
+            <div className="selected-maneuver-summary">
+              <strong>#{selectedManeuver.index + 1} {selectedManeuver.maneuver.instruction ?? 'Unnamed maneuver'}</strong>
+              <span>
+                {selectedManeuver.coordinate
+                  ? `${selectedManeuver.coordinate[1].toFixed(6)}, ${selectedManeuver.coordinate[0].toFixed(6)}`
+                  : 'No begin_shape_index coordinate available'}
+              </span>
+            </div>
+            <div className="narration-verification">
+              <div className="narration-verification-heading">
+                <strong>POI in Odin Instruction</strong>
+                {!primaryNarrationEvidence ? (
+                  <span className="narration-status none">NO POI FOUND</span>
+                ) : (
+                  <span className="narration-status strong">POI FOUND</span>
+                )}
+              </div>
+  
+              {!primaryNarrationEvidence ? (
+                <p>No landmark POI was identified in this maneuver's Odin instruction.</p>
+              ) : (
+                <>
+                  <button className="narration-primary-match" onClick={() => focusNarrationEvidence(primaryNarrationEvidence)}>
+                    <span>
+                      <strong>{primaryNarrationEvidence.name}</strong>
+                      <small>{primaryNarrationEvidence.landmarkType} · {primaryNarrationEvidence.poiId || 'no mappls_poi_id'}</small>
+                    </span>
+                    <span>
+                      <strong>{primaryNarrationEvidence.distanceM === null ? 'distance n/a' : `${primaryNarrationEvidence.distanceM.toFixed(1)} m`}</strong>
+                      <small>priority {primaryNarrationEvidence.priority ?? '—'}</small>
+                    </span>
+                  </button>
+                  <code className="narration-matched-instruction">{primaryNarrationEvidence.matchedInstruction}</code>
+                  {primaryNarrationEvidence.evidence === 'ambiguous' && (
+                    <p className="narration-caution">The POI name appears in narration, but not in the strong “at &lt;POI&gt;” landmark pattern. It may be a road/place-name coincidence.</p>
+                  )}
+                  {selectedNarrationEvidence.length > 1 && (
+                    <details className="narration-other-matches">
+                      <summary>{selectedNarrationEvidence.length - 1} additional source-name match(es)</summary>
+                      {selectedNarrationEvidence.slice(1).map((match, index) => (
+                        <button key={`${match.poiId}-${match.sourceNodeId}-${index}`} onClick={() => focusNarrationEvidence(match)}>
+                          <span>{match.name}</span>
+                          <small>{match.distanceM === null ? 'n/a' : `${match.distanceM.toFixed(1)} m`} · priority {match.priority ?? '—'}</small>
+                        </button>
+                      ))}
+                    </details>
+                  )}
+                </>
+              )}
+            </div>
+            {nearbyPois.length === 0 ? (
+              <div className="empty-state">No source POIs within {NEARBY_POI_RADIUS_M} m.</div>
+            ) : (
+              <div className="nearby-list">
+                {nearbyPois.map((item, index) => (
+                  <button key={`${item.feature.id ?? item.name}-${index}`} className="nearby-poi" onClick={() => focusPoi(item)}>
+                    <span className="nearby-rank">{index + 1}</span>
+                    <span className="nearby-main">
+                      <strong>{item.name}</strong>
+                      <small>{item.landmarkType}</small>
+                    </span>
+                    <span className="nearby-metrics">
+                      <strong>{item.distanceM.toFixed(1)} m</strong>
+                      <small>priority {item.priority ?? '—'}</small>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+      </section>
+    </>
+  );
+}

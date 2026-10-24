@@ -16,6 +16,7 @@ import { DatasetPoiExplorerPanel } from './components/datasets/DatasetPoiExplore
 import type { ManeuverView, NarrationPoiEvidence, NearbyPoi, OsrmRouteNarrationPoi, OsrmStepView, RouteNarrationPoi } from './components/inspection/viewModels';
 import { ManeuverInspection } from './components/inspection/ManeuverInspection';
 import { SelectedPoiDetails } from './components/inspection/SelectedPoiDetails';
+import { MapContextMenu, type MapContextMenuLocation } from './components/map/MapContextMenu';
 import { RouteSetupControls } from './components/route/RouteSetupControls';
 import { RouteComparisonSummary } from './components/route/RouteComparisonSummary';
 import { SavedScenarioControls } from './components/scenarios/SavedScenarioControls';
@@ -325,6 +326,7 @@ export default function App() {
   const [pickMode, setPickMode] = useState<PickMode>('start');
   const [start, setStart] = useState<LngLat | null>(null);
   const [end, setEnd] = useState<LngLat | null>(null);
+  const [mapContextMenu, setMapContextMenu] = useState<MapContextMenuLocation | null>(null);
   const [pois, setPois] = useState<GeoJSON.FeatureCollection>(EMPTY_FC);
   const [route, setRoute] = useState<ValhallaRouteResponse | null>(null);
   const [routeGeoJson, setRouteGeoJson] = useState<GeoJSON.FeatureCollection>(EMPTY_FC);
@@ -1762,6 +1764,8 @@ export default function App() {
     if (!map) return;
     map.__pickMode = pickMode;
     const handler = (event: maplibregl.MapMouseEvent) => {
+      if (event.originalEvent.button !== 0) return;
+
       if (map.isStyleLoaded()) {
         const candidateLayers = ['pois', 'selected-poi', 'nearby-pois', 'route-narration-pois', 'narration-poi', 'maneuver-points', 'osrm-selected-maneuver', 'poi-turn-inspection-turn', 'candidate-analysis-pois', 'candidate-analysis-origin', 'route-points']
           .filter((layerId) => Boolean(map.getLayer(layerId)));
@@ -1774,12 +1778,28 @@ export default function App() {
       closeActivePoiPopup();
 
       const point: LngLat = [event.lngLat.lng, event.lngLat.lat];
-      if ((map.__pickMode ?? 'start') === 'start') setStart(point);
-      else setEnd(point);
+      setRoutePoint(map.__pickMode ?? 'start', point);
     };
     map.on('click', handler);
     return () => { map.off('click', handler); };
   }, [config, pickMode]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    const handler = (event: maplibregl.MapMouseEvent) => {
+      event.originalEvent.preventDefault();
+      setMapContextMenu({
+        coordinate: [event.lngLat.lng, event.lngLat.lat],
+        x: event.point.x,
+        y: event.point.y,
+      });
+    };
+
+    map.on('contextmenu', handler);
+    return () => { map.off('contextmenu', handler); };
+  }, [config]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -2463,6 +2483,11 @@ export default function App() {
     else setEnd(next);
   }
 
+  function setRoutePoint(kind: PickMode, coordinate: LngLat) {
+    if (kind === 'start') setStart(coordinate);
+    else setEnd(coordinate);
+  }
+
   function focusManeuver(item: ManeuverView) {
     setSelectedManeuverIndex(item.index);
     setSelectedOsrmStepIndex(null);
@@ -2794,7 +2819,17 @@ export default function App() {
               {' '}{maneuverViews.length} Odin maneuvers · {osrmStepViews.length} OSRM steps
             </span>
           </div>
-          <div ref={mapContainer} className="map" />
+          <div className="map-surface">
+            <div ref={mapContainer} className="map" />
+            {mapContextMenu && (
+              <MapContextMenu
+                {...mapContextMenu}
+                onSetStart={(coordinate) => setRoutePoint('start', coordinate)}
+                onSetEnd={(coordinate) => setRoutePoint('end', coordinate)}
+                onClose={() => setMapContextMenu(null)}
+              />
+            )}
+          </div>
 
           {(route || osrmRoute) && (
             <div className={`route-comparison-overlay ${routeComparisonCollapsed ? 'collapsed' : ''}`}>

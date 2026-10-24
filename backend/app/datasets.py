@@ -9,6 +9,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .poi_search import PoiSearchIndex
+
 
 FALSE_VALUES = {"0", "false", "no", "n", "off"}
 LAT_CANDIDATES = ("lat", "latitude", "y")
@@ -37,6 +39,13 @@ class DatasetManager:
         requested = str(settings.get("active_dataset") or "").strip()
         self._active_id = requested if requested in self._datasets else next(iter(self._datasets))
         self._cache: dict[str, dict[str, Any]] = {}
+        index_dir = Path(
+            str(
+                settings.get("backend", {}).get("poi_index_dir")
+                or Path(__file__).resolve().parents[2] / ".cache" / "poi-search"
+            )
+        )
+        self.search_index = PoiSearchIndex(self._datasets, index_dir)
 
     @staticmethod
     def _build_registry(settings: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -87,6 +96,7 @@ class DatasetManager:
             if target not in self._datasets:
                 raise DatasetError(f"Unknown dataset: {target}")
             self._load(target, force=True)
+            self.search_index.invalidate(target)
             return self._summary(target)
 
     def describe(self) -> dict[str, Any]:

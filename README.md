@@ -153,6 +153,7 @@ The main deployment variables are:
 | `VPD_VALHALLA_CONFIG_PATH` | Valhalla config metadata path | `/data/valhalla.json` |
 | `VPD_SCENARIO_DIR` | Writable saved-scenario directory | `/data/scenarios` |
 | `VPD_BACKEND_PORT` | Dashboard HTTP port | `8010` |
+| `VPD_POI_INDEX_DIR` | Rebuildable SQLite POI index directory | `/data/cache/poi-search` |
 | `VPD_BACKEND_WORKERS` | Worker count; keep `1` because active-dataset state is in memory | `1` |
 | `VPD_ALLOWED_ORIGINS` | Comma-separated browser origins | `https://debugger.company.com` |
 
@@ -361,6 +362,81 @@ Phase 2A adds a runtime dataset registry and removes the manual CSV-to-GeoJSON s
 - `Reload POIs` rereads the source file without restarting the debugger.
 - Optional `datasets:` entries can be activated at runtime.
 - Dataset activation changes debugger-side POI data only; it does not restart Valhalla or change the tiles used by the running Valhalla process.
+
+### Bounded POI search API
+
+`GET /api/pois/search` searches a named dataset without activating it. The
+legacy `/api/pois`, activation, and reload endpoints remain unchanged.
+
+| Parameter | Meaning |
+| --- | --- |
+| `dataset_id` | Required configured dataset ID; never a filesystem path. |
+| `q` | Case-insensitive substring across `name`, `mappls_poi_id`, `new_node_id`, `osm_source_id`, and `landmark_type`. Maximum 200 characters. |
+| `type` | Exact, case-sensitive `landmark_type` match. |
+| `min_priority` | Includes numeric priorities at or above the boundary; missing/empty values follow the current browser's numeric conversion and are zero, while invalid values do not match. |
+| `visible` | `true` or `false`; absent/empty values are visible and `no`, `false`, `0`, and `n` are invisible, matching the current frontend. |
+| `bbox` | `west,south,east,north` in longitude/latitude order. Antimeridian-crossing boxes are rejected. |
+| `limit` | Page size, default 100, minimum 1, maximum 500. |
+| `cursor` | Opaque continuation returned by the previous response. |
+
+Example:
+
+```text
+GET /api/pois/search?dataset_id=rohtak_lmg&q=school&visible=true&bbox=76.47,28.83,76.71,28.96&limit=100
+```
+
+```json
+{
+  "type": "FeatureCollection",
+  "dataset_id": "rohtak_lmg",
+  "features": [],
+  "returned": 0,
+  "has_more": false,
+  "next_cursor": null
+}
+```
+
+Text results preserve the browser ranking: POI names beginning with the query
+first, then descending priority, then case-normalized name. Source row order is
+the final deterministic tie-breaker. Without `q`, results retain source order.
+SQLite binary ordering of normalized Unicode names can differ from JavaScript
+`localeCompare`, but membership and the higher-value prefix/priority ordering
+are unchanged. Duplicate names and identifiers remain separate features.
+
+The endpoint uses a lazily built SQLite FTS5 trigram index plus an R-tree. FTS
+preserves partial substring matching; one- and two-character searches are
+valid but cannot benefit from trigram pruning and should not be used for normal
+interactive search. All filters are parameterized and combined in SQLite. The
+index returns `limit + 1` rows to determine `has_more` and does not calculate an
+exact total.
+
+Indexes default to `.cache/poi-search`, which is ignored by Git, and can be
+moved with `backend.poi_index_dir` or `VPD_POI_INDEX_DIR`. A source
+path/size/mtime fingerprint is checked before every search. Builds use a
+temporary database and atomic replacement; reload invalidates that dataset's
+index and makes existing cursors stale. Indexes are opened per request rather
+than retained in an unbounded connection or feature cache.
+
+The lock and atomic-publish guarantees apply within one backend process. Keep
+the documented single-worker deployment while legacy active-dataset state is
+process-local. Multiple workers can independently notice and rebuild an index,
+so a shared index directory is not yet a coordinated multi-worker build cache.
+SQLite FTS5 trigram and R-tree support must be present in the deployment
+Python's standard-library SQLite build; the backend test suite validates this
+requirement in the supported Linux environment.
+
+Run the dependency-free search tests from the repository root:
+
+```bash
+python3 -m unittest backend.tests.test_poi_search
+```
+
+An opt-in generated 700,000-row benchmark reports measured build time, query
+latencies, index size, Python-tracked peak memory, and response sizes:
+
+```bash
+python3 -m backend.tests.benchmark_poi_search --rows 700000
+```
 
 ## Phase 3A — saved route scenarios
 

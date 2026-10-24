@@ -12,6 +12,12 @@ from fastapi.staticfiles import StaticFiles
 
 from .config import load_settings
 from .datasets import DatasetError, DatasetManager
+from .poi_search import (
+    PoiSearchError,
+    PoiSearchNotFoundError,
+    PoiSearchValidationError,
+    parse_bbox,
+)
 from .landmark_debug import OsrmLandmarkDebugManager
 from .valhalla_landmark_debug import ValhallaLandmarkDebugManager
 from .scenarios import ScenarioError, ScenarioManager
@@ -24,7 +30,7 @@ valhalla_landmark_debug = ValhallaLandmarkDebugManager(settings, datasets)
 
 app = FastAPI(
     title="Valhalla + OSRM POI Debugger API",
-    version="0.4.0",
+    version="0.5.0",
     description="Local debug API for Valhalla and OSRM POI/landmark comparison.",
 )
 
@@ -132,6 +138,36 @@ def reload_dataset_pois(dataset_id: str) -> dict[str, Any]:
 @app.get("/api/pois")
 def get_pois() -> dict[str, Any]:
     return datasets.get_active_pois()
+
+
+@app.get("/api/pois/search")
+def search_pois(
+    dataset_id: str,
+    q: str | None = None,
+    type: str | None = None,
+    min_priority: float | None = None,
+    visible: bool | None = None,
+    bbox: str | None = None,
+    limit: int = 100,
+    cursor: str | None = None,
+) -> dict[str, Any]:
+    try:
+        return datasets.search_index.search(
+            dataset_id,
+            q=q,
+            landmark_type=type,
+            min_priority=min_priority,
+            visible=visible,
+            bbox=parse_bbox(bbox),
+            limit=limit,
+            cursor=cursor,
+        )
+    except PoiSearchNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except PoiSearchValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except PoiSearchError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @app.get("/api/scenarios")

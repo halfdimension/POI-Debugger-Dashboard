@@ -86,6 +86,7 @@ def load_settings() -> dict[str, Any]:
         ("frontend", "map_style_url"): "VPD_MAP_STYLE_URL",
         ("frontend", "dist_path"): "VPD_FRONTEND_DIST_PATH",
         ("scenarios", "directory"): "VPD_SCENARIO_DIR",
+        ("backend", "poi_index_dir"): "VPD_POI_INDEX_DIR",
     }
     for (section, key), env_name in env_overrides.items():
         value = os.getenv(env_name)
@@ -160,6 +161,11 @@ def load_settings() -> dict[str, Any]:
 
     if cfg["frontend"].get("dist_path"):
         cfg["frontend"]["dist_path"] = _expand_path(str(cfg["frontend"]["dist_path"]))
+
+    if cfg["backend"].get("poi_index_dir"):
+        cfg["backend"]["poi_index_dir"] = _expand_path(
+            str(cfg["backend"]["poi_index_dir"])
+        )
 
     if not cfg["scenarios"].get("directory"):
         cfg["scenarios"]["directory"] = "./data/scenarios"

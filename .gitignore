@@ -3,6 +3,7 @@
 __pycache__/
 *.pyc
 *.pyo
+.cache/
 
 # Frontend
 frontend/node_modules/

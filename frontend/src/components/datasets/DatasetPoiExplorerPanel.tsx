@@ -1,5 +1,6 @@
 import { propText } from '../../poi';
 import type { DatasetRegistryResponse, DatasetSummary, DebuggerConfig } from '../../types';
+import { AdvancedPoiFilters } from './PoiExplorer';
 
 export interface DatasetPoiExplorerPanelProps {
   activeDataset: DatasetSummary | null;
@@ -93,14 +94,15 @@ export function DatasetPoiExplorerPanel({
           <span>{filteredPoiFeatures.length} in view</span>
         </div>
   
-        <label>Search name / Mappls ID / node ID / OSM ID / type</label>
+        <label className="poi-search-label" htmlFor="dataset-poi-search">Search by name or identifier</label>
         <div className="poi-search-row">
           <input
+            id="dataset-poi-search"
             value={poiSearch}
-            placeholder="Indian Oil, POI-CP-000123, 900000123…"
+            placeholder="Name, Mappls ID, node ID, OSM ID or type"
             onChange={(event) => setPoiSearch(event.target.value)}
           />
-          <button onClick={resetPoiFilters}>Reset</button>
+          <button type="button" onClick={resetPoiFilters}>Reset filters</button>
         </div>
   
         <div className="poi-filter-grid">
@@ -113,19 +115,9 @@ export function DatasetPoiExplorerPanel({
               ))}
             </select>
           </div>
-          <div>
-            <label>Minimum priority <strong>{minPriority}</strong></label>
-            <input
-              className="priority-slider"
-              type="range"
-              min="0"
-              max="100"
-              step="5"
-              value={minPriority}
-              onChange={(event) => setMinPriority(Number(event.target.value))}
-            />
-          </div>
         </div>
+
+        <AdvancedPoiFilters inputId="dataset-poi-min-priority" minPriority={minPriority} onMinimumPriorityChange={setMinPriority} />
   
         <div className="poi-checkboxes">
           <label><input type="checkbox" checked={visibleOnly} onChange={(event) => setVisibleOnly(event.target.checked)} /> Visible only</label>

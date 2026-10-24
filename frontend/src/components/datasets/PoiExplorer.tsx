@@ -1,6 +1,42 @@
 import { propText } from '../../poi';
 import { PanelSection } from '../DashboardLayout';
 
+interface AdvancedPoiFiltersProps {
+  inputId: string;
+  minPriority: number;
+  onMinimumPriorityChange: (value: number) => void;
+}
+
+export function AdvancedPoiFilters({ inputId, minPriority, onMinimumPriorityChange }: AdvancedPoiFiltersProps) {
+  return (
+    <details className="poi-advanced-filters">
+      <summary>
+        <span>Advanced filters</span>
+        <small>{minPriority > 0 ? `Priority ${minPriority}+` : 'No minimum priority'}</small>
+      </summary>
+      <div className="poi-advanced-filters__body">
+        <label htmlFor={inputId}>Minimum priority</label>
+        <input
+          id={inputId}
+          aria-describedby={`${inputId}-hint`}
+          type="number"
+          inputMode="numeric"
+          min="0"
+          max="100"
+          step="1"
+          value={minPriority || ''}
+          placeholder="Any"
+          onChange={(event) => {
+            const value = event.target.valueAsNumber;
+            onMinimumPriorityChange(Number.isFinite(value) ? Math.min(100, Math.max(0, value)) : 0);
+          }}
+        />
+        <small id={`${inputId}-hint`}>Optional, from 0 to 100. Clear the field to include every priority.</small>
+      </div>
+    </details>
+  );
+}
+
 export interface CompactPoiExplorerProps {
   filteredPoiFeatures: GeoJSON.Feature<GeoJSON.Point>[];
   searchResults: GeoJSON.Feature<GeoJSON.Point>[];
@@ -40,14 +76,15 @@ export function CompactPoiExplorer({
 }: CompactPoiExplorerProps) {
   return (
     <PanelSection title="POI explorer" meta={`${filteredPoiFeatures.length} in view`}>
+      <label className="poi-search-label" htmlFor="compact-poi-search">Search by name or identifier</label>
       <div className="poi-search-row">
-        <input aria-label="Search POIs" value={poiSearch} placeholder="Name, POI ID, node ID or type" onChange={(event) => setPoiSearch(event.target.value)} />
-        <button onClick={resetPoiFilters}>Reset</button>
+        <input id="compact-poi-search" value={poiSearch} placeholder="Name, Mappls ID, node ID, OSM ID or type" onChange={(event) => setPoiSearch(event.target.value)} />
+        <button type="button" onClick={resetPoiFilters}>Reset filters</button>
       </div>
       <div className="poi-filter-grid">
-        <label>Type<select value={poiType} onChange={(event) => setPoiType(event.target.value)}><option value="all">All types</option>{availablePoiTypes.map((type) => <option key={type} value={type}>{type}</option>)}</select></label>
-        <label>Priority <strong>{minPriority}</strong><input className="priority-slider" type="range" min="0" max="100" step="5" value={minPriority} onChange={(event) => setMinPriority(Number(event.target.value))} /></label>
+        <label>Landmark type<select value={poiType} onChange={(event) => setPoiType(event.target.value)}><option value="all">All types</option>{availablePoiTypes.map((type) => <option key={type} value={type}>{type}</option>)}</select></label>
       </div>
+      <AdvancedPoiFilters inputId="compact-poi-min-priority" minPriority={minPriority} onMinimumPriorityChange={setMinPriority} />
       <div className="poi-checkboxes">
         <label><input type="checkbox" checked={visibleOnly} onChange={(event) => setVisibleOnly(event.target.checked)} /> Visible records only</label>
         <label><input type="checkbox" checked={showPois} onChange={(event) => setShowPois(event.target.checked)} /> Show on map</label>

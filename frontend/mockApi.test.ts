@@ -46,6 +46,15 @@ describe('development mock API contracts', () => {
     expect((await handleMockApi('GET', '/api/pois/search?dataset_id=mock-demo&bbox=170,-10,-170,10', {}, state))?.status).toBe(400);
   });
 
+  it('keeps numeric identifier search separate from the priority filter', async () => {
+    const state = createMockApiState();
+    const included = await handleMockApi('GET', '/api/pois/search?dataset_id=mock-demo&q=910002&min_priority=80', {}, state);
+    const excluded = await handleMockApi('GET', '/api/pois/search?dataset_id=mock-demo&q=910002&min_priority=81', {}, state);
+
+    expect((included?.body as any).features.map((item: any) => item.properties.name)).toEqual(['Clock Tower Cafe']);
+    expect((excluded?.body as any).features).toEqual([]);
+  });
+
   it('is opt-in and cannot activate for builds or preview', () => {
     expect(shouldEnableMockApi('serve', 'development', false, undefined)).toBe(false);
     expect(shouldEnableMockApi('serve', 'development', false, '1')).toBe(true);

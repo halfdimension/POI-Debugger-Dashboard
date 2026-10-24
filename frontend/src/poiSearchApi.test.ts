@@ -19,6 +19,22 @@ describe('POI search client', () => {
     });
   });
 
+  it('serializes a numeric identifier as search text, independently of minimum priority', () => {
+    const url = new URL(buildPoiSearchUrl({
+      datasetId: 'weekly', q: '900000123', minPriority: 40,
+    }), 'http://local');
+
+    expect(url.searchParams.get('q')).toBe('900000123');
+    expect(url.searchParams.get('min_priority')).toBe('40');
+  });
+
+  it('omits the optional priority filter while preserving numeric search text', () => {
+    const url = new URL(buildPoiSearchUrl({ datasetId: 'weekly', q: '910002' }), 'http://local');
+
+    expect(url.searchParams.get('q')).toBe('910002');
+    expect(url.searchParams.has('min_priority')).toBe(false);
+  });
+
   it('validates bbox ordering and antimeridian bounds', () => {
     expect(serializePoiBounds([-180, -90, 180, 90])).toBe('-180,-90,180,90');
     expect(() => serializePoiBounds([170, -10, -170, 10])).toThrow(/antimeridian/);

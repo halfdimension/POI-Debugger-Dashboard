@@ -12,6 +12,31 @@ button { cursor: pointer; }
 
 .loading { padding: 32px; }
 
+.initialization-error {
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: #eef2f7;
+}
+
+.initialization-error__card {
+  display: flex;
+  width: min(680px, 100%);
+  gap: 16px;
+  border: 1px solid #d7dee9;
+  border-radius: 12px;
+  padding: 24px;
+  background: white;
+  box-shadow: 0 12px 36px rgba(24, 39, 75, .12);
+}
+
+.initialization-error__card h1 { margin: 3px 0 10px; font-size: 20px; }
+.initialization-error__card p { margin: 0 0 12px; color: #475569; line-height: 1.5; }
+.initialization-error__card .product-kicker { color: #64748b; }
+.initialization-error__detail { display: block; margin-bottom: 14px; color: #991b1b; overflow-wrap: anywhere; }
+.initialization-error__card button { border: 0; border-radius: 7px; padding: 9px 13px; background: #215ee7; color: white; font-weight: 700; }
+
 .app-shell {
   height: 100vh;
   display: grid;
@@ -2113,6 +2138,19 @@ summary:focus-visible {
   display: flex;
   gap: 5px;
   margin-left: auto;
+}
+
+.mock-mode-badge {
+  align-self: center;
+  border: 1px solid #a97816;
+  border-radius: 999px;
+  padding: 5px 9px;
+  background: #3a2c0d;
+  color: #ffd978;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: .035em;
+  white-space: nowrap;
 }
 
 .status-pill {

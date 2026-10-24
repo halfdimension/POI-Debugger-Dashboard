@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import maplibregl, { LngLatBounds, Map as MapLibreMap } from 'maplibre-gl';
-import { activateDataset, createScenario, deleteScenario, getConfig, getDatasets, getOsrmStatus, getPois, getScenarios, getValhallaStatus, reloadDatasetPois, requestCompareRoute, updateScenario } from './api';
+import { activateDataset, createScenario, deleteScenario, getDatasets, getOsrmStatus, getPois, getScenarios, getValhallaStatus, reloadDatasetPois, requestCompareRoute, updateScenario } from './api';
 import { updateCoordinateValue } from './coordinates';
 import { decodePolyline6 } from './polyline';
 import { filterPoiFeatures, pointFeature, propNumber, propText, rankPoiSearchResults } from './poi';
 import { evaluateScenario, type ScenarioRunResult } from './scenarioAssertions';
+import { loadInitialDashboard } from './initialization';
 import { AnalysisWorkspace, PanelSection, Sidebar } from './components/DashboardLayout';
 import {
   initialDashboardLayout,
@@ -12,6 +13,8 @@ import {
   togglePanel,
 } from './layoutState';
 import type { CandidateAnalysis, CandidateAnalysisCandidate, CandidateAnalysisManeuver, DatasetRegistryResponse, DatasetSummary, DebuggerConfig, LngLat, Maneuver, OsrmRouteResponse, OsrmStep, RouteScenario, ScenarioRegistryResponse, ValhallaRouteResponse } from './types';
+
+declare const __VPD_MOCK_API__: boolean;
 
 type PickMode = 'start' | 'end';
 
@@ -1063,6 +1066,8 @@ export default function App() {
 
 
   const [config, setConfig] = useState<DebuggerConfig | null>(null);
+  const [initializationError, setInitializationError] = useState('');
+  const [initializationAttempt, setInitializationAttempt] = useState(0);
   const [basemap, setBasemap] = useState<Basemap>('mapmyindia');
   const basemapRef = useRef<Basemap>('mapmyindia');
   const [pickMode, setPickMode] = useState<PickMode>('start');
@@ -1963,27 +1968,36 @@ export default function App() {
   const primaryNarrationEvidence = selectedNarrationEvidence[0] ?? null;
 
   useEffect(() => {
+    let cancelled = false;
     (async () => {
       try {
-        const [cfg, poiData, registry, scenarios] = await Promise.all([getConfig(), getPois(), getDatasets(), getScenarios()]);
-        setConfig(cfg);
-        setPois(poiData);
-        setDatasetRegistry(registry);
-        setScenarioRegistry(scenarios);
+        setInitializationError('');
+        setError('');
+        const initial = await loadInitialDashboard();
+        if (cancelled) return;
+        setConfig(initial.config);
+        setPois(initial.pois);
+        setDatasetRegistry(initial.datasets);
+        setScenarioRegistry(initial.scenarios);
 
         const [valhallaStatusResponse, osrmStatusResponse] = await Promise.all([
           getValhallaStatus(),
           getOsrmStatus(),
         ]);
+        if (cancelled) return;
         setValhallaStatus(valhallaStatusResponse.ok ? 'up' : 'down');
         setOsrmStatus(osrmStatusResponse.ok ? 'up' : 'down');
       } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
+        if (cancelled) return;
+        const message = err instanceof Error ? err.message : String(err);
+        setError(message);
+        setInitializationError(message);
         setValhallaStatus('down');
         setOsrmStatus('down');
       }
     })();
-  }, []);
+    return () => { cancelled = true; };
+  }, [initializationAttempt]);
 
   useEffect(() => {
     if (!config || !mapContainer.current || mapRef.current) return;
@@ -3341,7 +3355,23 @@ export default function App() {
   }
 
   if (!config) {
-    return <div className="loading">Loading debugger configuration…</div>;
+    if (initializationError) {
+      return (
+        <main className="initialization-error" role="alert">
+          <div className="initialization-error__card">
+            <span className="product-mark" aria-hidden="true">PD</span>
+            <div>
+              <p className="product-kicker">Dashboard unavailable</p>
+              <h1>Could not load debugger configuration</h1>
+              <p>The frontend could not reach the API. Start the FastAPI backend, check <code>VPD_BACKEND_URL</code>, or explicitly enable the development mock API.</p>
+              <code className="initialization-error__detail">{initializationError}</code>
+              <button type="button" onClick={() => setInitializationAttempt((attempt) => attempt + 1)}>Retry API connection</button>
+            </div>
+          </div>
+        </main>
+      );
+    }
+    return <div className="loading" role="status">Loading debugger configuration…</div>;
   }
 
   return (
@@ -3389,6 +3419,7 @@ export default function App() {
         </div>
 
         <div className="engine-statuses" aria-label="Routing engine status">
+          {__VPD_MOCK_API__ && <div className="mock-mode-badge" title="Responses are synthetic and provided by the Vite development server">Mock Data / Development Mode</div>}
           <div className={`status-pill ${valhallaStatus}`}><i />Valhalla</div>
           <div className={`status-pill ${osrmStatus}`}><i />OSRM</div>
         </div>

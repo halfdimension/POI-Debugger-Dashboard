@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from unittest.mock import patch
 
 from backend.app.datasets import DatasetManager
 from backend.app.poi_search import (
@@ -200,6 +201,98 @@ class PoiSearchTest(unittest.TestCase):
         for invalid in ("76,28,77", "x,28,77,29", "-181,28,77,29", "76,91,77,92", "77,28,76,29", "76,30,77,29"):
             with self.subTest(invalid=invalid), self.assertRaises(PoiSearchValidationError):
                 parse_bbox(invalid)
+
+    def test_broad_ranked_path_matches_selective_path_and_paginates(self) -> None:
+        def collect(threshold: int, **kwargs: object) -> list[str]:
+            found: list[str] = []
+            cursor = None
+            with patch("backend.app.poi_search.BROAD_QUERY_THRESHOLD", threshold):
+                while True:
+                    page = self.index.search("a", limit=1, cursor=cursor, **kwargs)
+                    found.extend(
+                        feature["properties"]["new_node_id"]
+                        for feature in page["features"]
+                    )
+                    cursor = page["next_cursor"]
+                    if cursor is None:
+                        return found
+
+        self.assertEqual(collect(1, q="school"), collect(10_000, q="school"))
+        self.assertEqual(
+            collect(1, q="school", min_priority=30, visible=True),
+            collect(10_000, q="school", min_priority=30, visible=True),
+        )
+
+    def test_source_change_rebuilds_index_and_rejects_old_cursor(self) -> None:
+        first = self.index.search("a", q="alpha", limit=1)
+        old_cursor = first["next_cursor"]
+        self.assertIsNotNone(old_cursor)
+        write_csv(self.a_csv, [row("Replacement School", "replacement")])
+        rebuilt = self.index.search("a", q="replacement")
+        self.assertEqual(
+            [feature["properties"]["new_node_id"] for feature in rebuilt["features"]],
+            ["replacement"],
+        )
+        with self.assertRaises(PoiSearchValidationError):
+            self.index.search("a", q="alpha", limit=1, cursor=old_cursor)
+
+    def test_broad_mixed_prefix_ranking_matches_selective_results(self) -> None:
+        ranked_csv = self.root / "ranked.csv"
+        write_csv(
+            ranked_csv,
+            [
+                row("Common Same", "start-1", priority=10),
+                row("common same", "start-2", priority=10),
+                row("Common Null", "start-null", priority="bad"),
+                row("Common Low", "start-low", priority=-5),
+                row("Alpha Common", "nonstart-high", priority=100),
+            ],
+        )
+        index = PoiSearchIndex(
+            {"ranked": {"poi_csv_path": str(ranked_csv)}},
+            self.root / "ranked-index",
+        )
+
+        def collect(threshold: int) -> list[str]:
+            found: list[str] = []
+            cursor = None
+            with patch("backend.app.poi_search.BROAD_QUERY_THRESHOLD", threshold):
+                while True:
+                    page = index.search("ranked", q="common", limit=2, cursor=cursor)
+                    found.extend(
+                        feature["properties"]["new_node_id"]
+                        for feature in page["features"]
+                    )
+                    cursor = page["next_cursor"]
+                    if cursor is None:
+                        return found
+
+        expected = collect(10_000)
+        self.assertEqual(collect(1), expected)
+        self.assertEqual(
+            expected,
+            ["start-1", "start-2", "start-null", "start-low", "nonstart-high"],
+        )
+
+    def test_short_terms_and_literal_special_characters(self) -> None:
+        special_csv = self.root / "special.csv"
+        write_csv(
+            special_csv,
+            [
+                row("A 100% Place", "short-a"),
+                row("Under_score", "short-ab"),
+                row(r"Back\slash", "short-b"),
+            ],
+        )
+        index = PoiSearchIndex(
+            {"special": {"poi_csv_path": str(special_csv)}},
+            self.root / "special-index",
+        )
+        self.assertEqual(index.search("special", q="a")["returned"], 3)
+        self.assertEqual(index.search("special", q="ab")["returned"], 1)
+        self.assertEqual(index.search("special", q="%")["returned"], 1)
+        self.assertEqual(index.search("special", q="_")["returned"], 1)
+        self.assertEqual(index.search("special", q="\\")["returned"], 1)
 
 
 if __name__ == "__main__":

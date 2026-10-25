@@ -24,9 +24,10 @@ SEARCH_FIELDS = (
 FALSE_VISIBLE_VALUES = {"0", "false", "no", "n"}
 LAT_CANDIDATES = ("lat", "latitude", "y")
 LON_CANDIDATES = ("lon", "lng", "longitude", "x")
-SCHEMA_VERSION = "2"
+SCHEMA_VERSION = "3"
 DEFAULT_LIMIT = 100
 MAX_LIMIT = 500
+BROAD_QUERY_THRESHOLD = 1_000
 
 
 class PoiSearchError(RuntimeError):
@@ -258,6 +259,7 @@ class PoiSearchIndex:
                     CREATE TABLE pois (
                         id INTEGER PRIMARY KEY,
                         feature_json TEXT NOT NULL,
+                        search_text TEXT NOT NULL,
                         name_norm TEXT NOT NULL,
                         landmark_type TEXT NOT NULL,
                         priority REAL,
@@ -271,9 +273,6 @@ class PoiSearchIndex:
                     CREATE VIRTUAL TABLE poi_geo USING rtree(
                         id, min_lon, max_lon, min_lat, max_lat
                     );
-                    CREATE INDEX pois_type ON pois(landmark_type);
-                    CREATE INDEX pois_priority ON pois(priority);
-                    CREATE INDEX pois_visible ON pois(visible);
                     """
                 )
                 iterator = _iter_csv(source_path, cfg) if source_kind == "csv" else _iter_geojson(source_path)
@@ -289,10 +288,11 @@ class PoiSearchIndex:
                         _text(properties.get(field)) for field in SEARCH_FIELDS
                     ).lower()
                     connection.execute(
-                        "INSERT INTO pois VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        "INSERT INTO pois VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                         (
                             ordinal,
                             json.dumps(feature, ensure_ascii=False, separators=(",", ":")),
+                            search_text,
                             name_norm,
                             landmark_type,
                             _priority(properties.get("priority")),
@@ -309,6 +309,17 @@ class PoiSearchIndex:
                         "INSERT INTO poi_geo VALUES (?, ?, ?, ?, ?)",
                         (ordinal, lon, lon, lat, lat),
                     )
+                connection.executescript(
+                    """
+                    CREATE INDEX pois_type ON pois(landmark_type);
+                    CREATE INDEX pois_priority ON pois(priority);
+                    CREATE INDEX pois_visible ON pois(visible);
+                    CREATE INDEX pois_name_prefix ON pois(name_norm COLLATE NOCASE);
+                    CREATE INDEX pois_rank ON pois(
+                        COALESCE(priority, -1) DESC, name_norm ASC, id ASC
+                    );
+                    """
+                )
                 connection.executemany(
                     "INSERT INTO metadata VALUES (?, ?)",
                     (
@@ -325,6 +336,91 @@ class PoiSearchIndex:
             except OSError:
                 pass
             raise PoiSearchError("The POI search index could not be built") from exc
+
+    def prepare(self, dataset_id: str) -> Path:
+        """Build or validate a dataset index without including a search in its timing."""
+        with self._lock_for(dataset_id):
+            path, _ = self._current_database(dataset_id)
+            return path
+
+    @staticmethod
+    def _has_many_candidates(
+        connection: sqlite3.Connection,
+        joins: list[str],
+        conditions: list[str],
+        params: list[Any],
+    ) -> bool:
+        sql = f"SELECT 1 FROM pois p {' '.join(joins)}"
+        if conditions:
+            sql += " WHERE " + " AND ".join(conditions)
+        sql += " LIMIT 1 OFFSET ?"
+        return connection.execute(sql, [*params, BROAD_QUERY_THRESHOLD]).fetchone() is not None
+
+    @staticmethod
+    def _search_broad_ranked(
+        connection: sqlite3.Connection,
+        *,
+        conditions: list[str],
+        params: list[Any],
+        escaped_prefix: str,
+        limit: int,
+        after: dict[str, Any] | None,
+    ) -> list[sqlite3.Row]:
+        """Read a broad result directly in rank order, avoiding a large temp sort."""
+        try:
+            after_starts = int(after["starts"]) if after is not None else None
+            after_priority = float(after["priority"]) if after is not None else None
+            after_name = str(after["name"]) if after is not None else None
+            after_id = int(after["id"]) if after is not None else None
+        except (KeyError, TypeError, ValueError) as exc:
+            raise PoiSearchValidationError("Invalid pagination cursor") from exc
+
+        rows: list[sqlite3.Row] = []
+        partitions = (1, 0) if after_starts in (None, 1) else (0,)
+        if 1 in partitions:
+            prefix_sql = (
+                "SELECT 1 FROM pois p INDEXED BY pois_name_prefix WHERE "
+                + " AND ".join([*conditions, "p.name_norm LIKE ? ESCAPE '\\'"])
+                + " LIMIT 1"
+            )
+            if connection.execute(
+                prefix_sql, [*params, escaped_prefix]
+            ).fetchone() is None:
+                partitions = (0,)
+        for starts in partitions:
+            remaining = limit + 1 - len(rows)
+            if remaining <= 0:
+                break
+            part_conditions = list(conditions)
+            part_params = list(params)
+            prefix_condition = "p.name_norm LIKE ? ESCAPE '\\'"
+            part_conditions.append(prefix_condition if starts else f"NOT ({prefix_condition})")
+            part_params.append(escaped_prefix)
+            if after is not None and starts == after_starts:
+                part_conditions.append(
+                    "(COALESCE(p.priority, -1) < ? "
+                    "OR (COALESCE(p.priority, -1) = ? AND p.name_norm > ?) "
+                    "OR (COALESCE(p.priority, -1) = ? AND p.name_norm = ? AND p.id > ?))"
+                )
+                part_params.extend(
+                    (
+                        after_priority,
+                        after_priority,
+                        after_name,
+                        after_priority,
+                        after_name,
+                        after_id,
+                    )
+                )
+            sql = (
+                "SELECT p.id, p.feature_json, p.name_norm, p.priority, "
+                f"{starts} AS name_starts, COALESCE(p.priority, -1) AS priority_sort "
+                "FROM pois p INDEXED BY pois_rank WHERE "
+                + " AND ".join(part_conditions)
+                + " ORDER BY COALESCE(p.priority, -1) DESC, p.name_norm ASC, p.id ASC LIMIT ?"
+            )
+            rows.extend(connection.execute(sql, [*part_params, remaining]).fetchall())
+        return rows
 
     @staticmethod
     def _encode_cursor(payload: dict[str, Any]) -> str:
@@ -393,15 +489,17 @@ class PoiSearchIndex:
                 conditions: list[str] = []
                 params: list[Any] = []
                 if query:
-                    joins.append("JOIN poi_fts ON poi_fts.rowid = p.id")
+                    search_column = "p.search_text" if bbox is not None else "poi_fts.search_text"
+                    if bbox is None:
+                        joins.append("JOIN poi_fts ON poi_fts.rowid = p.id")
                     escaped_query = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
                     if any(character in query for character in ("%", "_", "\\")):
                         # FTS5 cannot optimize LIKE when ESCAPE is present. Preserve
                         # literal matching for these uncommon queries with a scan.
-                        conditions.append("poi_fts.search_text LIKE ? ESCAPE '\\'")
+                        conditions.append(f"{search_column} LIKE ? ESCAPE '\\'")
                         params.append(f"%{escaped_query}%")
                     else:
-                        conditions.append("poi_fts.search_text LIKE ?")
+                        conditions.append(f"{search_column} LIKE ?")
                         params.append(f"%{query}%")
                 if bbox is not None:
                     joins.append("JOIN poi_geo g ON g.id = p.id")
@@ -424,6 +522,16 @@ class PoiSearchIndex:
                 if visible is not None:
                     conditions.append("p.visible = ?")
                     params.append(int(visible))
+
+                broad_ranked = False
+                broad_condition_count = len(conditions)
+                broad_param_count = len(params)
+                if query and bbox is None and not any(
+                    character in query for character in ("%", "_", "\\")
+                ):
+                    broad_ranked = self._has_many_candidates(
+                        connection, joins, conditions, params
+                    )
 
                 if query:
                     starts_sql = "CASE WHEN p.name_norm LIKE ? ESCAPE '\\' THEN 1 ELSE 0 END"
@@ -462,11 +570,25 @@ class PoiSearchIndex:
                     order_by = "p.id ASC"
                     select_params = []
 
-                sql = f"SELECT p.id, p.feature_json, p.name_norm, p.priority{select_extra} FROM pois p {' '.join(joins)}"
-                if conditions:
-                    sql += " WHERE " + " AND ".join(conditions)
-                sql += f" ORDER BY {order_by} LIMIT ?"
-                rows = connection.execute(sql, [*select_params, *params, limit + 1]).fetchall()
+                if broad_ranked:
+                    broad_conditions = [
+                        condition.replace("poi_fts.search_text", "p.search_text")
+                        for condition in conditions[:broad_condition_count]
+                    ]
+                    rows = self._search_broad_ranked(
+                        connection,
+                        conditions=broad_conditions,
+                        params=params[:broad_param_count],
+                        escaped_prefix=escaped,
+                        limit=limit,
+                        after=after,
+                    )
+                else:
+                    sql = f"SELECT p.id, p.feature_json, p.name_norm, p.priority{select_extra} FROM pois p {' '.join(joins)}"
+                    if conditions:
+                        sql += " WHERE " + " AND ".join(conditions)
+                    sql += f" ORDER BY {order_by} LIMIT ?"
+                    rows = connection.execute(sql, [*select_params, *params, limit + 1]).fetchall()
 
         has_more = len(rows) > limit
         page = rows[:limit]

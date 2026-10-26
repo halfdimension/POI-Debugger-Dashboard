@@ -130,7 +130,7 @@ def health() -> dict[str, Any]:
     return {
         "ok": True,
         "service": "valhalla-poi-debugger",
-        "phase": "4A",
+        "phase": "4B",
     }
 
 
@@ -280,9 +280,25 @@ def get_scenario(scenario_id: str) -> dict[str, Any]:
 
 
 @protected.get("/api/testcases")
-def list_testcases(request: Request, q: str = "", limit: int = 50, offset: int = 0) -> dict[str, Any]:
+def list_testcases(
+    request: Request, q: str = "", visibility: str | None = None, limit: int = 50,
+    offset: int = 0, sort: str = "updated_desc",
+) -> dict[str, Any]:
     try:
-        return testcases.list(_user_id(request), query=q, limit=limit, offset=offset)
+        return testcases.list(
+            _user_id(request), query=q, visibility=visibility, limit=limit, offset=offset, sort=sort
+        )
+    except TestcaseError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@protected.get("/api/testcases/shared")
+def list_shared_testcases(
+    request: Request, q: str = "", limit: int = 50, offset: int = 0,
+    sort: str = "updated_desc",
+) -> dict[str, Any]:
+    try:
+        return testcases.list_shared(_user_id(request), query=q, limit=limit, offset=offset, sort=sort)
     except TestcaseError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -290,7 +306,12 @@ def list_testcases(request: Request, q: str = "", limit: int = 50, offset: int =
 @protected.post("/api/testcases", status_code=201)
 def create_testcase(request: Request, payload: dict[str, Any]) -> dict[str, Any]:
     try:
-        return testcases.create(_user_id(request), payload)
+        user = request.state.current_user
+        return testcases.create(
+            _user_id(request), payload,
+            owner_display_name=str(user.get("display_name") or ""),
+            owner_username=str(user.get("username") or ""),
+        )
     except TestcaseError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -306,7 +327,12 @@ def get_testcase(testcase_id: str, request: Request) -> dict[str, Any]:
 @protected.patch("/api/testcases/{testcase_id}")
 def update_testcase(testcase_id: str, request: Request, payload: dict[str, Any]) -> dict[str, Any]:
     try:
-        return testcases.update(_user_id(request), testcase_id, payload)
+        user = request.state.current_user
+        return testcases.update(
+            _user_id(request), testcase_id, payload,
+            owner_display_name=str(user.get("display_name") or ""),
+            owner_username=str(user.get("username") or ""),
+        )
     except TestcaseNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except TestcaseConflictError as exc:

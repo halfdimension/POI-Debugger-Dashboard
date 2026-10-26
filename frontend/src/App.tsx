@@ -401,6 +401,9 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
   const [scenarioRegistry, setScenarioRegistry] = useState<ScenarioRegistryResponse | null>(null);
   const [scenarioName, setScenarioName] = useState('');
   const [scenarioNotes, setScenarioNotes] = useState('');
+  const [scenarioVisibility, setScenarioVisibility] = useState<'private' | 'shared'>('private');
+  const [scenarioMyQuery, setScenarioMyQuery] = useState('');
+  const [scenarioSharedQuery, setScenarioSharedQuery] = useState('');
   const [scenarioBusy, setScenarioBusy] = useState(false);
   const [scenarioMessage, setScenarioMessage] = useState('');
   const [scenarioExpectedText, setScenarioExpectedText] = useState('');
@@ -2507,9 +2510,32 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
   }
 
   async function refreshScenarios(message = '') {
-    const registry = await getScenarios();
+    const registry = await getScenarios({
+      myQuery: scenarioMyQuery,
+      myOffset: scenarioRegistry?.offset ?? 0,
+      sharedQuery: scenarioSharedQuery,
+      sharedOffset: scenarioRegistry?.shared_offset ?? 0,
+    });
     setScenarioRegistry(registry);
     if (message) setScenarioMessage(message);
+  }
+
+  async function browseScenarios(scope: 'mine' | 'shared', query: string, offset: number) {
+    setScenarioBusy(true);
+    setError('');
+    try {
+      const registry = await getScenarios({
+        myQuery: scope === 'mine' ? query : scenarioMyQuery,
+        myOffset: scope === 'mine' ? offset : scenarioRegistry?.offset ?? 0,
+        sharedQuery: scope === 'shared' ? query : scenarioSharedQuery,
+        sharedOffset: scope === 'shared' ? offset : scenarioRegistry?.shared_offset ?? 0,
+      });
+      setScenarioRegistry(registry);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setScenarioBusy(false);
+    }
   }
 
   function scenarioPoints(scenario: RouteScenario): { routeStart: LngLat; routeEnd: LngLat } {
@@ -2670,6 +2696,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
     try {
       const created = await createScenario({
         name: scenarioName.trim(),
+        visibility: scenarioVisibility,
         dataset: datasetId,
         request: {
           start: { lon: start[0], lat: start[1] },
@@ -2688,7 +2715,22 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
       setScenarioNotes('');
       setScenarioExpectedText('');
       setScenarioForbiddenText('');
+      setScenarioVisibility('private');
       await refreshScenarios(`Saved scenario ${created.name}.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setScenarioBusy(false);
+    }
+  }
+
+  async function changeScenarioVisibility(scenario: RouteScenario) {
+    const visibility = scenario.visibility === 'shared' ? 'private' : 'shared';
+    setScenarioBusy(true);
+    setError('');
+    try {
+      await updateScenario(scenario.id, { revision: scenario.revision, visibility });
+      await refreshScenarios(`${scenario.name} is now ${visibility}.`);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -3096,8 +3138,11 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
             end={end}
             scenarioName={scenarioName}
             scenarioNotes={scenarioNotes}
+            scenarioVisibility={scenarioVisibility}
             expectedText={scenarioExpectedText}
             forbiddenText={scenarioForbiddenText}
+            myQuery={scenarioMyQuery}
+            sharedQuery={scenarioSharedQuery}
             scenarioBusy={scenarioBusy}
             scenarioMessage={scenarioMessage}
             runAllBusy={runAllBusy}
@@ -3105,13 +3150,18 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
             runResults={scenarioRunResults}
             setScenarioName={setScenarioName}
             setScenarioNotes={setScenarioNotes}
+            setScenarioVisibility={setScenarioVisibility}
             setExpectedText={setScenarioExpectedText}
             setForbiddenText={setScenarioForbiddenText}
+            setMyQuery={setScenarioMyQuery}
+            setSharedQuery={setScenarioSharedQuery}
+            onBrowse={browseScenarios}
             onSave={saveCurrentScenario}
             onRunAll={runAllScenarios}
             onLoad={loadScenario}
             onRun={runSavedScenario}
             onEditExpectation={editScenarioExpectation}
+            onChangeVisibility={changeScenarioVisibility}
             onDelete={removeScenario}
           />
         </Sidebar>
@@ -3537,8 +3587,11 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
             end={end}
             scenarioName={scenarioName}
             scenarioNotes={scenarioNotes}
+            scenarioVisibility={scenarioVisibility}
             expectedText={scenarioExpectedText}
             forbiddenText={scenarioForbiddenText}
+            myQuery={scenarioMyQuery}
+            sharedQuery={scenarioSharedQuery}
             scenarioBusy={scenarioBusy}
             scenarioMessage={scenarioMessage}
             runAllBusy={runAllBusy}
@@ -3546,13 +3599,18 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
             runResults={scenarioRunResults}
             setScenarioName={setScenarioName}
             setScenarioNotes={setScenarioNotes}
+            setScenarioVisibility={setScenarioVisibility}
             setExpectedText={setScenarioExpectedText}
             setForbiddenText={setScenarioForbiddenText}
+            setMyQuery={setScenarioMyQuery}
+            setSharedQuery={setScenarioSharedQuery}
+            onBrowse={browseScenarios}
             onSave={saveCurrentScenario}
             onRunAll={runAllScenarios}
             onLoad={loadScenario}
             onRun={runSavedScenario}
             onEditExpectation={editScenarioExpectation}
+            onChangeVisibility={changeScenarioVisibility}
             onDelete={removeScenario}
           />
 

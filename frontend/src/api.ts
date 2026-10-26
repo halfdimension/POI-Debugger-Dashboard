@@ -92,16 +92,37 @@ export async function requestCompareRoute(payload: object, signal?: AbortSignal)
   return body;
 }
 
-export async function getScenarios(): Promise<import('./types').ScenarioRegistryResponse> {
-  const [testcaseResponse, legacyResponse] = await Promise.all([
-    apiFetch('/api/testcases?limit=100'), apiFetch('/api/scenarios'),
+export interface ScenarioBrowseOptions {
+  myQuery?: string;
+  myOffset?: number;
+  sharedQuery?: string;
+  sharedOffset?: number;
+  limit?: number;
+  sort?: 'updated_desc' | 'updated_asc' | 'created_desc' | 'created_asc';
+}
+
+export async function getScenarios(options: ScenarioBrowseOptions = {}): Promise<import('./types').ScenarioRegistryResponse> {
+  const limit = Math.min(100, Math.max(1, options.limit ?? 20));
+  const sort = options.sort ?? 'updated_desc';
+  const ownedParams = new URLSearchParams({ limit: String(limit), offset: String(options.myOffset ?? 0), sort });
+  const sharedParams = new URLSearchParams({ limit: String(limit), offset: String(options.sharedOffset ?? 0), sort });
+  if (options.myQuery?.trim()) ownedParams.set('q', options.myQuery.trim());
+  if (options.sharedQuery?.trim()) sharedParams.set('q', options.sharedQuery.trim());
+  const [testcaseResponse, legacyResponse, sharedResponse] = await Promise.all([
+    apiFetch(`/api/testcases?${ownedParams}`), apiFetch('/api/scenarios'),
+    apiFetch(`/api/testcases/shared?${sharedParams}`),
   ]);
   if (!testcaseResponse.ok) throw new Error(`Testcase request failed: ${testcaseResponse.status}`);
   if (!legacyResponse.ok) throw new Error(`Legacy scenario request failed: ${legacyResponse.status}`);
+  if (!sharedResponse.ok) throw new Error(`Shared testcase request failed: ${sharedResponse.status}`);
   const owned = await testcaseResponse.json();
   const legacy = await legacyResponse.json();
+  const shared = await sharedResponse.json();
   return {
     count: owned.total, total: owned.total, scenarios: owned.testcases,
+    limit: owned.limit, offset: owned.offset,
+    shared_scenarios: shared.testcases, shared_total: shared.total,
+    shared_limit: shared.limit, shared_offset: shared.offset,
     errors: legacy.errors ?? [], legacy_scenarios: legacy.scenarios ?? [],
   };
 }

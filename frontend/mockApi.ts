@@ -86,10 +86,28 @@ const INITIAL_SCENARIOS = [
     },
     description: 'Synthetic happy-path route.',
     visibility: 'private',
+    is_owner: true,
     revision: 1,
     expectation: { instruction_contains: 'Clock Tower Cafe' },
     created_at: '2026-01-01T00:00:00Z',
     updated_at: '2026-01-01T00:00:00Z',
+  },
+  {
+    id: 'mock-shared-market-route',
+    name: 'Shared market route',
+    dataset: 'mock-demo',
+    request: {
+      start: { lon: 77.21862, lat: 28.63274 },
+      end: { lon: 77.22414, lat: 28.62915 },
+      costing: 'auto',
+    },
+    description: 'A shared testcase from another debugger user.',
+    visibility: 'shared',
+    is_owner: false,
+    owner: { display_name: 'Route QA', username: 'route.qa' },
+    revision: 1,
+    created_at: '2026-01-02T00:00:00Z',
+    updated_at: '2026-01-02T00:00:00Z',
   },
 ];
 
@@ -415,7 +433,19 @@ export async function handleMockApi(method: string, pathname: string, body: Json
     return ok({ type: 'FeatureCollection', dataset_id: datasetId, features, returned: features.length, has_more: hasMore, next_cursor: hasMore ? JSON.stringify({ signature, offset: offset + limit }) : null });
   }
   if (method === 'GET' && pathname === '/api/scenarios') return ok({ directory: '[mock]', count: 0, scenarios: [], errors: [], source: 'legacy', read_only: true });
-  if (method === 'GET' && pathname === '/api/testcases') return ok({ total: state.scenarios.length, limit: 100, offset: 0, testcases: state.scenarios });
+  if (method === 'GET' && (pathname === '/api/testcases' || pathname === '/api/testcases/shared')) {
+    const limit = Math.min(100, Math.max(1, Number(requestUrl.searchParams.get('limit') ?? 20)));
+    const offset = Math.max(0, Number(requestUrl.searchParams.get('offset') ?? 0));
+    const query = (requestUrl.searchParams.get('q') ?? '').trim().toLowerCase();
+    const sharedOnly = pathname.endsWith('/shared');
+    const matches = state.scenarios.filter((scenario) => {
+      const owned = scenario.is_owner !== false;
+      const visibility = String(scenario.visibility ?? 'private');
+      const text = `${String(scenario.name ?? '')} ${String(scenario.description ?? '')}`.toLowerCase();
+      return (sharedOnly ? visibility === 'shared' : owned) && (!query || text.includes(query));
+    });
+    return ok({ total: matches.length, limit, offset, testcases: matches.slice(offset, offset + limit) });
+  }
   if (method === 'GET' && (pathname === '/api/valhalla/status' || pathname === '/api/osrm/status')) return ok({ ok: true, url: `mock://${pathname.includes('valhalla') ? 'valhalla' : 'osrm'}/status`, response: { version: 'synthetic' } });
   if (method === 'POST' && pathname === '/api/route/compare') return ok(routeComparison(body));
   if (method === 'POST' && pathname === '/api/route') return ok((routeComparison(body) as any).valhalla.response);
@@ -433,7 +463,7 @@ export async function handleMockApi(method: string, pathname: string, body: Json
   }
 
   if (method === 'POST' && pathname === '/api/testcases') {
-    const scenario = { ...body, id: `mock-${Date.now()}`, visibility: 'private', revision: 1, created_at: new Date().toISOString(), updated_at: new Date().toISOString() };
+    const scenario = { ...body, id: `mock-${Date.now()}`, visibility: body.visibility === 'shared' ? 'shared' : 'private', is_owner: true, revision: 1, created_at: new Date().toISOString(), updated_at: new Date().toISOString() };
     state.scenarios.push(scenario);
     return ok(scenario, 201);
   }

@@ -381,7 +381,12 @@ export interface RouteScenario {
   notes?: string;
   description?: string;
   expectation?: ScenarioExpectation;
-  visibility?: 'private';
+  visibility?: 'private' | 'shared';
+  is_owner?: boolean;
+  owner?: {
+    display_name: string;
+    username?: string | null;
+  };
   revision?: number;
   created_at?: string;
   updated_at?: string;
@@ -393,5 +398,11 @@ export interface ScenarioRegistryResponse {
   scenarios: RouteScenario[];
   errors: string[];
   total?: number;
+  limit?: number;
+  offset?: number;
+  shared_scenarios?: RouteScenario[];
+  shared_total?: number;
+  shared_limit?: number;
+  shared_offset?: number;
   legacy_scenarios?: RouteScenario[];
 }

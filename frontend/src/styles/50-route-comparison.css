@@ -1,0 +1,501 @@
+/* ===== Dual-engine Valhalla + OSRM comparison ===== */
+
+.engine-statuses {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.legend-route {
+  display: inline-block;
+  width: 18px;
+  height: 4px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+}
+
+.legend-route.valhalla {
+  background: #2563eb;
+}
+
+.legend-route.osrm {
+  height: 5px;
+  border: 0;
+  border-radius: 999px;
+  background: #dc2626;
+}
+
+.osrm-maneuvers-card {
+  border-top: 3px solid #dc2626;
+}
+
+.osrm-maneuver-list li {
+  padding: 0;
+}
+
+.osrm-maneuver-list li.selected {
+  background: #fef2f2;
+  box-shadow: inset 3px 0 0 #dc2626;
+}
+
+.osrm-step {
+  width: 100%;
+  display: grid;
+  gap: 4px;
+  border: 0;
+  background: transparent;
+  padding: 8px 6px;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+
+.osrm-step:hover {
+  background: #fff7f7;
+}
+
+.osrm-step > strong {
+  color: #111827;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.osrm-step > small {
+  color: #8993a0;
+  font-size: 10px;
+}
+
+.osrm-step > code {
+  width: fit-content;
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: #fef2f2;
+  color: #991b1b;
+  font-size: 9px;
+}
+
+.narration-mini-badge.osrm {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+@media (max-width: 700px) {
+  .engine-statuses {
+    align-items: flex-end;
+    flex-direction: column;
+    gap: 4px;
+  }
+}
+
+/* ===== Route comparison UX ===== */
+
+.map-toolbar .toolbar-route-button {
+  border-color: #111827;
+  background: #111827;
+  color: white;
+  font-weight: 700;
+}
+
+.map-toolbar .toolbar-route-button:hover:not(:disabled) {
+  background: #1f2937;
+}
+
+.map-toolbar .toolbar-route-button:disabled {
+  opacity: .42;
+  cursor: default;
+}
+
+.route-comparison-overlay {
+  position: absolute;
+  top: 60px;
+  right: 58px;
+  z-index: 4;
+  width: 315px;
+  overflow: hidden;
+  border: 1px solid rgba(15, 23, 42, .18);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, .96);
+  box-shadow: 0 5px 18px rgba(15, 23, 42, .16);
+  backdrop-filter: blur(5px);
+}
+
+.route-comparison-heading {
+  position: relative;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.route-comparison-heading strong {
+  color: #0f172a;
+  font-size: 11px;
+}
+
+.route-comparison-heading span {
+  padding-right: 20px;
+  color: #64748b;
+  font-size: 8px;
+}
+
+.route-comparison-toggle {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  width: 16px;
+  height: 16px;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  background: white;
+  padding: 0;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 12px;
+  transform: translateY(-50%);
+}
+
+.route-comparison-toggle:hover {
+  border-color: #94a3b8;
+  background: #f8fafc;
+}
+
+.route-comparison-overlay.collapsed .route-comparison-heading {
+  border-bottom: 0;
+}
+
+.route-comparison-overlay.collapsed .route-comparison-heading span,
+.route-comparison-overlay.collapsed .route-comparison-body {
+  display: none;
+}
+
+.route-comparison-engines {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+}
+
+.route-engine-summary {
+  display: grid;
+  gap: 4px;
+  padding: 9px 10px;
+}
+
+.route-engine-summary + .route-engine-summary {
+  border-left: 1px solid #e2e8f0;
+}
+
+.route-engine-summary > strong {
+  font-size: 15px;
+}
+
+.route-engine-summary > small {
+  color: #64748b;
+  font-size: 8px;
+}
+
+.route-engine-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 9px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: .03em;
+}
+
+.route-engine-name i {
+  display: inline-block;
+  width: 19px;
+  height: 4px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+}
+
+.route-engine-summary.valhalla .route-engine-name i {
+  background: #2563eb;
+}
+
+.route-engine-summary.osrm .route-engine-name i {
+  height: 0;
+  border-top: 3px dashed #dc2626;
+  border-radius: 0;
+}
+
+.route-engine-summary.valhalla .route-engine-name span {
+  color: #1d4ed8;
+}
+
+.route-engine-summary.osrm .route-engine-name span {
+  color: #b91c1c;
+}
+
+.route-comparison-deltas {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  border-top: 1px solid #e2e8f0;
+  background: #f8fafc;
+}
+
+.route-comparison-deltas > div {
+  display: grid;
+  gap: 3px;
+  padding: 8px 10px;
+}
+
+.route-comparison-deltas > div + div {
+  border-left: 1px solid #e2e8f0;
+}
+
+.route-comparison-deltas span {
+  color: #64748b;
+  font-size: 8px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+
+.route-comparison-deltas strong {
+  color: #0f172a;
+  font-size: 10px;
+}
+
+.route-comparison-note {
+  display: flex;
+  gap: 14px;
+  padding: 6px 10px;
+  border-top: 1px solid #e2e8f0;
+  color: #64748b;
+  font-size: 8px;
+}
+
+.route-comparison-note span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.comparison-line {
+  display: inline-block;
+  width: 17px;
+  height: 3px;
+}
+
+.comparison-line.valhalla {
+  background: #2563eb;
+}
+
+.comparison-line.osrm {
+  height: 4px;
+  background: #dc2626;
+}
+
+@media (max-width: 1100px) {
+  .route-comparison-overlay {
+    width: 280px;
+  }
+
+  .map-toolbar span {
+    display: none;
+  }
+}
+
+@media (max-width: 760px) {
+  .route-comparison-overlay {
+    top: 108px;
+    right: 12px;
+    width: min(290px, calc(100% - 24px));
+  }
+
+  .map-toolbar {
+    flex-wrap: wrap;
+  }
+}
+
+/* ===== Route visibility comparison controls ===== */
+
+.route-view-switcher {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 4px;
+  padding: 7px 9px;
+  border-top: 1px solid #e2e8f0;
+  background: #ffffff;
+}
+
+.route-view-switcher button {
+  border: 1px solid #cbd5e1;
+  border-radius: 5px;
+  background: #f8fafc;
+  padding: 5px 6px;
+  color: #475569;
+  font-size: 8px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.route-view-switcher button:hover {
+  background: #f1f5f9;
+}
+
+.route-view-switcher button.active {
+  border-color: #0f172a;
+  background: #0f172a;
+  color: #ffffff;
+}
+
+.route-view-switcher button.active.valhalla {
+  border-color: #2563eb;
+  background: #2563eb;
+}
+
+.route-view-switcher button.active.osrm {
+  border-color: #dc2626;
+  background: #dc2626;
+}
+
+.route-comparison-note {
+  flex-wrap: wrap;
+}
+
+.route-comparison-note .overlap-note {
+  margin-left: auto;
+  color: #334155;
+  font-weight: 700;
+}
+
+/* ===== Dual-engine route POI comparison ===== */
+
+.route-narration-overlay.dual-engine-pois {
+  display: flex;
+  flex-direction: column;
+  width: min(340px, calc(100% - 80px));
+  max-height: 390px;
+  overflow: hidden;
+}
+
+.route-poi-engine-sections {
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.route-narration-overlay.dual-engine-pois.collapsed .route-narration-overlay-heading {
+  border-bottom: 0;
+}
+
+.route-narration-overlay.dual-engine-pois.collapsed .route-narration-overlay-heading > span,
+.route-narration-overlay.dual-engine-pois.collapsed .route-poi-engine-sections {
+  display: none;
+}
+
+.route-poi-engine-section {
+  border-top: 1px solid #e2e8f0;
+}
+
+.route-poi-engine-section:first-of-type {
+  border-top: 0;
+}
+
+.route-poi-engine-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 9px 4px;
+}
+
+.route-poi-engine-heading > span:last-child {
+  color: #64748b;
+  font-size: 8px;
+}
+
+.route-poi-engine-badge {
+  border-radius: 999px;
+  padding: 3px 7px;
+  color: white;
+  font-size: 8px;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+
+.route-poi-engine-badge.valhalla {
+  background: #2563eb;
+}
+
+.route-poi-engine-badge.osrm {
+  background: #dc2626;
+}
+
+.route-narration-overlay-list.engine-list {
+  max-height: none;
+  padding-top: 1px;
+}
+
+.route-narration-overlay-item.valhalla-engine,
+.route-narration-overlay-item.osrm-engine {
+  grid-template-columns: 12px minmax(0, 1fr) auto;
+}
+
+.route-narration-overlay-item.valhalla-engine > i {
+  background: #16a34a;
+  box-shadow: 0 0 0 3px rgba(34, 197, 94, .16);
+}
+
+.route-narration-overlay-item.osrm-engine > i {
+  background: #dc2626;
+  box-shadow: 0 0 0 3px rgba(220, 38, 38, .14);
+}
+
+.route-narration-overlay-item.valhalla-engine:hover {
+  background: #eff6ff;
+}
+
+.route-narration-overlay-item.osrm-engine:hover {
+  background: #fef2f2;
+}
+
+.engine-match-badge {
+  min-width: 25px;
+  border-radius: 999px;
+  padding: 2px 5px;
+  text-align: center;
+  font-size: 7px;
+  font-weight: 900;
+}
+
+.engine-match-badge.valhalla {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.engine-match-badge.osrm {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+.engine-match-badge.both {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.route-narration-empty.compact {
+  padding: 6px 9px 8px;
+}
+
+@media (max-width: 760px) {
+  .route-narration-overlay.dual-engine-pois {
+    max-height: 300px;
+  }
+}
+
+/*
+ * MapLibre needs a resize event when its CSS container changes dimensions.
+ * The browser resize observer usually catches this, but the transition keeps
+ * the layout smooth.
+ */
+.map {
+  transition: width .20s ease;
+}
+

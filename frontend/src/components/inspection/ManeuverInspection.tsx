@@ -11,6 +11,8 @@ export interface ManeuverInspectionProps {
   selectedManeuverIndex: number | null;
   selectedOsrmStepIndex: number | null;
   selectedManeuver: ManeuverView | null;
+  selectedOsrmStep?: OsrmStepView | null;
+  compact?: boolean;
   narrationEvidenceByManeuver: Map<number, NarrationPoiEvidence[]>;
   osrmPoiNamesByStep: Map<number, string[]>;
   primaryNarrationEvidence: NarrationPoiEvidence | null;
@@ -27,7 +29,7 @@ export interface ManeuverInspectionProps {
 
 export function ManeuverInspection({
   route, osrmRoute, maneuverViews, osrmStepViews,
-  selectedManeuverIndex, selectedOsrmStepIndex, selectedManeuver,
+  selectedManeuverIndex, selectedOsrmStepIndex, selectedManeuver, selectedOsrmStep = null, compact = false,
   narrationEvidenceByManeuver, osrmPoiNamesByStep,
   primaryNarrationEvidence, selectedNarrationEvidence, nearbyPois,
   diagnosticStatus, diagnosticMessage,
@@ -39,7 +41,7 @@ export function ManeuverInspection({
 }: ManeuverInspectionProps) {
   return (
     <>
-      <section className="card maneuvers-card">
+      {!compact && <section className="card maneuvers-card">
         <div className="maneuver-heading">
           <h2>Odin Maneuvers</h2>
           {route?.trip?.summary && (
@@ -74,9 +76,9 @@ export function ManeuverInspection({
             ))}
           </ol>
         )}
-      </section>
+      </section>}
   
-      <section className="card maneuvers-card osrm-maneuvers-card">
+      {!compact && <section className="card maneuvers-card osrm-maneuvers-card">
         <div className="maneuver-heading">
           <h2>OSRM Maneuvers</h2>
           {osrmRoute?.routes?.[0] && (
@@ -140,22 +142,29 @@ export function ManeuverInspection({
             })}
           </ol>
         )}
-      </section>
+      </section>}
   
       <section className="card inspection-card">
         <div className="maneuver-heading">
           <h2>Landmark Details</h2>
           <span>{NEARBY_POI_RADIUS_M} m radius</span>
         </div>
-        {!selectedManeuver ? (
-          <div className="empty-state">Click an Odin maneuver or a black maneuver marker on the map.</div>
+        {!selectedManeuver && !selectedOsrmStep ? (
+          <div className="empty-state">Select a Valhalla maneuver or OSRM step on the map or in the analysis workspace.</div>
+        ) : !selectedManeuver && selectedOsrmStep ? (
+          <div className="selected-maneuver-summary selected-osrm-summary">
+            <strong>OSRM step #{selectedOsrmStep.index + 1}</strong>
+            <span>{osrmInstructionText(selectedOsrmStep.step)}</span>
+            <code>{selectedOsrmStep.step.maneuver?.type ?? 'maneuver'}{selectedOsrmStep.step.maneuver?.modifier ? ` / ${selectedOsrmStep.step.maneuver.modifier}` : ''}</code>
+            <small>{typeof selectedOsrmStep.step.distance === 'number' ? `${selectedOsrmStep.step.distance.toFixed(1)} m` : ''}{typeof selectedOsrmStep.step.duration === 'number' ? ` · ${Math.round(selectedOsrmStep.step.duration)} s` : ''}</small>
+          </div>
         ) : (
           <>
             <div className="selected-maneuver-summary">
-              <strong>#{selectedManeuver.index + 1} {selectedManeuver.maneuver.instruction ?? 'Unnamed maneuver'}</strong>
+              <strong>#{selectedManeuver!.index + 1} {selectedManeuver!.maneuver.instruction ?? 'Unnamed maneuver'}</strong>
               <span>
-                {selectedManeuver.coordinate
-                  ? `${selectedManeuver.coordinate[1].toFixed(6)}, ${selectedManeuver.coordinate[0].toFixed(6)}`
+                {selectedManeuver!.coordinate
+                  ? `${selectedManeuver!.coordinate![1].toFixed(6)}, ${selectedManeuver!.coordinate![0].toFixed(6)}`
                   : 'No begin_shape_index coordinate available'}
               </span>
             </div>

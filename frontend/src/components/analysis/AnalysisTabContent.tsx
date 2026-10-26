@@ -1,5 +1,5 @@
-import type { ScenarioRunResult } from '../../scenarioAssertions';
-import type { CandidateAnalysisManeuver, OsrmRouteResponse, OsrmStep, ScenarioRegistryResponse, ValhallaRouteResponse } from '../../types';
+import type { ReactNode } from 'react';
+import type { CandidateAnalysisManeuver, OsrmRouteResponse, OsrmStep, ValhallaRouteResponse } from '../../types';
 import type { AnalysisTab } from '../../layoutState';
 import type { RouteComparisonMetrics } from '../route/RouteComparisonSummary';
 import type { ManeuverView, OsrmStepView } from '../inspection/viewModels';
@@ -20,8 +20,7 @@ export interface AnalysisTabContentProps {
   selectedValhallaAnalysis: CandidateAnalysisManeuver | null;
   selectedOsrmAnalysis: CandidateAnalysisManeuver | null;
   showCandidatesOnMap: boolean;
-  scenarioRegistry: ScenarioRegistryResponse | null;
-  scenarioRunResults: Record<string, ScenarioRunResult>;
+  testcaseWorkspace: ReactNode;
   getOsrmInstruction: (step: OsrmStep) => string;
   onFocusManeuver: (item: ManeuverView) => void;
   onFocusOsrmStep: (item: OsrmStepView) => void;
@@ -39,7 +38,7 @@ export function AnalysisTabContent({
   selectedManeuver, selectedOsrmStep: selectedOsrmStepView,
   selectedValhallaAnalysis: selectedValhallaCandidateAnalysis,
   selectedOsrmAnalysis: selectedOsrmCandidateAnalysis,
-  showCandidatesOnMap: showCandidateMap, scenarioRegistry, scenarioRunResults,
+  showCandidatesOnMap: showCandidateMap, testcaseWorkspace,
   getOsrmInstruction: osrmInstructionText, onFocusManeuver: focusManeuver,
   onFocusOsrmStep: focusOsrmStep, onToggleCandidatesOnMap,
 }: AnalysisTabContentProps) {
@@ -71,9 +70,7 @@ export function AnalysisTabContent({
       )}
   
       {layout.activeAnalysisTab === 'scenarios' && (
-        <div className="analysis-scenarios">
-          {(scenarioRegistry?.scenarios ?? []).length === 0 ? <div className="analysis-empty">No saved scenarios. Create one from the left panel.</div> : (scenarioRegistry?.scenarios ?? []).map((scenario) => { const result = scenarioRunResults[scenario.id]; return <div className="analysis-scenario-row" key={scenario.id}><span><strong>{scenario.name}</strong><small>{scenario.dataset} · {scenario.request.costing}</small></span><code>{scenario.request.start.lon.toFixed(5)}, {scenario.request.start.lat.toFixed(5)} → {scenario.request.end.lon.toFixed(5)}, {scenario.request.end.lat.toFixed(5)}</code><b className={result ? `scenario-result-badge ${result.status}` : 'scenario-result-badge'}>{result ? result.status.toUpperCase() : 'NOT RUN'}</b></div>; })}
-        </div>
+        <div className="analysis-testcases">{testcaseWorkspace}</div>
       )}
   
       {layout.activeAnalysisTab === 'raw' && (

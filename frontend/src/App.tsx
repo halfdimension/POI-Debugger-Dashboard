@@ -10,12 +10,9 @@ import { loadInitialDashboard } from './initialization';
 import { AuthApiError, developmentLogin, getAuthConfig, getCurrentSession, logout, passwordLogin, registerAccount, setAuthSession, type AuthConfig, type AuthSession } from './auth';
 import { AnalysisWorkspace, Sidebar } from './components/DashboardLayout';
 import { AdminConsole } from './components/admin/AdminConsole';
-import { CandidateAnalysisPanel } from './components/analysis/CandidateAnalysisPanel';
-import { RawResponseCards } from './components/analysis/RawResponseInspection';
 import { AnalysisTabContent } from './components/analysis/AnalysisTabContent';
 import { CompactDatasetSelector } from './components/datasets/DatasetSelector';
 import { CompactPoiExplorer } from './components/datasets/PoiExplorer';
-import { DatasetPoiExplorerPanel } from './components/datasets/DatasetPoiExplorerPanel';
 import type { ManeuverView, NarrationPoiEvidence, NearbyPoi, OsrmRouteNarrationPoi, OsrmStepView, RouteNarrationPoi } from './components/inspection/viewModels';
 import { ManeuverInspection } from './components/inspection/ManeuverInspection';
 import { SelectedPoiDetails } from './components/inspection/SelectedPoiDetails';
@@ -35,7 +32,7 @@ import {
 import { RouteSetupControls } from './components/route/RouteSetupControls';
 import { RouteComparisonSummary } from './components/route/RouteComparisonSummary';
 import { SavedScenarioControls } from './components/scenarios/SavedScenarioControls';
-import { ScenarioManagementPanel } from './components/scenarios/ScenarioManagementPanel';
+import { TestcaseManagementSections, type TestcaseTab } from './components/scenarios/TestcaseManagementSections';
 import {
   initialDashboardLayout,
   selectAnalysisTab,
@@ -66,22 +63,12 @@ function visibleMapBounds(map: MapLibreMap): PoiBounds | null {
   return [west, Math.max(-90, bounds.getSouth()), east, Math.min(90, bounds.getNorth())];
 }
 
-function fmtCoord(value: number | undefined): string {
-  return typeof value === 'number' ? value.toFixed(6) : '';
-}
-
 function fmtSigned(value: number | null, digits = 2): string {
   if (value === null || !Number.isFinite(value)) return '—';
   return `${value >= 0 ? '+' : ''}${value.toFixed(digits)}`;
 }
 
 
-
-function basename(path?: string): string {
-  if (!path) return 'not configured';
-  const pieces = path.split('/');
-  return pieces[pieces.length - 1] || path;
-}
 
 function escapeHtml(value: unknown): string {
   return String(value ?? '')
@@ -380,9 +367,11 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
   const [valhallaStatus, setValhallaStatus] = useState<'checking' | 'up' | 'down'>('checking');
   const [osrmStatus, setOsrmStatus] = useState<'checking' | 'up' | 'down'>('checking');
   const [routeView, setRouteView] = useState<'both' | 'valhalla' | 'osrm'>('both');
-  const [routeComparisonCollapsed, setRouteComparisonCollapsed] = useState(false);
-  const [routePoiCardCollapsed, setRoutePoiCardCollapsed] = useState(false);
+  const [routeComparisonCollapsed, setRouteComparisonCollapsed] = useState(true);
+  const [routePoiCardCollapsed, setRoutePoiCardCollapsed] = useState(true);
   const [layout, setLayout] = useState(initialDashboardLayout);
+  const [inspectorTab, setInspectorTab] = useState<'poi' | 'route' | 'maneuver'>('route');
+  const [testcaseTab, setTestcaseTab] = useState<TestcaseTab>('mine');
   const [map3D, setMap3D] = useState(false);
   const [showCandidateMap, setShowCandidateMap] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -430,6 +419,16 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
     setLayout((current) => togglePanel(current, panel));
   };
 
+  const openInspector = (tab: 'poi' | 'route' | 'maneuver') => {
+    setInspectorTab(tab);
+    setLayout((current) => ({ ...current, rightCollapsed: false }));
+  };
+
+  const openTestcases = (tab: TestcaseTab) => {
+    setTestcaseTab(tab);
+    setLayout((current) => selectAnalysisTab(current, 'scenarios'));
+  };
+
   useEffect(() => {
     const timer = window.setTimeout(() => setDebouncedPoiSearch(poiSearch), 300);
     return () => window.clearTimeout(timer);
@@ -463,11 +462,6 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
       setAdvancedConditions([]);
     },
   };
-
-  const fullTypeStats = useMemo(() => {
-    return Object.entries(activeDataset?.stats?.landmark_types ?? {})
-      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
-  }, [activeDataset]);
 
   const filteredPoiFeatures = useMemo<GeoJSON.Feature<GeoJSON.Point>[]>(() => {
     return pois.features.map(pointFeature).filter((feature): feature is GeoJSON.Feature<GeoJSON.Point> => feature !== null);
@@ -1711,6 +1705,8 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
         const feature = rawFeature as GeoJSON.Feature<GeoJSON.Point>;
         const coordinates = feature.geometry.coordinates.slice() as LngLat;
         setSelectedPoi(feature);
+        setInspectorTab('poi');
+        setLayout((current) => ({ ...current, rightCollapsed: false }));
         openPoiPopup(
           map,
           coordinates,
@@ -1738,6 +1734,8 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
         const maneuverIndex = Number(feature.properties?._primary_maneuver_index);
         if (Number.isFinite(maneuverIndex)) {
           setSelectedManeuverIndex(maneuverIndex);
+          setInspectorTab('maneuver');
+          setLayout((current) => ({ ...current, rightCollapsed: false }));
           window.setTimeout(() => {
             document.querySelector(`[data-maneuver-index="${maneuverIndex}"]`)
               ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -1745,6 +1743,8 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
         }
 
         setSelectedPoi(feature);
+        setInspectorTab('poi');
+        setLayout((current) => ({ ...current, rightCollapsed: false }));
         map.flyTo({ center: coordinates, zoom: Math.max(map.getZoom(), 17), essential: true });
         openPoiPopup(
           map,
@@ -1836,7 +1836,12 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
         if (!feature || feature.geometry.type !== 'Point') return;
         const index = Number(feature.properties?.index);
         const coordinates = feature.geometry.coordinates.slice() as LngLat;
-        if (Number.isFinite(index)) setSelectedManeuverIndex(index);
+        if (Number.isFinite(index)) {
+          setSelectedManeuverIndex(index);
+          setSelectedOsrmStepIndex(null);
+          setInspectorTab('maneuver');
+          setLayout((current) => ({ ...current, rightCollapsed: false }));
+        }
         closeActivePoiPopup();
         map.flyTo({ center: coordinates, zoom: Math.max(map.getZoom(), 17), essential: true });
       });
@@ -2506,6 +2511,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
       setError('Set both start and end coordinates first.');
       return;
     }
+    openInspector('route');
     await executeRoute(start, end, 'auto');
   }
 
@@ -2862,6 +2868,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
   function focusManeuver(item: ManeuverView) {
     setSelectedManeuverIndex(item.index);
     setSelectedOsrmStepIndex(null);
+    openInspector('maneuver');
 
     if (!item.coordinate || !mapRef.current) return;
 
@@ -2875,6 +2882,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
   function focusOsrmStep(item: OsrmStepView) {
     setSelectedOsrmStepIndex(item.index);
     setSelectedManeuverIndex(null);
+    openInspector('maneuver');
     closeActivePoiPopup();
 
     if (!item.coordinate || !mapRef.current) return;
@@ -2888,6 +2896,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
 
   function focusPoiFeature(feature: GeoJSON.Feature<GeoJSON.Point>, debugDistanceM?: number) {
     setSelectedPoi(feature);
+    openInspector('poi');
 
     const map = mapRef.current;
     if (!map) return;
@@ -3043,31 +3052,6 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
           {busy ? 'Running both engines…' : 'Run route comparison'}
         </button>}
 
-        {workspaceView === 'debugger' && <div className="toolbar-cluster" aria-label="Map view controls">
-          <label className="toolbar-select">
-            <span>Basemap</span>
-            <select
-              value={basemap}
-              onChange={(event) => {
-                const next = event.target.value as Basemap;
-                basemapRef.current = next;
-                setBasemap(next);
-                const map = mapRef.current;
-                if (map?.getLayer('mapmyindia-raster')) {
-                  map.setLayoutProperty('mapmyindia-raster', 'visibility', next === 'mapmyindia' ? 'visible' : 'none');
-                }
-              }}
-            >
-              <option value="mapmyindia">MapmyIndia</option>
-              <option value="openfreemap">OpenFreeMap</option>
-            </select>
-          </label>
-          <div className="toolbar-segmented" role="group" aria-label="Map dimension">
-            <button className={!map3D ? 'is-active' : ''} aria-pressed={!map3D} onClick={() => set3DView(false)}>2D</button>
-            <button className={map3D ? 'is-active' : ''} aria-pressed={map3D} onClick={() => set3DView(true)}>3D</button>
-          </div>
-        </div>}
-
         {workspaceView === 'debugger' && <div className="engine-statuses" aria-label="Routing engine status">
           {__VPD_MOCK_API__ && <div className="mock-mode-badge" title="Responses are synthetic and provided by the Vite development server">Mock Data / Development Mode</div>}
           <div className={`status-pill ${valhallaStatus}`}><i />Valhalla</div>
@@ -3131,38 +3115,10 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
           />
 
           <SavedScenarioControls
-            registry={scenarioRegistry}
-            datasetRegistry={datasetRegistry}
-            config={config}
-            start={start}
-            end={end}
-            scenarioName={scenarioName}
-            scenarioNotes={scenarioNotes}
-            scenarioVisibility={scenarioVisibility}
-            expectedText={scenarioExpectedText}
-            forbiddenText={scenarioForbiddenText}
-            myQuery={scenarioMyQuery}
-            sharedQuery={scenarioSharedQuery}
-            scenarioBusy={scenarioBusy}
-            scenarioMessage={scenarioMessage}
-            runAllBusy={runAllBusy}
-            routeBusy={busy}
-            runResults={scenarioRunResults}
-            setScenarioName={setScenarioName}
-            setScenarioNotes={setScenarioNotes}
-            setScenarioVisibility={setScenarioVisibility}
-            setExpectedText={setScenarioExpectedText}
-            setForbiddenText={setScenarioForbiddenText}
-            setMyQuery={setScenarioMyQuery}
-            setSharedQuery={setScenarioSharedQuery}
-            onBrowse={browseScenarios}
-            onSave={saveCurrentScenario}
-            onRunAll={runAllScenarios}
-            onLoad={loadScenario}
-            onRun={runSavedScenario}
-            onEditExpectation={editScenarioExpectation}
-            onChangeVisibility={changeScenarioVisibility}
-            onDelete={removeScenario}
+            mineCount={scenarioRegistry?.total ?? 0}
+            sharedCount={scenarioRegistry?.shared_total ?? 0}
+            legacyCount={scenarioRegistry?.legacy_scenarios?.length ?? 0}
+            onOpen={openTestcases}
           />
         </Sidebar>
 
@@ -3344,15 +3300,17 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
             </div>
           )}
 
-          <div className="landmark-map-legend">
-            <div className="landmark-map-legend-title">Map</div>
-            <span><i className="legend-route valhalla" />Valhalla route</span>
-            <span><i className="legend-route osrm" />OSRM route / casing</span>
-            <span><i className="legend-dot source" />Source POI</span>
-            <span><i className="legend-dot strong" />POI in Valhalla/Odin instruction</span>
-            <span><i className="legend-dot selected" />Selected POI</span>
-            <span><i className="legend-inspection-line" />POI ↔ turn</span>
-          </div>
+          <details className="landmark-map-legend">
+            <summary className="landmark-map-legend-title">Map legend</summary>
+            <div className="landmark-map-legend__items">
+              <span><i className="legend-route valhalla" />Valhalla route</span>
+              <span><i className="legend-route osrm" />OSRM route / casing</span>
+              <span><i className="legend-dot source" />Source POI</span>
+              <span><i className="legend-dot strong" />POI in Valhalla/Odin instruction</span>
+              <span><i className="legend-dot selected" />Selected POI</span>
+              <span><i className="legend-inspection-line" />POI ↔ turn</span>
+            </div>
+          </details>
 
           {(route || osrmRoute) && (
             <div className={`route-narration-overlay dual-engine-pois ${routePoiCardCollapsed ? 'collapsed' : ''}`}>
@@ -3488,20 +3446,12 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
 
         <Sidebar
           side="right"
-          label="Route inspection"
+          label="Context inspector"
           collapsed={layout.rightCollapsed}
           onToggle={() => toggleLayoutPanel('right')}
         >
-
-          <RouteComparisonSummary
-            hasRoute={Boolean(route || osrmRoute)}
-            comparison={routeComparison}
-            maneuverCount={maneuverViews.length}
-            osrmStepCount={osrmStepViews.length}
-            onOpenComparison={() => setLayout((current) => selectAnalysisTab(current, 'comparison'))}
-          />
-          <section className="card basemap-card">
-            <label htmlFor="basemap-select">Basemap</label>
+          <section className="inspector-map-controls" aria-label="Map display controls">
+            <label htmlFor="basemap-select"><span>Basemap</span>
             <select
               id="basemap-select"
               value={basemap}
@@ -3525,96 +3475,43 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
               <option value="mapmyindia">MapmyIndia</option>
               <option value="openfreemap">OpenFreeMap</option>
             </select>
-          </section>
-          <DatasetPoiExplorerPanel
-            activeDataset={activeDataset}
-            datasetRegistry={datasetRegistry}
-            datasetBusy={datasetBusy}
-            datasetMessage={datasetMessage}
-            config={config}
-            filteredPoiFeatures={filteredPoiFeatures}
-            searchResults={searchResults}
-            availablePoiTypes={availablePoiTypes}
-            fullTypeStats={fullTypeStats}
-            poiSearch={poiSearch}
-            advancedFilters={advancedFilters}
-            showPois={showPois}
-            searchLoading={searchState.loading}
-            searchLoadingMore={searchState.loadingMore}
-            searchError={searchState.error}
-            searchHasMore={searchResponse?.has_more === true}
-            onChangeDataset={changeDataset}
-            onReloadDataset={reloadActiveDataset}
-            onSearchChange={setPoiSearch}
-            onShowPoisChange={setShowPois}
-            onResetFilters={resetPoiFilters}
-            onFocusPoi={focusPoiFeature}
-            onLoadMore={loadMoreSearchResults}
-            onRetrySearch={() => setSearchRetry((value) => value + 1)}
-          />
-
-          <section className="card legacy-configuration">
-            <h2>Configuration</h2>
-            <div className="kv"><span>Valhalla</span><code>{config.valhalla.service_url}</code></div>
-            <div className="kv"><span>OSRM</span><code>{config.osrm.service_url}</code></div>
-            <div className="kv"><span>Engine</span><code title={config.engine.root}>{basename(config.engine.root)}</code></div>
-            <div className="kv"><span>Dataset</span><code>{datasetRegistry?.active_dataset ?? config?.active_dataset ?? 'default'}</code></div>
-          </section>
-
-          <section className="card legacy-route-request">
-            <h2>Route Request</h2>
-            <label>Start [lon, lat]</label>
-            <div className="coord-row">
-              <input value={fmtCoord(start?.[0])} placeholder="longitude" onChange={(e) => updateCoord('start', 0, e.target.value)} />
-              <input value={fmtCoord(start?.[1])} placeholder="latitude" onChange={(e) => updateCoord('start', 1, e.target.value)} />
+            </label>
+            <div className="inspector-dimension-switcher" role="group" aria-label="Map dimension">
+              <button type="button" className={!map3D ? 'is-active' : ''} aria-pressed={!map3D} onClick={() => set3DView(false)}>2D</button>
+              <button type="button" className={map3D ? 'is-active' : ''} aria-pressed={map3D} onClick={() => set3DView(true)}>3D</button>
             </div>
-            <label>End [lon, lat]</label>
-            <div className="coord-row">
-              <input value={fmtCoord(end?.[0])} placeholder="longitude" onChange={(e) => updateCoord('end', 0, e.target.value)} />
-              <input value={fmtCoord(end?.[1])} placeholder="latitude" onChange={(e) => updateCoord('end', 1, e.target.value)} />
-            </div>
-            <button className="route-button" onClick={runRoute} disabled={busy}>
-              {busy ? 'Routing both engines…' : 'Run Valhalla + OSRM'}
-            </button>
-            {error && <div className="error-box">{error}</div>}
           </section>
 
-          <ScenarioManagementPanel
-            registry={scenarioRegistry}
-            datasetRegistry={datasetRegistry}
-            config={config}
-            start={start}
-            end={end}
-            scenarioName={scenarioName}
-            scenarioNotes={scenarioNotes}
-            scenarioVisibility={scenarioVisibility}
-            expectedText={scenarioExpectedText}
-            forbiddenText={scenarioForbiddenText}
-            myQuery={scenarioMyQuery}
-            sharedQuery={scenarioSharedQuery}
-            scenarioBusy={scenarioBusy}
-            scenarioMessage={scenarioMessage}
-            runAllBusy={runAllBusy}
-            routeBusy={busy}
-            runResults={scenarioRunResults}
-            setScenarioName={setScenarioName}
-            setScenarioNotes={setScenarioNotes}
-            setScenarioVisibility={setScenarioVisibility}
-            setExpectedText={setScenarioExpectedText}
-            setForbiddenText={setScenarioForbiddenText}
-            setMyQuery={setScenarioMyQuery}
-            setSharedQuery={setScenarioSharedQuery}
-            onBrowse={browseScenarios}
-            onSave={saveCurrentScenario}
-            onRunAll={runAllScenarios}
-            onLoad={loadScenario}
-            onRun={runSavedScenario}
-            onEditExpectation={editScenarioExpectation}
-            onChangeVisibility={changeScenarioVisibility}
-            onDelete={removeScenario}
-          />
+          <div className="inspector-tabs" role="tablist" aria-label="Inspector context">
+            <button type="button" role="tab" aria-selected={inspectorTab === 'poi'} className={inspectorTab === 'poi' ? 'is-active' : ''} onClick={() => setInspectorTab('poi')}>POI</button>
+            <button type="button" role="tab" aria-selected={inspectorTab === 'route'} className={inspectorTab === 'route' ? 'is-active' : ''} onClick={() => setInspectorTab('route')}>Route</button>
+            <button type="button" role="tab" aria-selected={inspectorTab === 'maneuver'} className={inspectorTab === 'maneuver' ? 'is-active' : ''} onClick={() => setInspectorTab('maneuver')}>Maneuver</button>
+          </div>
 
-          <ManeuverInspection
+          <div className="inspector-content" role="tabpanel">
+          {inspectorTab === 'poi' && (selectedPoi
+            ? <SelectedPoiDetails poi={selectedPoi} />
+            : <div className="inspector-empty"><strong>No POI selected</strong><span>Select a POI on the map or from search results to inspect its properties.</span></div>)}
+
+          {inspectorTab === 'route' && <>
+            <RouteComparisonSummary
+              hasRoute={Boolean(route || osrmRoute)}
+              comparison={routeComparison}
+              maneuverCount={maneuverViews.length}
+              osrmStepCount={osrmStepViews.length}
+              onOpenComparison={() => setLayout((current) => selectAnalysisTab(current, 'comparison'))}
+            />
+            <details className="inspector-disclosure">
+              <summary>Engine and dataset details</summary>
+              <div className="kv"><span>Valhalla</span><code>{config.valhalla.service_url}</code></div>
+              <div className="kv"><span>OSRM</span><code>{config.osrm.service_url}</code></div>
+              <div className="kv"><span>Dataset</span><code>{datasetRegistry?.active_dataset ?? config.active_dataset ?? 'default'}</code></div>
+            </details>
+          </>}
+
+          {inspectorTab === 'maneuver' && <>
+            <ManeuverInspection
+            compact
             route={route}
             osrmRoute={osrmRoute}
             maneuverViews={maneuverViews}
@@ -3622,6 +3519,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
             selectedManeuverIndex={selectedManeuverIndex}
             selectedOsrmStepIndex={selectedOsrmStepIndex}
             selectedManeuver={selectedManeuver}
+            selectedOsrmStep={selectedOsrmStepView}
             narrationEvidenceByManeuver={narrationEvidenceByManeuver}
             osrmPoiNamesByStep={osrmPoiNamesByStep}
             primaryNarrationEvidence={primaryNarrationEvidence}
@@ -3635,22 +3533,12 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
             onFocusNarrationEvidence={focusNarrationEvidence}
             onFocusPoi={focusPoi}
           />
-
-          <SelectedPoiDetails poi={selectedPoi} />
-
-
-          <CandidateAnalysisPanel
-            selectedManeuver={selectedManeuver}
-            selectedOsrmStep={selectedOsrmStepView}
-            valhallaAnalysis={valhallaCandidateAnalysis}
-            osrmAnalysis={osrmCandidateAnalysis}
-            selectedValhallaAnalysis={selectedValhallaCandidateAnalysis}
-            selectedOsrmAnalysis={selectedOsrmCandidateAnalysis}
-            showCandidatesOnMap={showCandidateMap}
-            onToggleCandidatesOnMap={() => setShowCandidateMap((current) => !current)}
-          />
-
-          <RawResponseCards valhallaRoute={route} osrmRoute={osrmRoute} />
+            <div className="inspector-analysis-actions">
+              <button type="button" onClick={() => setLayout((current) => selectAnalysisTab(current, 'maneuvers'))}>Open maneuver lists</button>
+              <button type="button" disabled={!selectedManeuver && !selectedOsrmStepView} onClick={() => setLayout((current) => selectAnalysisTab(current, 'candidates'))}>Open candidate evidence</button>
+            </div>
+          </>}
+          </div>
         </Sidebar>
 
         <AnalysisWorkspace
@@ -3673,8 +3561,42 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
             selectedValhallaAnalysis={selectedValhallaCandidateAnalysis}
             selectedOsrmAnalysis={selectedOsrmCandidateAnalysis}
             showCandidatesOnMap={showCandidateMap}
-            scenarioRegistry={scenarioRegistry}
-            scenarioRunResults={scenarioRunResults}
+            testcaseWorkspace={<TestcaseManagementSections
+              activeTab={testcaseTab}
+              onSelectTab={setTestcaseTab}
+              registry={scenarioRegistry}
+              datasetRegistry={datasetRegistry}
+              config={config}
+              start={start}
+              end={end}
+              scenarioName={scenarioName}
+              scenarioNotes={scenarioNotes}
+              scenarioVisibility={scenarioVisibility}
+              expectedText={scenarioExpectedText}
+              forbiddenText={scenarioForbiddenText}
+              myQuery={scenarioMyQuery}
+              sharedQuery={scenarioSharedQuery}
+              scenarioBusy={scenarioBusy}
+              scenarioMessage={scenarioMessage}
+              runAllBusy={runAllBusy}
+              routeBusy={busy}
+              runResults={scenarioRunResults}
+              setScenarioName={setScenarioName}
+              setScenarioNotes={setScenarioNotes}
+              setScenarioVisibility={setScenarioVisibility}
+              setExpectedText={setScenarioExpectedText}
+              setForbiddenText={setScenarioForbiddenText}
+              setMyQuery={setScenarioMyQuery}
+              setSharedQuery={setScenarioSharedQuery}
+              onBrowse={browseScenarios}
+              onSave={saveCurrentScenario}
+              onRunAll={runAllScenarios}
+              onLoad={loadScenario}
+              onRun={runSavedScenario}
+              onEditExpectation={editScenarioExpectation}
+              onChangeVisibility={changeScenarioVisibility}
+              onDelete={removeScenario}
+            />}
             getOsrmInstruction={osrmInstructionText}
             onFocusManeuver={focusManeuver}
             onFocusOsrmStep={focusOsrmStep}

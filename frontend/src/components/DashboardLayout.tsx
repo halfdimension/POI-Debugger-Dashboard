@@ -61,7 +61,7 @@ const ANALYSIS_TABS: { id: AnalysisTab; label: string }[] = [
   { id: 'comparison', label: 'Engine comparison' },
   { id: 'maneuvers', label: 'Maneuvers' },
   { id: 'candidates', label: 'Candidate analysis' },
-  { id: 'scenarios', label: 'Scenario execution' },
+  { id: 'scenarios', label: 'Testcases' },
   { id: 'raw', label: 'Raw responses' },
 ];
 

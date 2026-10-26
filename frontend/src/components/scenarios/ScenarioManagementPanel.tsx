@@ -1,6 +1,6 @@
-import { TestcaseManagementSections, type TestcaseManagementProps } from './TestcaseManagementSections';
+import { TestcaseManagementSections, type TestcaseManagementSectionsProps } from './TestcaseManagementSections';
 
-export type ScenarioManagementPanelProps = TestcaseManagementProps;
+export type ScenarioManagementPanelProps = TestcaseManagementSectionsProps;
 
 export function ScenarioManagementPanel(props: ScenarioManagementPanelProps) {
   return <section className="card scenarios-card"><TestcaseManagementSections {...props} /></section>;

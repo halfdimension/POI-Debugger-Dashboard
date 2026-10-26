@@ -37,6 +37,13 @@ export interface TestcaseManagementProps {
   onDelete: (scenario: RouteScenario) => void;
 }
 
+export type TestcaseTab = 'mine' | 'shared' | 'legacy';
+
+export interface TestcaseManagementSectionsProps extends TestcaseManagementProps {
+  activeTab: TestcaseTab;
+  onSelectTab: (tab: TestcaseTab) => void;
+}
+
 function PageControls({ total, limit, offset, busy, onPage }: {
   total: number; limit: number; offset: number; busy: boolean; onPage: (offset: number) => void;
 }) {
@@ -73,13 +80,13 @@ function TestcaseRow({ scenario, sharedView, activeDataset, busy, runAllBusy, ro
   </div>;
 }
 
-export function TestcaseManagementSections(props: TestcaseManagementProps) {
+export function TestcaseManagementSections(props: TestcaseManagementSectionsProps) {
   const {
     registry, datasetRegistry, config, start, end, scenarioName, scenarioNotes, scenarioVisibility,
     expectedText, forbiddenText, myQuery, sharedQuery, scenarioBusy, scenarioMessage, runAllBusy,
     routeBusy, runResults, setScenarioName, setScenarioNotes, setScenarioVisibility, setExpectedText,
     setForbiddenText, setMyQuery, setSharedQuery, onBrowse, onSave, onRunAll, onLoad, onRun,
-    onEditExpectation, onChangeVisibility, onDelete,
+    onEditExpectation, onChangeVisibility, onDelete, activeTab, onSelectTab,
   } = props;
   const activeDataset = datasetRegistry?.active_dataset ?? config?.active_dataset ?? '';
   const mine = registry?.scenarios ?? [];
@@ -92,8 +99,14 @@ export function TestcaseManagementSections(props: TestcaseManagementProps) {
   const submit = (event: FormEvent, scope: 'mine' | 'shared', query: string) => { event.preventDefault(); onBrowse(scope, query, 0); };
   const row = (scenario: RouteScenario, sharedView = false) => <TestcaseRow key={`${sharedView ? 'shared' : 'mine'}-${scenario.id}`} scenario={scenario} sharedView={sharedView} activeDataset={activeDataset} busy={scenarioBusy} runAllBusy={runAllBusy} routeBusy={routeBusy} result={runResults[scenario.id]} onLoad={() => onLoad(scenario)} onRun={() => onRun(scenario)} onEdit={() => onEditExpectation(scenario)} onVisibility={() => onChangeVisibility(scenario)} onDelete={() => onDelete(scenario)} />;
 
-  return <div className="testcase-sections">
-    <section className="testcase-section">
+  return <div className="testcase-workspace">
+    <div className="testcase-tabs" role="tablist" aria-label="Testcase categories">
+      <button type="button" role="tab" aria-selected={activeTab === 'mine'} className={activeTab === 'mine' ? 'is-active' : ''} onClick={() => onSelectTab('mine')}>My Testcases <span>{registry?.total ?? 0}</span></button>
+      <button type="button" role="tab" aria-selected={activeTab === 'shared'} className={activeTab === 'shared' ? 'is-active' : ''} onClick={() => onSelectTab('shared')}>Shared Testcases <span>{registry?.shared_total ?? 0}</span></button>
+      <button type="button" role="tab" aria-selected={activeTab === 'legacy'} className={activeTab === 'legacy' ? 'is-active' : ''} onClick={() => onSelectTab('legacy')}>Legacy Scenarios <span>{legacy.length}</span></button>
+    </div>
+    <div className="testcase-sections">
+    {activeTab === 'mine' && <section className="testcase-section" role="tabpanel">
       <div className="testcase-section-heading"><span><strong>My Testcases</strong><small>{registry?.total ?? 0} owned</small></span></div>
       <div className="scenario-save-grid"><input aria-label="Testcase name" value={scenarioName} placeholder="Testcase name" maxLength={160} onChange={(event) => setScenarioName(event.target.value)} /><button onClick={onSave} disabled={scenarioBusy || !start || !end}>{scenarioBusy ? 'Working…' : 'Save current'}</button></div>
       <label className="testcase-visibility-field"><span>Visibility</span><select aria-label="New testcase visibility" value={scenarioVisibility} onChange={(event) => setScenarioVisibility(event.target.value as 'private' | 'shared')}><option value="private">Private</option><option value="shared">Shared</option></select></label>
@@ -106,18 +119,19 @@ export function TestcaseManagementSections(props: TestcaseManagementProps) {
       {(registry?.errors ?? []).map((message) => <div className="scenario-warning" key={message}>{message}</div>)}
       <div className="compact-scenario-list">{mine.length ? mine.map((scenario) => row(scenario)) : <div className="empty-state">No matching personal testcases.</div>}</div>
       <PageControls total={registry?.total ?? 0} limit={myLimit} offset={myOffset} busy={scenarioBusy} onPage={(offset) => onBrowse('mine', myQuery, offset)} />
-    </section>
+    </section>}
 
-    <section className="testcase-section">
+    {activeTab === 'shared' && <section className="testcase-section" role="tabpanel">
       <div className="testcase-section-heading"><span><strong>Shared Testcases</strong><small>{registry?.shared_total ?? 0} discoverable</small></span></div>
       <form className="testcase-search" onSubmit={(event) => submit(event, 'shared', sharedQuery)}><input type="search" aria-label="Search shared testcases" value={sharedQuery} placeholder="Search shared testcases" onChange={(event) => setSharedQuery(event.target.value)} /><button disabled={scenarioBusy}>Search</button></form>
       <div className="compact-scenario-list">{shared.length ? shared.map((scenario) => row(scenario, true)) : <div className="empty-state">No shared testcases match this search.</div>}</div>
       <PageControls total={registry?.shared_total ?? 0} limit={sharedLimit} offset={sharedOffset} busy={scenarioBusy} onPage={(offset) => onBrowse('shared', sharedQuery, offset)} />
-    </section>
+    </section>}
 
-    <section className="testcase-section">
+    {activeTab === 'legacy' && <section className="testcase-section" role="tabpanel">
       <div className="testcase-section-heading"><span><strong>Legacy Scenarios</strong><small>{legacy.length} read-only</small></span></div>
       <div className="compact-scenario-list">{legacy.length ? legacy.map((scenario) => { const mismatch = scenario.dataset !== activeDataset; return <div className="compact-scenario" key={`legacy-${scenario.id}`}><span><strong>{scenario.name}</strong><small>{scenario.dataset} · legacy</small></span><div><button onClick={() => onLoad(scenario)}>Load</button><button onClick={() => onRun(scenario)} disabled={routeBusy || mismatch}>Run</button></div></div>; }) : <div className="empty-state">No legacy scenarios configured.</div>}</div>
-    </section>
+    </section>}
+    </div>
   </div>;
 }

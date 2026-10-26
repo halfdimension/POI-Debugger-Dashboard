@@ -1,7 +1,25 @@
-import { TestcaseManagementSections, type TestcaseManagementProps } from './TestcaseManagementSections';
+import type { TestcaseTab } from './TestcaseManagementSections';
 
-export type SavedScenarioControlsProps = TestcaseManagementProps;
+export interface SavedScenarioControlsProps {
+  mineCount: number;
+  sharedCount: number;
+  legacyCount: number;
+  onOpen: (tab: TestcaseTab) => void;
+}
 
-export function SavedScenarioControls(props: SavedScenarioControlsProps) {
-  return <details className="sidebar-disclosure" open><summary><span>Testcases</span><small>{props.registry?.count ?? 0} mine · {props.registry?.shared_total ?? 0} shared</small></summary><div className="sidebar-disclosure__body"><TestcaseManagementSections {...props} /></div></details>;
+export function SavedScenarioControls({ mineCount, sharedCount, legacyCount, onOpen }: SavedScenarioControlsProps) {
+  return (
+    <section className="testcase-entry" aria-labelledby="testcase-entry-title">
+      <div className="panel-section__heading">
+        <h2 id="testcase-entry-title">Testcase library</h2>
+        <span>{mineCount + sharedCount + legacyCount}</span>
+      </div>
+      <p>Manage and execute testcases in the full-width analysis workspace.</p>
+      <div className="testcase-entry__actions">
+        <button type="button" onClick={() => onOpen('mine')}>My Testcases <span>{mineCount}</span></button>
+        <button type="button" onClick={() => onOpen('shared')}>Shared <span>{sharedCount}</span></button>
+        <button type="button" onClick={() => onOpen('legacy')}>Legacy <span>{legacyCount}</span></button>
+      </div>
+    </section>
+  );
 }

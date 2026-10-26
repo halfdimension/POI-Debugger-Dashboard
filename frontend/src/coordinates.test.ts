@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { parseCoordinateInput, updateCoordinateValue } from './coordinates';
+import { haversineMeters, parseCoordinateInput, updateCoordinateValue } from './coordinates';
+
+describe('geographic distance', () => {
+  it('preserves the established great-circle distance calculation', () => {
+    expect(haversineMeters([77.209, 28.6139], [77.209, 28.6139])).toBe(0);
+    expect(haversineMeters([0, 0], [1, 0])).toBeCloseTo(111195.08, 2);
+  });
+});
 
 describe('coordinate input behavior', () => {
   it('accepts finite decimal values and rejects non-finite text', () => {

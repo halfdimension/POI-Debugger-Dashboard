@@ -37,3 +37,6 @@ frontend/*.tsbuildinfo
 .phase4b_backup/
 .phase4c_backup/
 .product_cleanup_backup/
+
+# Local development environment
+/.env.local

@@ -4,6 +4,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$ROOT"
 
+# Load local development settings when available.
+# Explicit production deployments do not load .env.local.
+if [[ -f "$ROOT/.env.local" && "${VPD_ENVIRONMENT:-}" != "production" ]]; then
+  set -a
+  source "$ROOT/.env.local"
+  set +a
+fi
+
 if [[ -x "$ROOT/backend/.venv/bin/python" ]]; then
   VPD_PYTHON="$ROOT/backend/.venv/bin/python"
 elif [[ -x "$ROOT/.venv/bin/python" ]]; then

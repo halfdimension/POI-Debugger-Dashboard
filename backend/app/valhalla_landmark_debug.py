@@ -47,8 +47,8 @@ class ValhallaLandmarkDebugManager:
     # Build-time association sidecar
     # -----------------------------------------------------------------
 
-    def _configured_path(self) -> Path | None:
-        active = self._datasets.active_config()
+    def _configured_path(self, dataset_id: str) -> Path | None:
+        active = self._datasets.config(dataset_id)
 
         value = (
             active.get("valhalla_association_debug_jsonl_path")
@@ -59,8 +59,8 @@ class ValhallaLandmarkDebugManager:
 
         return Path(str(value)) if value else None
 
-    def _ensure_loaded(self) -> dict[str, Any]:
-        path = self._configured_path()
+    def _ensure_loaded(self, dataset_id: str) -> dict[str, Any]:
+        path = self._configured_path(dataset_id)
 
         if path is None:
             raise ValhallaLandmarkDebugError(
@@ -430,6 +430,16 @@ class ValhallaLandmarkDebugManager:
     def analyze_route(
         self,
         route_response: dict[str, Any],
+        dataset_id: str,
+    ) -> dict[str, Any]:
+        # Keep the selected sidecar/index stable for this entire normalization.
+        with self._lock:
+            return self._analyze_route_locked(route_response, dataset_id)
+
+    def _analyze_route_locked(
+        self,
+        route_response: dict[str, Any],
+        dataset_id: str,
     ) -> dict[str, Any]:
 
         base: dict[str, Any] = {
@@ -469,7 +479,7 @@ class ValhallaLandmarkDebugManager:
         sidecar_error = None
 
         try:
-            association_source = self._ensure_loaded()
+            association_source = self._ensure_loaded(dataset_id)
             sidecar_available = True
         except ValhallaLandmarkDebugError as exc:
             sidecar_error = str(exc)

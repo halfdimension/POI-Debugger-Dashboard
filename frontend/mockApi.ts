@@ -84,7 +84,9 @@ const INITIAL_SCENARIOS = [
       end: { lon: 77.2272, lat: 28.6271 },
       costing: 'auto',
     },
-    notes: 'Synthetic happy-path route.',
+    description: 'Synthetic happy-path route.',
+    visibility: 'private',
+    revision: 1,
     expectation: { instruction_contains: 'Clock Tower Cafe' },
     created_at: '2026-01-01T00:00:00Z',
     updated_at: '2026-01-01T00:00:00Z',
@@ -94,10 +96,20 @@ const INITIAL_SCENARIOS = [
 export interface MockApiState {
   activeDataset: string;
   scenarios: JsonObject[];
+  preferences: JsonObject;
 }
 
 export function createMockApiState(): MockApiState {
-  return { activeDataset: 'mock-demo', scenarios: structuredClone(INITIAL_SCENARIOS) };
+  return {
+    activeDataset: 'mock-demo',
+    scenarios: structuredClone(INITIAL_SCENARIOS),
+    preferences: {
+      selected_dataset_id: 'mock-demo', preferred_basemap: 'mapmyindia',
+      map_display_mode: '2d', route_view: 'both',
+      layout: { leftCollapsed: false, rightCollapsed: false, analysisCollapsed: true, activeAnalysisTab: 'comparison' },
+      dataset_selection_fallback: false, unavailable_dataset_id: null,
+    },
+  };
 }
 
 export function shouldEnableMockApi(command: string, mode: string, isPreview: boolean, value: string | undefined): boolean {
@@ -251,6 +263,32 @@ export async function handleMockApi(method: string, pathname: string, body: Json
   const requestUrl = new URL(pathname, 'http://vite.local');
   pathname = requestUrl.pathname;
   const ok = (responseBody: unknown, status = 200) => ({ status, body: responseBody });
+  const mockSession = {
+    user: {
+      id: 'mock-development-user', issuer: 'urn:vpd:vite-mock', subject: 'mock-developer',
+      display_name: 'Mock Developer', email: null,
+    },
+    csrf_token: 'vite-mock-csrf-token', expires_at: 4_102_444_800, auth_mode: 'development',
+  };
+  if (method === 'GET' && pathname === '/api/auth/config') return ok({
+    mode: 'development', local_login_available: false, oidc_login_available: false,
+    development_login_available: true, csrf_token: 'vite-mock-csrf-token',
+  });
+  if (method === 'GET' && pathname === '/api/auth/current') return ok(mockSession);
+  if (method === 'POST' && pathname === '/api/auth/dev-login') return ok(mockSession);
+  if (method === 'POST' && pathname === '/api/auth/logout') return ok({ ok: true });
+  if (method === 'GET' && pathname === '/api/users/me/preferences') return ok(state.preferences);
+  if (method === 'PATCH' && pathname === '/api/users/me/preferences') {
+    const allowed = new Set(['selected_dataset_id', 'preferred_basemap', 'map_display_mode', 'route_view', 'layout']);
+    const unknown = Object.keys(body).filter((key) => !allowed.has(key));
+    if (unknown.length) return ok({ detail: `Unknown preference fields: ${unknown.join(', ')}` }, 400);
+    if (typeof body.selected_dataset_id === 'string' && !DATASETS.some((item) => item.id === body.selected_dataset_id)) {
+      return ok({ detail: `Unknown dataset: ${body.selected_dataset_id}` }, 400);
+    }
+    state.preferences = { ...state.preferences, ...body, dataset_selection_fallback: false, unavailable_dataset_id: null };
+    state.activeDataset = String(state.preferences.selected_dataset_id);
+    return ok(state.preferences);
+  }
   if (method === 'GET' && pathname === '/api/config') return ok({
     project: { name: 'POI Debugger Dashboard' },
     valhalla: { service_url: 'mock://valhalla', status_path: '/status', route_path: '/route', association_debug_jsonl_path: null },
@@ -376,7 +414,8 @@ export async function handleMockApi(method: string, pathname: string, body: Json
     const hasMore = offset + limit < matches.length;
     return ok({ type: 'FeatureCollection', dataset_id: datasetId, features, returned: features.length, has_more: hasMore, next_cursor: hasMore ? JSON.stringify({ signature, offset: offset + limit }) : null });
   }
-  if (method === 'GET' && pathname === '/api/scenarios') return ok({ directory: '[mock]', count: state.scenarios.length, scenarios: state.scenarios, errors: [] });
+  if (method === 'GET' && pathname === '/api/scenarios') return ok({ directory: '[mock]', count: 0, scenarios: [], errors: [], source: 'legacy', read_only: true });
+  if (method === 'GET' && pathname === '/api/testcases') return ok({ total: state.scenarios.length, limit: 100, offset: 0, testcases: state.scenarios });
   if (method === 'GET' && (pathname === '/api/valhalla/status' || pathname === '/api/osrm/status')) return ok({ ok: true, url: `mock://${pathname.includes('valhalla') ? 'valhalla' : 'osrm'}/status`, response: { version: 'synthetic' } });
   if (method === 'POST' && pathname === '/api/route/compare') return ok(routeComparison(body));
   if (method === 'POST' && pathname === '/api/route') return ok((routeComparison(body) as any).valhalla.response);
@@ -386,22 +425,25 @@ export async function handleMockApi(method: string, pathname: string, body: Json
     const id = decodeURIComponent(datasetMatch[1]);
     const selected = DATASETS.find((item) => item.id === id);
     if (!selected) return ok({ detail: `Dataset not found: ${id}` }, 404);
-    state.activeDataset = id;
+    if (datasetMatch[2] === 'activate') {
+      state.activeDataset = id;
+      state.preferences = { ...state.preferences, selected_dataset_id: id };
+    }
     return ok({ ok: true, active_dataset: id, dataset: selected });
   }
 
-  if (method === 'POST' && pathname === '/api/scenarios') {
-    const scenario = { ...body, id: `mock-${Date.now()}`, created_at: new Date().toISOString(), updated_at: new Date().toISOString() };
+  if (method === 'POST' && pathname === '/api/testcases') {
+    const scenario = { ...body, id: `mock-${Date.now()}`, visibility: 'private', revision: 1, created_at: new Date().toISOString(), updated_at: new Date().toISOString() };
     state.scenarios.push(scenario);
     return ok(scenario, 201);
   }
-  const scenarioMatch = pathname.match(/^\/api\/scenarios\/([^/]+)$/);
+  const scenarioMatch = pathname.match(/^\/api\/testcases\/([^/]+)$/);
   if (scenarioMatch) {
     const id = decodeURIComponent(scenarioMatch[1]);
     const index = state.scenarios.findIndex((scenario) => scenario.id === id);
     if (index < 0) return ok({ detail: `Scenario not found: ${id}` }, 404);
-    if (method === 'PUT') {
-      state.scenarios[index] = { ...state.scenarios[index], ...body, id, updated_at: new Date().toISOString() };
+    if (method === 'PATCH') {
+      state.scenarios[index] = { ...state.scenarios[index], ...body, id, revision: Number(state.scenarios[index].revision ?? 1) + 1, updated_at: new Date().toISOString() };
       return ok(state.scenarios[index]);
     }
     if (method === 'DELETE') {

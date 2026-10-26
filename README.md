@@ -1,6 +1,44 @@
-# Valhalla POI Debugger — Phase 1
+# Valhalla POI Debugger Dashboard
 
-Phase 1 is the runnable foundation for visually testing POI/landmark behavior against a local Valhalla service.
+The dashboard provides authenticated POI/landmark and routing diagnostics against Valhalla and OSRM.
+
+## Authentication
+
+Production supports local accounts, OpenID Connect, or both through `VPD_AUTH_MODE=local`, `oidc`, or `local_oidc`. Every production mode requires a random `VPD_SESSION_SECRET` of at least 32 characters. Local accounts are stored in `VPD_USERS_DB_PATH`; passwords use Argon2id and are never stored directly. Public registration always creates an active ordinary user and does not merge with an OIDC identity that happens to use the same email address.
+
+Usernames are 3–32 ASCII characters, begin with a letter, cannot contain `@`, and are compared using trimmed Unicode case-folding. Emails are trimmed, validated as ASCII addresses, and case-folded in full for uniqueness and login. Database uniqueness constraints enforce both rules under concurrent registration.
+
+For an OIDC-enabled mode, configure `VPD_OIDC_ISSUER`, `VPD_OIDC_CLIENT_ID`, and `VPD_OIDC_REDIRECT_URI`. Set `VPD_OIDC_CLIENT_SECRET` for a confidential client. The redirect URI must be HTTPS in production. Optional `VPD_AUTH_ALLOWED_USERS` and `VPD_AUTH_ALLOWED_GROUPS` restrict OIDC access after identity validation. The backend fails closed when settings required by the selected mode are missing.
+
+For localhost development without SSO, explicitly start the backend with:
+
+```bash
+VPD_ENVIRONMENT=development VPD_AUTH_MODE=development ./scripts/run_backend.sh
+```
+
+This mode creates an ephemeral local-developer session and accepts development login only when the backend client, Host, and browser Origin are loopback addresses. It cannot be enabled while `VPD_ENVIRONMENT=production`. The Vite mock API remains separately opt-in with `VPD_MOCK_API=1` and supplies a clearly labelled synthetic user.
+
+All dashboard APIs except `/api/health` and authentication initiation/callback/configuration require a valid signed, HttpOnly session cookie. Local registration and password login also require the pre-authentication CSRF token returned by `/api/auth/config`. Mutating APIs require the authenticated session CSRF token. Browser storage never receives OIDC access tokens.
+
+Stage 3B stores each authenticated user's selected dataset, basemap, map mode, route view, and panel layout in a separate SQLite preference database. Dataset-dependent requests are explicitly scoped or resolve the authenticated user's persisted selection; changing one user's dataset does not alter another user's dashboard. If a saved dataset is removed, the API repairs the preference to the configured default and reports the fallback to the UI.
+
+Local preference owners use a stable `local:<UUID>` key. Existing OIDC owner keys retain their issuer/subject-derived hashes, so enabling local accounts does not migrate, overwrite, or email-merge existing preferences. Shared rate-limit buckets live in the users database and work across backend workers using the same SQLite file.
+
+New testcases are private, user-owned records in a dedicated SQLite database. Existing filesystem scenarios remain available as a clearly labeled, read-only legacy collection and are never assigned to a user automatically.
+
+### Super Admin provisioning and RBAC
+
+Self-registration always creates the `user` role. Administrative access is derived from the current server-side account row on every request, so disabling an account or changing its role affects existing sessions immediately. Development/mock identities are always ordinary users.
+
+To provision an existing account, run the backend operator CLI from the repository root with the same configuration and database access as the service:
+
+```bash
+python -m backend.app.manage_users set-role <stable-user-id> super_admin
+```
+
+The command displays the target account and requires typing `<stable-user-id>:super_admin` before it changes the role. Revoke with the same command and the `user` role. For non-interactive operations, `--confirm '<stable-user-id>:<role>'` supplies the exact confirmation. Every role change is written to `admin_audit_log`, and the final active Super Admin cannot be revoked. Stable IDs can be obtained through authorized database access (or, after initial provisioning, from the protected Admin API).
+
+Super Admins receive a separate Admin Console backed by `/api/admin/overview`, paginated/searchable `/api/admin/users`, `/api/admin/users/{id}`, and `/api/admin/users/{id}/status`. Status changes are limited to ordinary accounts and are audited. Responses exclude password hashes, sessions, and authentication secrets.
 
 ## Included now
 
@@ -101,9 +139,9 @@ VPD_BACKEND_URL=http://<backend-ip>:<backend-port> ./scripts/run_frontend.sh
 
 If coworkers cannot connect, allow inbound TCP ports `5173` (frontend) and
 `8010` (API) in the host firewall and make sure the company LAN/VPN permits
-connections between their machines. Do not expose these ports to the public
-internet: this is an unauthenticated debugger and its API can modify saved
-scenarios.
+connections between their machines. Do not expose the Vite development server
+to the public internet. Production must use HTTPS and one of the configured
+application authentication modes.
 
 Optional bind/port overrides for the backend are `VPD_BACKEND_HOST` and
 `VPD_BACKEND_PORT`. For example:
@@ -154,7 +192,10 @@ The main deployment variables are:
 | `VPD_SCENARIO_DIR` | Writable saved-scenario directory | `/data/scenarios` |
 | `VPD_BACKEND_PORT` | Dashboard HTTP port | `8010` |
 | `VPD_POI_INDEX_DIR` | Rebuildable SQLite POI index directory | `/data/cache/poi-search` |
-| `VPD_BACKEND_WORKERS` | Worker count; keep `1` because active-dataset state is in memory | `1` |
+| `VPD_PREFERENCE_DB_PATH` | Durable per-user preference SQLite database | `/data/user-preferences.sqlite3` |
+| `VPD_TESTCASE_DB_PATH` | Durable private testcase SQLite database | `/data/testcases.sqlite3` |
+| `VPD_USERS_DB_PATH` | Local accounts and shared authentication rate limits | `/data/users.sqlite3` |
+| `VPD_BACKEND_WORKERS` | Uvicorn worker count; preferences use WAL and busy timeouts | `2` |
 | `VPD_ALLOWED_ORIGINS` | Comma-separated browser origins | `https://debugger.company.com` |
 
 See [.env.example](.env.example) for optional timeout, debug JSONL, map style,
@@ -206,8 +247,8 @@ dataset metadata; the Valhalla/OSRM services must receive their actual routing
 files through their own deployment configuration and volume mounts.
 
 For an internet-facing AWS deployment, place the dashboard behind HTTPS and
-company authentication (ALB/OIDC, VPN, or an authenticated reverse proxy). The
-application itself does not provide login protection.
+configure the application OIDC client. A VPN or authenticated reverse proxy may
+provide an additional security boundary but does not replace application setup.
 
 ## POI file expected by Phase 1
 
@@ -562,6 +603,20 @@ Phase 3B adds automatic regression assertions to saved route scenarios.
 - `Run All Matching Dataset` executes all scenarios for the active debugger dataset.
 - Existing Phase 3A scenarios remain valid; use `Expect` to add assertions.
 - Results are runtime-only; expected behavior remains stored in scenario JSON.
+
+## Dashboard redesign Stage 4A — private testcases
+
+Stage 4A adds the authenticated **My Testcases** library without changing route execution.
+
+- `GET/POST /api/testcases` and `GET/PATCH/DELETE /api/testcases/{id}` provide owner-scoped CRUD.
+- Ownership always comes from the signed session. Missing and other-user IDs both return 404.
+- `GET /api/testcases` supports `q`, bounded `limit` (1–100), and bounded `offset`.
+- Updates require the current `revision`; stale writes return 409.
+- Records persist in `VPD_TESTCASE_DB_PATH` (default `data/testcases.sqlite3`) using WAL mode.
+- The schema reserves a private `visibility` field so Stage 4B can add sharing through a migration.
+- Legacy files under `VPD_SCENARIO_DIR` are preserved. `/api/scenarios` is read-only and the UI labels these records as legacy; there is no automatic ownership migration.
+
+Existing legacy files can be migrated in a later, explicit owner-selected workflow. Stage 4A intentionally does not infer owners or expose another user's private records, and Super Admin receives no ownership bypass.
 
 ## Phase 4A — external landmark verification
 

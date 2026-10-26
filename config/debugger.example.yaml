@@ -1,6 +1,25 @@
 project:
   name: "Valhalla POI Debugger"
 
+# Modes: local, oidc, local_oidc, or development. Production always requires a
+# strong session secret; OIDC settings are required only for OIDC-enabled modes.
+auth:
+  mode: "local"
+  environment: "production"
+  oidc_issuer: ""
+  client_id: ""
+  client_secret: ""
+  redirect_uri: ""
+  session_secret: ""
+  session_max_age_seconds: 28800
+  cookie_name: "vpd_session"
+  allowed_users: []
+  allowed_groups: []
+  groups_claim: "groups"
+  # Local identities and shared authentication throttles. This database is
+  # separate from both preference storage and rebuildable POI indexes.
+  users_db_path: "./data/users.sqlite3"
+
 valhalla:
   service_url: "http://localhost:8002"
   status_path: "/status"
@@ -49,6 +68,12 @@ backend:
 
   # Persistent, rebuildable SQLite POI indexes. Relative paths use the repo root.
   poi_index_dir: "./.cache/poi-search"
+
+  # Durable authenticated-user settings. Keep this separate from POI indexes.
+  preference_db_path: "./data/user-preferences.sqlite3"
+
+  # Private user-owned testcase library; separate from POI indexes and legacy scenarios.
+  testcase_db_path: "./data/testcases.sqlite3"
 
 diagnostics:
   # Targeted source-POI proximity processing. Limits are explicit so a dense

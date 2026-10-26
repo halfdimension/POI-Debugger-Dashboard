@@ -1,4 +1,5 @@
 import type { Feature, FeatureCollection, Point } from 'geojson';
+import { apiFetch } from './auth';
 
 export type PoiBounds = [west: number, south: number, east: number, north: number];
 
@@ -85,7 +86,7 @@ export function buildPoiSearchUrl(params: PoiSearchParams): string {
 }
 
 export async function searchPois(params: PoiSearchParams, signal?: AbortSignal): Promise<PoiSearchResponse> {
-  const response = await fetch(buildPoiSearchUrl(params), { signal });
+  const response = await apiFetch(buildPoiSearchUrl(params), { signal });
   let body: unknown;
   try { body = await response.json(); } catch { body = null; }
   if (!response.ok) {
@@ -116,7 +117,7 @@ export function buildPoiQueryBody(params: PoiQueryParams): Record<string, unknow
 }
 
 export async function queryPois(params: PoiQueryParams, signal?: AbortSignal): Promise<PoiSearchResponse> {
-  const response = await fetch('/api/pois/query', {
+  const response = await apiFetch('/api/pois/query', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(buildPoiQueryBody(params)),
@@ -139,7 +140,7 @@ export async function fetchDiagnosticPois(
   radiusM: number,
   signal?: AbortSignal,
 ): Promise<DiagnosticPoiResponse> {
-  const response = await fetch('/api/pois/diagnostics/nearby', {
+  const response = await apiFetch('/api/pois/diagnostics/nearby', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ dataset_id: datasetId, points, radius_m: radiusM }),

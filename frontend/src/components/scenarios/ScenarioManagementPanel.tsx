@@ -1,4 +1,4 @@
-import type { Dispatch, SetStateAction } from 'react';
+import { useState, type Dispatch, type SetStateAction } from 'react';
 import type { ScenarioRunResult } from '../../scenarioAssertions';
 import type { DatasetRegistryResponse, DebuggerConfig, LngLat, RouteScenario, ScenarioRegistryResponse } from '../../types';
 
@@ -39,16 +39,22 @@ export function ScenarioManagementPanel({
   onRunAll: runAllScenarios, onLoad: loadScenario, onRun: runSavedScenario,
   onEditExpectation: editScenarioExpectation, onDelete: removeScenario,
 }: ScenarioManagementPanelProps) {
+  const [query, setQuery] = useState('');
+  const needle = query.trim().toLocaleLowerCase();
+  const visibleScenarios = (scenarioRegistry?.scenarios ?? []).filter((scenario) =>
+    !needle || `${scenario.name} ${scenario.description ?? ''}`.toLocaleLowerCase().includes(needle)
+  );
   return (
     <section className="card scenarios-card">
       <div className="maneuver-heading">
-        <h2>Test Scenarios</h2>
-        <span>{scenarioRegistry?.count ?? 0} saved</span>
+        <h2>My Testcases</h2>
+        <span>{scenarioRegistry?.count ?? 0} private</span>
       </div>
       <div className="scenario-save-grid">
         <input
           value={scenarioName}
-          placeholder="Scenario name, e.g. Indian Oil right turn"
+          placeholder="Testcase name, e.g. Indian Oil right turn"
+          maxLength={160}
           onChange={(event) => setScenarioName(event.target.value)}
         />
         <button onClick={saveCurrentScenario} disabled={scenarioBusy || !start || !end}>
@@ -70,10 +76,12 @@ export function ScenarioManagementPanel({
       <textarea
         className="scenario-notes"
         value={scenarioNotes}
-        placeholder="Optional note about why this route is useful"
+        placeholder="Optional description of why this route is useful"
+        maxLength={4000}
         rows={2}
         onChange={(event) => setScenarioNotes(event.target.value)}
       />
+      <input className="full-width-input" type="search" value={query} placeholder="Search my testcases" onChange={(event) => setQuery(event.target.value)} />
       <div className="scenario-suite-actions">
         <button onClick={runAllScenarios} disabled={runAllBusy || scenarioBusy || busy || !(scenarioRegistry?.scenarios.length)}>
           {runAllBusy ? 'Running suite…' : 'Run All Matching Dataset'}
@@ -87,11 +95,11 @@ export function ScenarioManagementPanel({
       <div className="scenario-note">
         Saved scenarios can verify required or forbidden Odin instruction text. A scenario without assertions still runs but reports NO EXPECTATION.
       </div>
-      {(scenarioRegistry?.scenarios ?? []).length === 0 ? (
+      {visibleScenarios.length === 0 ? (
         <div className="empty-state">Set START/END, give the route a name and optionally an expected landmark, then save it.</div>
       ) : (
         <div className="scenario-list">
-          {(scenarioRegistry?.scenarios ?? []).map((scenario) => {
+          {visibleScenarios.map((scenario) => {
             const activeId = datasetRegistry?.active_dataset ?? config?.active_dataset ?? '';
             const datasetMismatch = scenario.dataset !== activeId;
             const result = scenarioRunResults[scenario.id];
@@ -114,7 +122,7 @@ export function ScenarioManagementPanel({
                       {forbiddenText && <span><b>Must not contain:</b> {forbiddenText}</span>}
                     </div>
                   ) : <span className="scenario-no-expectation">No PASS/FAIL expectation configured.</span>}
-                  {scenario.notes && <span>{scenario.notes}</span>}
+                  {(scenario.description ?? scenario.notes) && <span>{scenario.description ?? scenario.notes}</span>}
                   {result?.matchedInstructions.length ? (
                     <span className="scenario-match"><b>Matched:</b> {result.matchedInstructions[0]}</span>
                   ) : null}
@@ -125,7 +133,7 @@ export function ScenarioManagementPanel({
                 <div className="scenario-actions">
                   <button onClick={() => loadScenario(scenario)} disabled={scenarioBusy || runAllBusy}>Load</button>
                   <button className="scenario-run" onClick={() => runSavedScenario(scenario)} disabled={scenarioBusy || runAllBusy || busy || datasetMismatch}>Run</button>
-                  <button className="scenario-expect" onClick={() => editScenarioExpectation(scenario)} disabled={scenarioBusy || runAllBusy}>Expect</button>
+                  <button className="scenario-expect" onClick={() => editScenarioExpectation(scenario)} disabled={scenarioBusy || runAllBusy}>Edit</button>
                   <button className="scenario-delete" onClick={() => removeScenario(scenario)} disabled={scenarioBusy || runAllBusy}>Delete</button>
                 </div>
               </div>
@@ -133,6 +141,7 @@ export function ScenarioManagementPanel({
           })}
         </div>
       )}
+      {(scenarioRegistry?.legacy_scenarios?.length ?? 0) > 0 && <div className="scenario-note"><b>Legacy scenarios:</b> {(scenarioRegistry?.legacy_scenarios ?? []).length} filesystem scenarios remain available from the sidebar for read-only load/run.</div>}
     </section>
   );
 }

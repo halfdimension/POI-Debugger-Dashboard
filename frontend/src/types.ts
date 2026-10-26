@@ -42,6 +42,20 @@ export interface DatasetRegistryResponse {
   datasets: DatasetSummary[];
 }
 
+export interface UserPreferences {
+  selected_dataset_id: string;
+  preferred_basemap: 'mapmyindia' | 'openfreemap';
+  map_display_mode: '2d' | '3d';
+  route_view: 'both' | 'valhalla' | 'osrm';
+  layout: import('./layoutState').DashboardLayoutState;
+  dataset_selection_fallback: boolean;
+  unavailable_dataset_id: string | null;
+}
+
+export type UserPreferencesPatch = Partial<Pick<UserPreferences,
+  'selected_dataset_id' | 'preferred_basemap' | 'map_display_mode' | 'route_view' | 'layout'
+>>;
+
 export interface DebuggerConfig {
   project: { name?: string };
   valhalla: {
@@ -365,14 +379,19 @@ export interface RouteScenario {
     costing: string;
   };
   notes?: string;
+  description?: string;
   expectation?: ScenarioExpectation;
+  visibility?: 'private';
+  revision?: number;
   created_at?: string;
   updated_at?: string;
 }
 
 export interface ScenarioRegistryResponse {
-  directory: string;
+  directory?: string;
   count: number;
   scenarios: RouteScenario[];
   errors: string[];
+  total?: number;
+  legacy_scenarios?: RouteScenario[];
 }

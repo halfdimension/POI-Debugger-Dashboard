@@ -4,6 +4,9 @@ __pycache__/
 *.pyc
 *.pyo
 .cache/
+data/user-preferences.sqlite3*
+data/testcases.sqlite3*
+data/users.sqlite3*
 
 # Frontend
 frontend/node_modules/

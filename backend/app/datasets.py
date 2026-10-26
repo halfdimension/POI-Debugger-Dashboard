@@ -37,7 +37,7 @@ class DatasetManager:
             raise DatasetError("No debugger dataset is configured")
 
         requested = str(settings.get("active_dataset") or "").strip()
-        self._active_id = requested if requested in self._datasets else next(iter(self._datasets))
+        self._default_id = requested if requested in self._datasets else next(iter(self._datasets))
         self._cache: dict[str, dict[str, Any]] = {}
         index_dir = Path(
             str(
@@ -70,41 +70,61 @@ class DatasetManager:
 
     @property
     def active_id(self) -> str:
-        with self._lock:
-            return self._active_id
+        """Deployment default retained for compatibility; it is never user-mutated."""
+        return self._default_id
+
+    @property
+    def default_id(self) -> str:
+        return self._default_id
+
+    @property
+    def ids(self) -> tuple[str, ...]:
+        return tuple(self._datasets)
+
+    def has(self, dataset_id: str) -> bool:
+        return dataset_id in self._datasets
+
+    def config(self, dataset_id: str) -> dict[str, Any]:
+        if dataset_id not in self._datasets:
+            raise DatasetError(f"Unknown dataset: {dataset_id}")
+        return deepcopy(self._datasets[dataset_id])
 
     def active_config(self) -> dict[str, Any]:
-        with self._lock:
-            return deepcopy(self._datasets[self._active_id])
+        return self.config(self._default_id)
 
     def activate(self, dataset_id: str) -> dict[str, Any]:
+        """Compatibility loader; selection now belongs to UserPreferenceStore."""
         with self._lock:
             if dataset_id not in self._datasets:
                 raise DatasetError(f"Unknown dataset: {dataset_id}")
-            self._active_id = dataset_id
             self._load(dataset_id, force=False)
             return self._summary(dataset_id)
 
-    def get_active_pois(self) -> dict[str, Any]:
+    def get_pois(self, dataset_id: str) -> dict[str, Any]:
         with self._lock:
-            loaded = self._load(self._active_id, force=False)
+            if dataset_id not in self._datasets:
+                raise DatasetError(f"Unknown dataset: {dataset_id}")
+            loaded = self._load(dataset_id, force=False)
             return deepcopy(loaded["feature_collection"])
 
     def reload(self, dataset_id: str | None = None) -> dict[str, Any]:
         with self._lock:
-            target = dataset_id or self._active_id
+            target = dataset_id or self._default_id
             if target not in self._datasets:
                 raise DatasetError(f"Unknown dataset: {target}")
             self._load(target, force=True)
             self.search_index.invalidate(target)
             return self._summary(target)
 
-    def describe(self) -> dict[str, Any]:
+    def describe(self, selected_dataset_id: str | None = None) -> dict[str, Any]:
         with self._lock:
-            # Load the active dataset so the UI always has current validation stats.
-            self._load(self._active_id, force=False)
+            selected = selected_dataset_id or self._default_id
+            if selected not in self._datasets:
+                raise DatasetError(f"Unknown dataset: {selected}")
+            # Load this user's selection so the UI has current validation stats.
+            self._load(selected, force=False)
             return {
-                "active_dataset": self._active_id,
+                "active_dataset": selected,
                 "datasets": [self._summary(dataset_id) for dataset_id in self._datasets],
             }
 

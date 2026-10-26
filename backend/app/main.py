@@ -6,11 +6,13 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from .config import load_settings
+from .auth import AuthManager
+from .admin import admin_router
 from .datasets import DatasetError, DatasetManager
 from .poi_search import (
     PoiSearchError,
@@ -21,23 +23,37 @@ from .poi_search import (
 from .landmark_debug import OsrmLandmarkDebugManager
 from .valhalla_landmark_debug import ValhallaLandmarkDebugManager
 from .scenarios import ScenarioError, ScenarioManager
+from .preferences import PreferenceValidationError, UserPreferenceStore
+from .testcases import TestcaseConflictError, TestcaseError, TestcaseNotFoundError, TestcaseRepository
 
 settings = load_settings()
+auth = AuthManager(settings)
 datasets = DatasetManager(settings)
+preferences = UserPreferenceStore(
+    settings["backend"]["preference_db_path"], datasets.ids, datasets.default_id
+)
 scenarios = ScenarioManager(settings)
+testcases = TestcaseRepository(settings["backend"]["testcase_db_path"], datasets.ids)
 osrm_landmark_debug = OsrmLandmarkDebugManager(settings, datasets)
 valhalla_landmark_debug = ValhallaLandmarkDebugManager(settings, datasets)
 
 app = FastAPI(
     title="Valhalla + OSRM POI Debugger API",
-    version="0.5.0",
+    version="0.6.0",
     description="Local debug API for Valhalla and OSRM POI/landmark comparison.",
+    docs_url="/docs" if auth.environment == "development" else None,
+    redoc_url=None,
+    openapi_url="/openapi.json" if auth.environment == "development" else None,
 )
+auth.install(app)
+app.include_router(auth.router())
+app.include_router(admin_router(auth))
+protected = APIRouter(dependencies=[Depends(auth.require_authenticated_request)])
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.get("backend", {}).get("allowed_origins", []),
-    allow_credentials=False,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -59,8 +75,21 @@ def _osrm_url(path: str) -> str:
     return base + suffix
 
 
-def _public_config() -> dict[str, Any]:
-    active = datasets.active_config()
+def _user_id(request: Request) -> str:
+    return str(request.state.current_user["id"])
+
+
+def _effective_dataset_id(request: Request, requested: Any = None) -> str:
+    if requested is not None:
+        dataset_id = str(requested).strip()
+        if not datasets.has(dataset_id):
+            raise HTTPException(status_code=404, detail=f"Unknown dataset: {dataset_id}")
+        return dataset_id
+    return str(preferences.get(_user_id(request))["selected_dataset_id"])
+
+
+def _public_config(dataset_id: str) -> dict[str, Any]:
+    active = datasets.config(dataset_id)
     data = dict(settings.get("data", {}))
     for key in ("pbf_path", "poi_geojson_path", "poi_csv_path"):
         if active.get(key):
@@ -90,7 +119,7 @@ def _public_config() -> dict[str, Any]:
         },
         "engine": settings.get("engine", {}),
         "data": data,
-        "active_dataset": datasets.active_id,
+        "active_dataset": dataset_id,
         "frontend": settings.get("frontend", {}),
         "config_path": settings.get("_config_path"),
     }
@@ -101,48 +130,61 @@ def health() -> dict[str, Any]:
     return {
         "ok": True,
         "service": "valhalla-poi-debugger",
-        "phase": "3A",
-        "config_path": settings.get("_config_path"),
-        "active_dataset": datasets.active_id,
+        "phase": "4A",
     }
 
 
-@app.get("/api/config")
-def get_config() -> dict[str, Any]:
-    return _public_config()
+@protected.get("/api/config")
+def get_config(request: Request) -> dict[str, Any]:
+    return _public_config(_effective_dataset_id(request))
 
 
-@app.get("/api/datasets")
-def get_datasets() -> dict[str, Any]:
-    return datasets.describe()
+@protected.get("/api/users/me/preferences")
+def get_preferences(request: Request) -> dict[str, Any]:
+    return preferences.get(_user_id(request))
 
 
-@app.post("/api/datasets/{dataset_id}/activate")
-def activate_dataset(dataset_id: str) -> dict[str, Any]:
+@protected.patch("/api/users/me/preferences")
+def patch_preferences(request: Request, payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        return preferences.update(_user_id(request), payload)
+    except PreferenceValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@protected.get("/api/datasets")
+def get_datasets(request: Request) -> dict[str, Any]:
+    return datasets.describe(_effective_dataset_id(request))
+
+
+@protected.post("/api/datasets/{dataset_id}/activate")
+def activate_dataset(dataset_id: str, request: Request) -> dict[str, Any]:
     try:
         dataset = datasets.activate(dataset_id)
-    except DatasetError as exc:
+        updated = preferences.update(_user_id(request), {"selected_dataset_id": dataset_id})
+    except (DatasetError, PreferenceValidationError) as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return {"ok": True, "active_dataset": datasets.active_id, "dataset": dataset}
+    return {"ok": True, "active_dataset": updated["selected_dataset_id"], "dataset": dataset}
 
 
-@app.post("/api/datasets/{dataset_id}/reload-pois")
-def reload_dataset_pois(dataset_id: str) -> dict[str, Any]:
+@protected.post("/api/datasets/{dataset_id}/reload-pois")
+def reload_dataset_pois(dataset_id: str, request: Request) -> dict[str, Any]:
     try:
         dataset = datasets.reload(dataset_id)
     except DatasetError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return {"ok": True, "active_dataset": datasets.active_id, "dataset": dataset}
+    return {"ok": True, "active_dataset": _effective_dataset_id(request), "dataset": dataset}
 
 
-@app.get("/api/pois")
-def get_pois() -> dict[str, Any]:
-    return datasets.get_active_pois()
+@protected.get("/api/pois")
+def get_pois(request: Request, dataset_id: str | None = None) -> dict[str, Any]:
+    return datasets.get_pois(_effective_dataset_id(request, dataset_id))
 
 
-@app.get("/api/pois/search")
+@protected.get("/api/pois/search")
 def search_pois(
-    dataset_id: str,
+    request: Request,
+    dataset_id: str | None = None,
     q: str | None = None,
     type: str | None = None,
     min_priority: float | None = None,
@@ -153,7 +195,7 @@ def search_pois(
 ) -> dict[str, Any]:
     try:
         return datasets.search_index.search(
-            dataset_id,
+            _effective_dataset_id(request, dataset_id),
             q=q,
             landmark_type=type,
             min_priority=min_priority,
@@ -170,8 +212,8 @@ def search_pois(
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
-@app.post("/api/pois/query")
-def query_pois(payload: dict[str, Any]) -> dict[str, Any]:
+@protected.post("/api/pois/query")
+def query_pois(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     """Field-specific search. Quick text is ANDed with the condition group."""
     try:
         raw_bbox = payload.get("bbox")
@@ -186,7 +228,7 @@ def query_pois(payload: dict[str, Any]) -> dict[str, Any]:
                 "bbox must be [west,south,east,north]"
             )
         return datasets.search_index.query(
-            payload.get("dataset_id"),
+            _effective_dataset_id(request, payload.get("dataset_id")),
             q=payload.get("q"),
             mode=payload.get("mode", "and"),
             conditions=payload.get("conditions", []),
@@ -202,13 +244,13 @@ def query_pois(payload: dict[str, Any]) -> dict[str, Any]:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
-@app.post("/api/pois/diagnostics/nearby")
-def nearby_diagnostic_pois(payload: dict[str, Any]) -> dict[str, Any]:
+@protected.post("/api/pois/diagnostics/nearby")
+def nearby_diagnostic_pois(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     """Retrieve source POIs truly within radius of route/maneuver points."""
     limits = settings.get("diagnostics", {})
     try:
         return datasets.search_index.nearby(
-            payload.get("dataset_id"),
+            _effective_dataset_id(request, payload.get("dataset_id")),
             points=payload.get("points"),
             radius_m=payload.get("radius_m"),
             max_results=int(limits.get("max_results", 10_000)),
@@ -224,12 +266,12 @@ def nearby_diagnostic_pois(payload: dict[str, Any]) -> dict[str, Any]:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
-@app.get("/api/scenarios")
+@protected.get("/api/scenarios")
 def get_scenarios() -> dict[str, Any]:
-    return scenarios.list()
+    return {**scenarios.list(), "source": "legacy", "read_only": True}
 
 
-@app.get("/api/scenarios/{scenario_id}")
+@protected.get("/api/scenarios/{scenario_id}")
 def get_scenario(scenario_id: str) -> dict[str, Any]:
     try:
         return scenarios.get(scenario_id)
@@ -237,33 +279,52 @@ def get_scenario(scenario_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-@app.post("/api/scenarios", status_code=201)
-def create_scenario(payload: dict[str, Any]) -> dict[str, Any]:
+@protected.get("/api/testcases")
+def list_testcases(request: Request, q: str = "", limit: int = 50, offset: int = 0) -> dict[str, Any]:
     try:
-        return scenarios.create(payload)
-    except ScenarioError as exc:
+        return testcases.list(_user_id(request), query=q, limit=limit, offset=offset)
+    except TestcaseError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.put("/api/scenarios/{scenario_id}")
-def update_scenario(scenario_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+@protected.post("/api/testcases", status_code=201)
+def create_testcase(request: Request, payload: dict[str, Any]) -> dict[str, Any]:
     try:
-        return scenarios.update(scenario_id, payload)
-    except ScenarioError as exc:
-        status = 404 if "not found" in str(exc).lower() else 400
-        raise HTTPException(status_code=status, detail=str(exc)) from exc
+        return testcases.create(_user_id(request), payload)
+    except TestcaseError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.delete("/api/scenarios/{scenario_id}")
-def delete_scenario(scenario_id: str) -> dict[str, Any]:
+@protected.get("/api/testcases/{testcase_id}")
+def get_testcase(testcase_id: str, request: Request) -> dict[str, Any]:
     try:
-        scenarios.delete(scenario_id)
-    except ScenarioError as exc:
+        return testcases.get(_user_id(request), testcase_id)
+    except TestcaseNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return {"ok": True, "id": scenario_id}
 
 
-@app.get("/api/valhalla/status")
+@protected.patch("/api/testcases/{testcase_id}")
+def update_testcase(testcase_id: str, request: Request, payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        return testcases.update(_user_id(request), testcase_id, payload)
+    except TestcaseNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except TestcaseConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except TestcaseError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@protected.delete("/api/testcases/{testcase_id}")
+def delete_testcase(testcase_id: str, request: Request) -> dict[str, Any]:
+    try:
+        testcases.delete(_user_id(request), testcase_id)
+    except TestcaseNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"ok": True, "id": testcase_id}
+
+
+@protected.get("/api/valhalla/status")
 async def valhalla_status() -> dict[str, Any]:
     timeout = float(settings["valhalla"].get("timeout_seconds", 20))
     url = _valhalla_url(settings["valhalla"].get("status_path", "/status"))
@@ -276,11 +337,13 @@ async def valhalla_status() -> dict[str, Any]:
         return {"ok": False, "url": url, "error": str(exc)}
 
 
-@app.post("/api/route")
-async def route(payload: dict[str, Any]) -> dict[str, Any]:
+@protected.post("/api/route")
+async def route(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     if not isinstance(payload.get("locations"), list) or len(payload["locations"]) < 2:
         raise HTTPException(status_code=400, detail="Route request needs at least two locations")
 
+    _effective_dataset_id(request, payload.get("dataset_id"))
+    engine_payload = {key: value for key, value in payload.items() if key != "dataset_id"}
     timeout = float(settings["valhalla"].get("timeout_seconds", 20))
     url = _valhalla_url(settings["valhalla"].get("route_path", "/route"))
 
@@ -288,7 +351,7 @@ async def route(payload: dict[str, Any]) -> dict[str, Any]:
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(
                 url,
-                content=json.dumps(payload, separators=(",", ":")),
+                content=json.dumps(engine_payload, separators=(",", ":")),
                 headers={"Content-Type": "application/json"},
             )
     except httpx.HTTPError as exc:
@@ -311,7 +374,7 @@ async def route(payload: dict[str, Any]) -> dict[str, Any]:
     return body
 
 
-@app.get("/api/osrm/status")
+@protected.get("/api/osrm/status")
 async def osrm_status() -> dict[str, Any]:
     timeout = float(settings["osrm"].get("timeout_seconds", 20))
     profile = str(settings["osrm"].get("profile", "driving"))
@@ -337,7 +400,7 @@ async def osrm_status() -> dict[str, Any]:
         return {"ok": False, "url": url, "error": str(exc)}
 
 
-async def _compare_valhalla(payload: dict[str, Any]) -> dict[str, Any]:
+async def _compare_valhalla(payload: dict[str, Any], dataset_id: str) -> dict[str, Any]:
     timeout = float(settings["valhalla"].get("timeout_seconds", 20))
     url = _valhalla_url(settings["valhalla"].get("route_path", "/route"))
 
@@ -374,7 +437,7 @@ async def _compare_valhalla(payload: dict[str, Any]) -> dict[str, Any]:
             "error": f"Valhalla returned HTTP {response.status_code}",
         }
 
-    candidate_analysis = valhalla_landmark_debug.analyze_route(body)
+    candidate_analysis = valhalla_landmark_debug.analyze_route(body, dataset_id)
 
     return {
         "ok": True,
@@ -385,7 +448,7 @@ async def _compare_valhalla(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-async def _compare_osrm(payload: dict[str, Any]) -> dict[str, Any]:
+async def _compare_osrm(payload: dict[str, Any], dataset_id: str) -> dict[str, Any]:
     osrm = settings["osrm"]
     timeout = float(osrm.get("timeout_seconds", 20))
     profile = str(osrm.get("profile", "driving"))
@@ -449,7 +512,7 @@ async def _compare_osrm(payload: dict[str, Any]) -> dict[str, Any]:
             "error": f"OSRM route failed: HTTP {response.status_code}, code={body.get('code')}",
         }
 
-    candidate_analysis = osrm_landmark_debug.analyze_route(body)
+    candidate_analysis = osrm_landmark_debug.analyze_route(body, dataset_id)
 
     return {
         "ok": True,
@@ -460,8 +523,8 @@ async def _compare_osrm(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-@app.post("/api/route/compare")
-async def compare_route(payload: dict[str, Any]) -> dict[str, Any]:
+@protected.post("/api/route/compare")
+async def compare_route(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     locations = payload.get("locations")
 
     if not isinstance(locations, list) or len(locations) < 2:
@@ -470,15 +533,21 @@ async def compare_route(payload: dict[str, Any]) -> dict[str, Any]:
             detail="Route request needs at least two locations",
         )
 
+    dataset_id = _effective_dataset_id(request, payload.get("dataset_id"))
+    engine_payload = {key: value for key, value in payload.items() if key != "dataset_id"}
     valhalla_result, osrm_result = await asyncio.gather(
-        _compare_valhalla(payload),
-        _compare_osrm(payload),
+        _compare_valhalla(engine_payload, dataset_id),
+        _compare_osrm(engine_payload, dataset_id),
     )
 
     return {
+        "dataset_id": dataset_id,
         "valhalla": valhalla_result,
         "osrm": osrm_result,
     }
+
+
+app.include_router(protected)
 
 
 # A production build can be served by this process, keeping the frontend and

@@ -1,13 +1,15 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import maplibregl, { LngLatBounds, Map as MapLibreMap } from 'maplibre-gl';
-import { activateDataset, createScenario, deleteScenario, getDatasets, getOsrmStatus, getScenarios, getValhallaStatus, reloadDatasetPois, requestCompareRoute, updateScenario } from './api';
+import { createScenario, deleteScenario, getDatasets, getOsrmStatus, getScenarios, getValhallaStatus, reloadDatasetPois, requestCompareRoute, updatePreferences, updateScenario } from './api';
 import { updateCoordinateValue } from './coordinates';
 import { decodePolyline6 } from './polyline';
 import { pointFeature, propNumber, propText } from './poi';
 import { fetchDiagnosticPois, mergePoiPages, queryPois, searchPois, type PoiBounds, type PoiSearchCondition, type PoiSearchResponse } from './poiSearchApi';
 import { evaluateScenario, type ScenarioRunResult } from './scenarioAssertions';
 import { loadInitialDashboard } from './initialization';
+import { AuthApiError, developmentLogin, getAuthConfig, getCurrentSession, logout, passwordLogin, registerAccount, setAuthSession, type AuthConfig, type AuthSession } from './auth';
 import { AnalysisWorkspace, Sidebar } from './components/DashboardLayout';
+import { AdminConsole } from './components/admin/AdminConsole';
 import { CandidateAnalysisPanel } from './components/analysis/CandidateAnalysisPanel';
 import { RawResponseCards } from './components/analysis/RawResponseInspection';
 import { AnalysisTabContent } from './components/analysis/AnalysisTabContent';
@@ -39,7 +41,7 @@ import {
   selectAnalysisTab,
   togglePanel,
 } from './layoutState';
-import type { CandidateAnalysis, CandidateAnalysisManeuver, DatasetRegistryResponse, DatasetSummary, DebuggerConfig, LngLat, Maneuver, OsrmRouteResponse, OsrmStep, RouteScenario, ScenarioRegistryResponse, ValhallaRouteResponse } from './types';
+import type { CandidateAnalysis, CandidateAnalysisManeuver, DatasetRegistryResponse, DatasetSummary, DebuggerConfig, LngLat, Maneuver, OsrmRouteResponse, OsrmStep, RouteScenario, ScenarioRegistryResponse, UserPreferencesPatch, ValhallaRouteResponse } from './types';
 
 declare const __VPD_MOCK_API__: boolean;
 
@@ -284,7 +286,7 @@ function osrmInstructionText(step: OsrmStep): string {
 
 type Basemap = 'openfreemap' | 'mapmyindia';
 
-export default function App() {
+function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () => Promise<void> }) {
   const mapContainer = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
 
@@ -346,6 +348,7 @@ export default function App() {
 
 
   const [config, setConfig] = useState<DebuggerConfig | null>(null);
+  const [workspaceView, setWorkspaceView] = useState<'debugger' | 'admin'>('debugger');
   const [initializationError, setInitializationError] = useState('');
   const [initializationAttempt, setInitializationAttempt] = useState(0);
   const [basemap, setBasemap] = useState<Basemap>('mapmyindia');
@@ -390,6 +393,10 @@ export default function App() {
   const [datasetRegistry, setDatasetRegistry] = useState<DatasetRegistryResponse | null>(null);
   const [datasetBusy, setDatasetBusy] = useState(false);
   const [datasetMessage, setDatasetMessage] = useState('');
+  const activeDatasetIdRef = useRef('');
+  const lastSavedPreferencesRef = useRef('');
+  const preferencesReadyRef = useRef(false);
+  const routeRequestRef = useRef<AbortController | null>(null);
 
   const [scenarioRegistry, setScenarioRegistry] = useState<ScenarioRegistryResponse | null>(null);
   const [scenarioName, setScenarioName] = useState('');
@@ -414,6 +421,7 @@ export default function App() {
   const searchCriteriaKey = JSON.stringify([datasetRegistry?.active_dataset ?? '', debouncedPoiSearch.trim(), appliedConditionMode, advancedConditions, appliedSearchScope, searchViewportRevision]);
   const searchCriteriaRef = useRef(searchCriteriaKey);
   searchCriteriaRef.current = searchCriteriaKey;
+  activeDatasetIdRef.current = datasetRegistry?.active_dataset ?? '';
 
   const toggleLayoutPanel = (panel: 'left' | 'right' | 'analysis') => {
     setLayout((current) => togglePanel(current, panel));
@@ -1284,6 +1292,21 @@ export default function App() {
         setConfig(initial.config);
         setDatasetRegistry(initial.datasets);
         setScenarioRegistry(initial.scenarios);
+        basemapRef.current = initial.preferences.preferred_basemap;
+        setBasemap(initial.preferences.preferred_basemap);
+        setMap3D(initial.preferences.map_display_mode === '3d');
+        setRouteView(initial.preferences.route_view);
+        setLayout(initial.preferences.layout);
+        lastSavedPreferencesRef.current = JSON.stringify({
+          preferred_basemap: initial.preferences.preferred_basemap,
+          map_display_mode: initial.preferences.map_display_mode,
+          route_view: initial.preferences.route_view,
+          layout: initial.preferences.layout,
+        });
+        preferencesReadyRef.current = true;
+        if (initial.preferences.dataset_selection_fallback) {
+          setDatasetMessage(`Dataset ${initial.preferences.unavailable_dataset_id ?? ''} is unavailable; using ${initial.preferences.selected_dataset_id}.`);
+        }
 
         const [valhallaStatusResponse, osrmStatusResponse] = await Promise.all([
           getValhallaStatus(),
@@ -1303,6 +1326,26 @@ export default function App() {
     })();
     return () => { cancelled = true; };
   }, [initializationAttempt]);
+
+  useEffect(() => {
+    if (!preferencesReadyRef.current) return;
+    const payload: UserPreferencesPatch = {
+      preferred_basemap: basemap,
+      map_display_mode: map3D ? '3d' : '2d',
+      route_view: routeView,
+      layout,
+    };
+    const serialized = JSON.stringify(payload);
+    if (serialized === lastSavedPreferencesRef.current) return;
+    const timer = window.setTimeout(() => {
+      updatePreferences(payload).then(() => {
+        lastSavedPreferencesRef.current = serialized;
+      }).catch((err) => {
+        setError(`Could not save dashboard preferences: ${err instanceof Error ? err.message : String(err)}`);
+      });
+    }, 500);
+    return () => window.clearTimeout(timer);
+  }, [basemap, map3D, routeView, layout]);
 
   useEffect(() => {
     if (!config || !mapContainer.current || mapRef.current) return;
@@ -1800,6 +1843,9 @@ export default function App() {
         map.on('mouseleave', layerId, () => { map.getCanvas().style.cursor = ''; });
       }
 
+      if (map3D) {
+        map.jumpTo({ pitch: 60, bearing: 25 });
+      }
       void installMapmyindiaBasemap(map);
     });
 
@@ -1856,6 +1902,7 @@ export default function App() {
   useEffect(() => () => {
     viewportRequestsRef.current.cancel();
     diagnosticRequestRef.current?.controller.abort();
+    routeRequestRef.current?.abort();
   }, []);
 
   useEffect(() => {
@@ -2243,9 +2290,13 @@ export default function App() {
     setDatasetBusy(true);
     setDatasetMessage('');
     setError('');
+    viewportRequestsRef.current.cancel();
+    diagnosticRequestRef.current?.controller.abort();
+    loadMoreControllerRef.current?.abort();
+    routeRequestRef.current?.abort();
     try {
-      await activateDataset(datasetId);
-      await refreshActiveDataset(`Activated ${datasetId}.`, false);
+      await updatePreferences({ selected_dataset_id: datasetId });
+      await refreshActiveDataset(`Selected ${datasetId}.`, false);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -2270,6 +2321,11 @@ export default function App() {
   }
 
   async function executeRoute(routeStart: LngLat, routeEnd: LngLat, costing = 'auto'): Promise<ValhallaRouteResponse | null> {
+    const datasetId = activeDatasetIdRef.current;
+    if (!datasetId) return null;
+    routeRequestRef.current?.abort();
+    const controller = new AbortController();
+    routeRequestRef.current = controller;
     setBusy(true);
     setError('');
     setSelectedManeuverIndex(null);
@@ -2298,9 +2354,11 @@ export default function App() {
         costing,
         units: 'kilometers',
         directions_options: { units: 'kilometers' },
+        dataset_id: datasetId,
       };
 
-      const comparison = await requestCompareRoute(payload);
+      const comparison = await requestCompareRoute(payload, controller.signal);
+      if (controller.signal.aborted || activeDatasetIdRef.current !== datasetId) return null;
 
       const valhallaResponse =
         comparison.valhalla.ok
@@ -2423,6 +2481,7 @@ export default function App() {
       // Existing scenario assertions are still Odin/Valhalla assertions.
       return valhallaResponse;
     } catch (err) {
+      if (controller.signal.aborted) return null;
       setRoute(null);
       setOsrmRoute(null);
       setRouteGeoJson(EMPTY_FC);
@@ -2432,7 +2491,10 @@ export default function App() {
       setError(err instanceof Error ? err.message : String(err));
       return null;
     } finally {
-      setBusy(false);
+      if (routeRequestRef.current === controller) {
+        routeRequestRef.current = null;
+        setBusy(false);
+      }
     }
   }
 
@@ -2514,6 +2576,10 @@ export default function App() {
   }
 
   async function editScenarioExpectation(scenario: RouteScenario) {
+    const name = window.prompt('Testcase name.', scenario.name);
+    if (name === null || !name.trim()) return;
+    const description = window.prompt('Testcase description.', scenario.description ?? '');
+    if (description === null) return;
     const currentContains = scenario.expectation?.instruction_contains ?? scenario.expectation?.landmark_name ?? '';
     const contains = window.prompt('Expected Odin text / landmark name. Leave blank for no positive assertion.', currentContains);
     if (contains === null) return;
@@ -2525,6 +2591,9 @@ export default function App() {
     setError('');
     try {
       await updateScenario(scenario.id, {
+        revision: scenario.revision,
+        name: name.trim(),
+        description: description.trim(),
         expectation: {
           landmark_name: contains.trim(),
           instruction_contains: contains.trim(),
@@ -2537,7 +2606,7 @@ export default function App() {
         delete next[scenario.id];
         return next;
       });
-      await refreshScenarios(`Updated expectations for ${scenario.name}.`);
+      await refreshScenarios(`Updated testcase ${name.trim()}.`);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -2598,7 +2667,7 @@ export default function App() {
           end: { lon: end[0], lat: end[1] },
           costing: 'auto',
         },
-        notes: scenarioNotes.trim(),
+        description: scenarioNotes.trim(),
         expectation: {
           landmark_name: scenarioExpectedText.trim(),
           instruction_contains: scenarioExpectedText.trim(),
@@ -2915,15 +2984,15 @@ export default function App() {
           </div>
         </div>
 
-        <button
+        {workspaceView === 'debugger' && <button
           className="primary-route-action"
           onClick={runRoute}
           disabled={busy || !start || !end}
         >
           {busy ? 'Running both engines…' : 'Run route comparison'}
-        </button>
+        </button>}
 
-        <div className="toolbar-cluster" aria-label="Map view controls">
+        {workspaceView === 'debugger' && <div className="toolbar-cluster" aria-label="Map view controls">
           <label className="toolbar-select">
             <span>Basemap</span>
             <select
@@ -2946,20 +3015,22 @@ export default function App() {
             <button className={!map3D ? 'is-active' : ''} aria-pressed={!map3D} onClick={() => set3DView(false)}>2D</button>
             <button className={map3D ? 'is-active' : ''} aria-pressed={map3D} onClick={() => set3DView(true)}>3D</button>
           </div>
-        </div>
+        </div>}
 
-        <div className="engine-statuses" aria-label="Routing engine status">
+        {workspaceView === 'debugger' && <div className="engine-statuses" aria-label="Routing engine status">
           {__VPD_MOCK_API__ && <div className="mock-mode-badge" title="Responses are synthetic and provided by the Vite development server">Mock Data / Development Mode</div>}
           <div className={`status-pill ${valhallaStatus}`}><i />Valhalla</div>
           <div className={`status-pill ${osrmStatus}`}><i />OSRM</div>
-        </div>
+        </div>}
 
-        <div className="user-nav-reserved" aria-label="User navigation reserved">
-          <span aria-hidden="true">Workspace</span>
+        <div className="user-nav" aria-label="Current user">
+          {session.user.role === 'super_admin' && <button type="button" className={workspaceView === 'admin' ? 'is-active' : ''} onClick={() => setWorkspaceView((current) => current === 'admin' ? 'debugger' : 'admin')}>{workspaceView === 'admin' ? 'Debugger' : 'Admin Console'}</button>}
+          <span title={session.user.email ?? session.user.display_name}>{session.user.display_name}</span>
+          <button type="button" onClick={() => void onLogout()}>Log out</button>
         </div>
       </header>
 
-      <main
+      {workspaceView === 'admin' ? <AdminConsole /> : <main
         className={`workspace${layout.leftCollapsed ? ' left-collapsed' : ''}${layout.rightCollapsed ? ' right-collapsed' : ''}${layout.analysisCollapsed ? ' analysis-collapsed' : ''}`}
       >
         <Sidebar
@@ -3543,7 +3614,231 @@ export default function App() {
             onToggleCandidatesOnMap={() => setShowCandidateMap((current) => !current)}
           />
         </AnalysisWorkspace>
-      </main>
+      </main>}
     </div>
   );
+}
+
+function LoginBrand() {
+  return (
+    <div className="login-brand" aria-label="MapmyIndia Engineering">
+      <span className="login-brand__mark" aria-hidden="true"><i /></span>
+      <span><strong>MapmyIndia</strong><small>Engineering</small></span>
+    </div>
+  );
+}
+
+function PasswordInput({ id, label, value, onChange, autoComplete }: {
+  id: string; label: string; value: string; onChange: (value: string) => void; autoComplete: string;
+}) {
+  const [visible, setVisible] = useState(false);
+  return (
+    <label className="auth-field" htmlFor={id}>
+      <span>{label}</span>
+      <span className="password-input">
+        <input
+          id={id}
+          type={visible ? 'text' : 'password'}
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          autoComplete={autoComplete}
+          maxLength={4096}
+          required
+        />
+        <button type="button" onClick={() => setVisible((current) => !current)} aria-label={`${visible ? 'Hide' : 'Show'} ${label.toLowerCase()}`}>
+          {visible ? 'Hide' : 'Show'}
+        </button>
+      </span>
+    </label>
+  );
+}
+
+function AuthenticationScreen({ config, initialError, sessionExpired, onAuthenticated, onDevelopmentLogin }: {
+  config: AuthConfig | null;
+  initialError: string;
+  sessionExpired: boolean;
+  onAuthenticated: (session: AuthSession) => void;
+  onDevelopmentLogin: () => Promise<void>;
+}) {
+  const [view, setView] = useState<'sign-in' | 'sign-up'>('sign-in');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(initialError);
+  const [notice, setNotice] = useState('');
+  const [identifier, setIdentifier] = useState('');
+  const [loginPassword, setLoginPassword] = useState('');
+  const [signup, setSignup] = useState({ full_name: '', username: '', email: '', password: '', confirm_password: '' });
+
+  const switchView = (next: 'sign-in' | 'sign-up') => {
+    setView(next);
+    setError('');
+    setNotice('');
+  };
+
+  async function submitLogin(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBusy(true);
+    setError('');
+    try {
+      onAuthenticated(await passwordLogin(identifier, loginPassword));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function submitRegistration(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError('');
+    if (signup.password !== signup.confirm_password) {
+      setError('Passwords do not match');
+      return;
+    }
+    setBusy(true);
+    try {
+      await registerAccount(signup);
+      setIdentifier(signup.username);
+      setLoginPassword('');
+      setSignup({ full_name: '', username: '', email: '', password: '', confirm_password: '' });
+      setView('sign-in');
+      setNotice('Account created. Sign in with your username or email.');
+    } catch (caught) {
+      setError(caught instanceof AuthApiError ? caught.message : caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <main className="login-screen">
+      <section className={`login-card ${view === 'sign-up' ? 'login-card--signup' : ''}`} aria-labelledby="login-heading">
+        <LoginBrand />
+        <div className="login-card__intro">
+          <p className="product-kicker">Internal engineering platform</p>
+          <h1 id="login-heading">{view === 'sign-in' ? 'Sign in' : 'Create account'}</h1>
+          <p className="login-subtitle">POI &amp; Routing Testing Workspace</p>
+        </div>
+
+        {sessionExpired && view === 'sign-in' && <div className="session-expired-message" role="alert">Your session expired. Sign in again to continue.</div>}
+        {notice && <div className="auth-success" role="status">{notice}</div>}
+        {error && <div className="auth-error" role="alert">{error}</div>}
+
+        {view === 'sign-in' ? (
+          <>
+            {config?.local_login_available && (
+              <form className="auth-form" onSubmit={(event) => void submitLogin(event)}>
+                <label className="auth-field" htmlFor="login-identifier">
+                  <span>Username or Email</span>
+                  <input id="login-identifier" value={identifier} onChange={(event) => setIdentifier(event.target.value)} autoComplete="username" maxLength={254} required autoFocus />
+                </label>
+                <PasswordInput id="login-password" label="Password" value={loginPassword} onChange={setLoginPassword} autoComplete="current-password" />
+                <button className="login-button" type="submit" disabled={busy}>{busy ? 'Signing in…' : 'Sign In'}</button>
+                <button className="auth-link-button" type="button" onClick={() => switchView('sign-up')}>Create Account</button>
+              </form>
+            )}
+            {config?.oidc_login_available && (
+              <div className={config.local_login_available ? 'auth-alternative' : ''}>
+                {config.local_login_available && <span>or</span>}
+                <a className="login-button login-button--secondary" href="/api/auth/login?next=%2F">Sign in with company SSO <span aria-hidden="true">→</span></a>
+              </div>
+            )}
+            {config?.development_login_available && (
+              <div className="development-auth">
+                <div className="development-auth-warning"><strong>Development only</strong><span>Loopback development authentication is enabled.</span></div>
+                <button className="login-button login-button--development" type="button" disabled={busy} onClick={() => void onDevelopmentLogin()}>Continue as Local Developer</button>
+              </div>
+            )}
+          </>
+        ) : (
+          <form className="auth-form" onSubmit={(event) => void submitRegistration(event)}>
+            <label className="auth-field" htmlFor="signup-name"><span>Full Name</span><input id="signup-name" value={signup.full_name} onChange={(event) => setSignup({ ...signup, full_name: event.target.value })} autoComplete="name" minLength={2} maxLength={100} required autoFocus /></label>
+            <label className="auth-field" htmlFor="signup-username"><span>Username</span><input id="signup-username" value={signup.username} onChange={(event) => setSignup({ ...signup, username: event.target.value })} autoComplete="username" pattern="[A-Za-z][A-Za-z0-9._-]{2,31}" title="3–32 characters; start with a letter and use letters, numbers, dots, underscores, or hyphens" required /></label>
+            <label className="auth-field" htmlFor="signup-email"><span>Email</span><input id="signup-email" type="email" value={signup.email} onChange={(event) => setSignup({ ...signup, email: event.target.value })} autoComplete="email" maxLength={254} required /></label>
+            <PasswordInput id="signup-password" label="Password" value={signup.password} onChange={(password) => setSignup({ ...signup, password })} autoComplete="new-password" />
+            <PasswordInput id="signup-confirm-password" label="Confirm Password" value={signup.confirm_password} onChange={(confirm_password) => setSignup({ ...signup, confirm_password })} autoComplete="new-password" />
+            <p className="password-guidance">Choose any nonempty password (up to 4096 characters).</p>
+            <button className="login-button" type="submit" disabled={busy}>{busy ? 'Creating account…' : 'Create Account'}</button>
+            <button className="auth-link-button" type="button" onClick={() => switchView('sign-in')}>Already have an account? Sign In</button>
+          </form>
+        )}
+        <p className="login-security-note">Secure authentication · Protected company session</p>
+      </section>
+    </main>
+  );
+}
+
+export default function App() {
+  const [authConfig, setAuthConfig] = useState<AuthConfig | null>(null);
+  const [session, setSession] = useState<AuthSession | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [authError, setAuthError] = useState('');
+  const [sessionExpired, setSessionExpired] = useState(false);
+
+  useEffect(() => {
+    let current = true;
+    void (async () => {
+      try {
+        const config = await getAuthConfig();
+        const activeSession = await getCurrentSession();
+        if (!current) return;
+        setAuthConfig(config);
+        setSession(activeSession);
+      } catch (error) {
+        if (current) setAuthError(error instanceof Error ? error.message : String(error));
+      } finally {
+        if (current) setAuthLoading(false);
+      }
+    })();
+    const expired = () => {
+      setAuthSession(null);
+      setSession(null);
+      setSessionExpired(true);
+    };
+    window.addEventListener('vpd:session-expired', expired);
+    return () => {
+      current = false;
+      window.removeEventListener('vpd:session-expired', expired);
+    };
+  }, []);
+
+  async function useDevelopmentLogin() {
+    try {
+      setAuthLoading(true);
+      setAuthError('');
+      setSession(await developmentLogin());
+      setSessionExpired(false);
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setAuthLoading(false);
+    }
+  }
+
+  async function endSession() {
+    try {
+      await logout();
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setAuthSession(null);
+      setSession(null);
+      setSessionExpired(false);
+    }
+  }
+
+  if (authLoading) {
+    return (
+      <main className="login-screen login-screen--loading">
+        <div className="auth-loading" role="status">
+          <span className="auth-loading__indicator" aria-hidden="true" />
+          <span>Checking your secure session…</span>
+        </div>
+      </main>
+    );
+  }
+  if (!session) {
+    return <AuthenticationScreen config={authConfig} initialError={authError} sessionExpired={sessionExpired} onAuthenticated={(activeSession) => { setSession(activeSession); setSessionExpired(false); }} onDevelopmentLogin={useDevelopmentLogin} />;
+  }
+
+  return <Dashboard session={session} onLogout={endSession} />;
 }

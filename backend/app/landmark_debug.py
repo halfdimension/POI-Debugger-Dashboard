@@ -46,8 +46,8 @@ class OsrmLandmarkDebugManager:
     # Source resolution
     # ------------------------------------------------------------------
 
-    def _configured_path(self) -> Path | None:
-        active = self._datasets.active_config()
+    def _configured_path(self, dataset_id: str) -> Path | None:
+        active = self._datasets.config(dataset_id)
 
         value = (
             active.get("osrm_landmark_debug_jsonl_path")
@@ -65,8 +65,8 @@ class OsrmLandmarkDebugManager:
     # Cache/index
     # ------------------------------------------------------------------
 
-    def _ensure_loaded(self) -> dict[str, Any]:
-        path = self._configured_path()
+    def _ensure_loaded(self, dataset_id: str) -> dict[str, Any]:
+        path = self._configured_path(dataset_id)
 
         if path is None:
             raise OsrmLandmarkDebugError(
@@ -436,6 +436,17 @@ class OsrmLandmarkDebugManager:
     def analyze_route(
         self,
         route_response: dict[str, Any],
+        dataset_id: str,
+    ) -> dict[str, Any]:
+        # The legacy parser keeps one in-memory index. Hold the lock through the
+        # complete join so another dataset cannot replace it mid-request.
+        with self._lock:
+            return self._analyze_route_locked(route_response, dataset_id)
+
+    def _analyze_route_locked(
+        self,
+        route_response: dict[str, Any],
+        dataset_id: str,
     ) -> dict[str, Any]:
         base: dict[str, Any] = {
             "schema": NORMALIZED_SCHEMA,
@@ -458,7 +469,7 @@ class OsrmLandmarkDebugManager:
         }
 
         try:
-            source = self._ensure_loaded()
+            source = self._ensure_loaded(dataset_id)
         except OsrmLandmarkDebugError as exc:
             base["error"] = str(exc)
             return base

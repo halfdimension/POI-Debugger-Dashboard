@@ -2,6 +2,15 @@ import { describe, expect, it } from 'vitest';
 import { createMockApiState, handleMockApi, shouldEnableMockApi } from './mockApi';
 
 describe('development mock API contracts', () => {
+  it('exposes the authentication configuration route used through Vite', async () => {
+    const response = await handleMockApi('GET', '/api/auth/config', {}, createMockApiState());
+    expect(response?.status).toBe(200);
+    expect(response?.body).toMatchObject({
+      mode: 'development', development_login_available: true,
+      local_login_available: false, oidc_login_available: false,
+    });
+  });
+
   it('returns the startup resources and a realistic route comparison', async () => {
     const state = createMockApiState();
     const config = await handleMockApi('GET', '/api/config', {}, state);
@@ -23,6 +32,14 @@ describe('development mock API contracts', () => {
     const registry = await handleMockApi('GET', '/api/datasets', {}, state);
     expect((await handleMockApi('GET', '/api/pois', {}, state))?.body).toEqual({ type: 'FeatureCollection', features: [] });
     expect((registry?.body as any).datasets.find((item: any) => item.id === 'mock-error').error).toContain('Synthetic');
+  });
+
+  it('persists the selected dataset through the preference contract', async () => {
+    const state = createMockApiState();
+    const updated = await handleMockApi('PATCH', '/api/users/me/preferences', { selected_dataset_id: 'mock-empty' }, state);
+    expect((updated?.body as any).selected_dataset_id).toBe('mock-empty');
+    expect(((await handleMockApi('GET', '/api/datasets', {}, state))?.body as any).active_dataset).toBe('mock-empty');
+    expect((await handleMockApi('PATCH', '/api/users/me/preferences', { selected_dataset_id: 'missing' }, state))?.status).toBe(400);
   });
 
   it('implements bounded, filtered and paginated POI search', async () => {

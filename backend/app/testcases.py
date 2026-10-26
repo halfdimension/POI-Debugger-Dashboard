@@ -1,0 +1,212 @@
+from __future__ import annotations
+
+import json
+import sqlite3
+import threading
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Iterable
+
+from .scenarios import ScenarioError, normalize_scenario
+
+
+class TestcaseError(ValueError):
+    pass
+
+
+class TestcaseNotFoundError(TestcaseError):
+    pass
+
+
+class TestcaseConflictError(TestcaseError):
+    pass
+
+
+MAX_NAME_LENGTH = 160
+MAX_DESCRIPTION_LENGTH = 4000
+MAX_CONFIGURATION_BYTES = 64 * 1024
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+class TestcaseRepository:
+    """SQLite repository whose every data operation is scoped to an owner ID."""
+
+    def __init__(self, path: str | Path, dataset_ids: Iterable[str]):
+        self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._dataset_ids = frozenset(dataset_ids)
+        self._schema_lock = threading.Lock()
+        self._initialize()
+
+    def _connect(self) -> sqlite3.Connection:
+        connection = sqlite3.connect(self.path, timeout=10)
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA busy_timeout = 10000")
+        connection.execute("PRAGMA journal_mode = WAL")
+        connection.execute("PRAGMA synchronous = NORMAL")
+        connection.execute("PRAGMA foreign_keys = ON")
+        return connection
+
+    def _initialize(self) -> None:
+        with self._schema_lock, self._connect() as connection:
+            version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+            if version > 1:
+                raise RuntimeError(f"Testcase database schema {version} is newer than this application supports")
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS testcases (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    owner_user_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    description TEXT NOT NULL DEFAULT '',
+                    dataset_id TEXT NOT NULL,
+                    configuration_json TEXT NOT NULL,
+                    visibility TEXT NOT NULL DEFAULT 'private' CHECK (visibility IN ('private', 'shared')),
+                    revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_testcases_owner_updated ON testcases(owner_user_id, updated_at DESC, id)"
+            )
+            if version < 1:
+                connection.execute("PRAGMA user_version = 1")
+
+    def _validate_configuration(self, payload: Any, *, testcase_id: str) -> tuple[str, str, dict[str, Any]]:
+        if not isinstance(payload, dict):
+            raise TestcaseError("Testcase payload must be a JSON object")
+        unknown = sorted(set(payload) - {"name", "description", "dataset", "request", "expectation", "revision"})
+        if unknown:
+            raise TestcaseError(f"Unknown testcase fields: {', '.join(unknown)}")
+        name = str(payload.get("name", "")).strip()
+        if not name:
+            raise TestcaseError("Testcase name is required")
+        if len(name) > MAX_NAME_LENGTH:
+            raise TestcaseError(f"Testcase name must be at most {MAX_NAME_LENGTH} characters")
+        description = str(payload.get("description", "")).strip()
+        if len(description) > MAX_DESCRIPTION_LENGTH:
+            raise TestcaseError(f"Testcase description must be at most {MAX_DESCRIPTION_LENGTH} characters")
+        dataset = str(payload.get("dataset", "")).strip()
+        if dataset not in self._dataset_ids:
+            raise TestcaseError(f"Unknown dataset: {dataset}")
+        try:
+            configuration = normalize_scenario(
+                {**payload, "notes": description}, scenario_id=testcase_id
+            )
+        except ScenarioError as exc:
+            raise TestcaseError(str(exc)) from exc
+        configuration.pop("id", None)
+        configuration.pop("name", None)
+        configuration.pop("notes", None)
+        configuration.pop("created_at", None)
+        configuration.pop("updated_at", None)
+        encoded = json.dumps(configuration, separators=(",", ":"), sort_keys=True)
+        if len(encoded.encode("utf-8")) > MAX_CONFIGURATION_BYTES:
+            raise TestcaseError("Testcase configuration is too large")
+        return name, description, configuration
+
+    @staticmethod
+    def _public(row: sqlite3.Row) -> dict[str, Any]:
+        configuration = json.loads(row["configuration_json"])
+        return {
+            "id": row["id"],
+            "name": row["name"],
+            "description": row["description"],
+            **configuration,
+            "visibility": row["visibility"],
+            "revision": row["revision"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
+    def create(self, owner_user_id: str, payload: Any) -> dict[str, Any]:
+        testcase_id = str(uuid.uuid4())
+        name, description, configuration = self._validate_configuration(payload, testcase_id=testcase_id)
+        now = _utc_now()
+        with self._connect() as connection:
+            connection.execute(
+                """INSERT INTO testcases
+                   (id, owner_user_id, name, description, dataset_id, configuration_json, visibility, revision, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, 'private', 1, ?, ?)""",
+                (testcase_id, owner_user_id, name, description, configuration["dataset"],
+                 json.dumps(configuration, separators=(",", ":"), sort_keys=True), now, now),
+            )
+        return self.get(owner_user_id, testcase_id)
+
+    def get(self, owner_user_id: str, testcase_id: str) -> dict[str, Any]:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM testcases WHERE id = ? AND owner_user_id = ?", (testcase_id, owner_user_id)
+            ).fetchone()
+        if row is None:
+            raise TestcaseNotFoundError("Testcase not found")
+        return self._public(row)
+
+    def list(self, owner_user_id: str, *, query: str = "", limit: int = 50, offset: int = 0) -> dict[str, Any]:
+        if not 1 <= limit <= 100:
+            raise TestcaseError("limit must be between 1 and 100")
+        if not 0 <= offset <= 1_000_000:
+            raise TestcaseError("offset must be between 0 and 1000000")
+        query = query.strip()
+        if len(query) > 160:
+            raise TestcaseError("q must be at most 160 characters")
+        where = "owner_user_id = ?"
+        params: list[Any] = [owner_user_id]
+        if query:
+            where += " AND (name LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\')"
+            escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            params.extend([f"%{escaped}%", f"%{escaped}%"])
+        with self._connect() as connection:
+            total = int(connection.execute(f"SELECT COUNT(*) FROM testcases WHERE {where}", params).fetchone()[0])
+            rows = connection.execute(
+                f"SELECT * FROM testcases WHERE {where} ORDER BY updated_at DESC, id LIMIT ? OFFSET ?",
+                [*params, limit, offset],
+            ).fetchall()
+        return {"testcases": [self._public(row) for row in rows], "total": total, "limit": limit, "offset": offset}
+
+    def update(self, owner_user_id: str, testcase_id: str, patch: Any) -> dict[str, Any]:
+        if not isinstance(patch, dict):
+            raise TestcaseError("Testcase update must be a JSON object")
+        if "revision" not in patch or isinstance(patch["revision"], bool) or not isinstance(patch["revision"], int):
+            raise TestcaseError("Current integer revision is required")
+        expected_revision = patch["revision"]
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM testcases WHERE id = ? AND owner_user_id = ?", (testcase_id, owner_user_id)
+            ).fetchone()
+            if row is None:
+                raise TestcaseNotFoundError("Testcase not found")
+            existing = self._public(row)
+            merged = {
+                "name": existing["name"], "description": existing["description"],
+                "dataset": existing["dataset"], "request": existing["request"],
+                "expectation": existing.get("expectation"),
+                **{key: value for key, value in patch.items() if key != "revision"},
+            }
+            name, description, configuration = self._validate_configuration(merged, testcase_id=testcase_id)
+            now = _utc_now()
+            cursor = connection.execute(
+                """UPDATE testcases SET name = ?, description = ?, dataset_id = ?, configuration_json = ?,
+                   revision = revision + 1, updated_at = ?
+                   WHERE id = ? AND owner_user_id = ? AND revision = ?""",
+                (name, description, configuration["dataset"], json.dumps(configuration, separators=(",", ":"), sort_keys=True),
+                 now, testcase_id, owner_user_id, expected_revision),
+            )
+            if cursor.rowcount != 1:
+                raise TestcaseConflictError("Testcase changed since it was loaded; refresh and try again")
+        return self.get(owner_user_id, testcase_id)
+
+    def delete(self, owner_user_id: str, testcase_id: str) -> None:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM testcases WHERE id = ? AND owner_user_id = ?", (testcase_id, owner_user_id)
+            )
+        if cursor.rowcount != 1:
+            raise TestcaseNotFoundError("Testcase not found")

@@ -44,6 +44,43 @@ def _validate_point(value: Any, label: str) -> dict[str, float]:
     return {"lon": lon, "lat": lat}
 
 
+def normalize_scenario(payload: dict[str, Any], *, scenario_id: str, created_at: str | None = None) -> dict[str, Any]:
+    name = str(payload.get("name", "")).strip()
+    if not name:
+        raise ScenarioError("Scenario name is required")
+    dataset = str(payload.get("dataset", "")).strip()
+    if not dataset:
+        raise ScenarioError("Scenario dataset is required")
+    request = payload.get("request")
+    if not isinstance(request, dict):
+        raise ScenarioError("Scenario request is required")
+    start = _validate_point(request.get("start"), "request.start")
+    end = _validate_point(request.get("end"), "request.end")
+    costing = str(request.get("costing", "auto")).strip() or "auto"
+    now = _utc_now()
+    result: dict[str, Any] = {
+        "id": scenario_id, "name": name, "dataset": dataset,
+        "request": {"start": start, "end": end, "costing": costing},
+        "created_at": created_at or now, "updated_at": now,
+    }
+    notes = str(payload.get("notes", "")).strip()
+    if notes:
+        result["notes"] = notes
+    expectation = payload.get("expectation")
+    if expectation is not None:
+        if not isinstance(expectation, dict):
+            raise ScenarioError("Scenario expectation must be an object")
+        normalized_expectation: dict[str, Any] = {}
+        for key in ("landmark_name", "instruction_contains", "instruction_not_contains"):
+            value = str(expectation.get(key, "")).strip()
+            if value:
+                normalized_expectation[key] = value
+        if normalized_expectation:
+            normalized_expectation["case_sensitive"] = bool(expectation.get("case_sensitive", False))
+            result["expectation"] = normalized_expectation
+    return result
+
+
 class ScenarioManager:
     """File-backed route scenarios for local/debug use.
 
@@ -97,62 +134,7 @@ class ScenarioManager:
         return self._read_path(path)
 
     def _normalized(self, payload: dict[str, Any], *, scenario_id: str, created_at: str | None = None) -> dict[str, Any]:
-        name = str(payload.get("name", "")).strip()
-        if not name:
-            raise ScenarioError("Scenario name is required")
-
-        dataset = str(payload.get("dataset", "")).strip()
-        if not dataset:
-            raise ScenarioError("Scenario dataset is required")
-
-        request = payload.get("request")
-        if not isinstance(request, dict):
-            raise ScenarioError("Scenario request is required")
-
-        start = _validate_point(request.get("start"), "request.start")
-        end = _validate_point(request.get("end"), "request.end")
-        costing = str(request.get("costing", "auto")).strip() or "auto"
-
-        now = _utc_now()
-        result: dict[str, Any] = {
-            "id": scenario_id,
-            "name": name,
-            "dataset": dataset,
-            "request": {
-                "start": start,
-                "end": end,
-                "costing": costing,
-            },
-            "created_at": created_at or now,
-            "updated_at": now,
-        }
-
-        notes = str(payload.get("notes", "")).strip()
-        if notes:
-            result["notes"] = notes
-
-        expectation = payload.get("expectation")
-        if expectation is not None:
-            if not isinstance(expectation, dict):
-                raise ScenarioError("Scenario expectation must be an object")
-
-            instruction_contains = str(expectation.get("instruction_contains", "")).strip()
-            instruction_not_contains = str(expectation.get("instruction_not_contains", "")).strip()
-            landmark_name = str(expectation.get("landmark_name", "")).strip()
-            case_sensitive = bool(expectation.get("case_sensitive", False))
-
-            normalized_expectation: dict[str, Any] = {}
-            if landmark_name:
-                normalized_expectation["landmark_name"] = landmark_name
-            if instruction_contains:
-                normalized_expectation["instruction_contains"] = instruction_contains
-            if instruction_not_contains:
-                normalized_expectation["instruction_not_contains"] = instruction_not_contains
-            if normalized_expectation:
-                normalized_expectation["case_sensitive"] = case_sensitive
-                result["expectation"] = normalized_expectation
-
-        return result
+        return normalize_scenario(payload, scenario_id=scenario_id, created_at=created_at)
 
     def _write(self, scenario: dict[str, Any]) -> dict[str, Any]:
         path = self._path(str(scenario["id"]))

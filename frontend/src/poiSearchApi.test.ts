@@ -44,7 +44,10 @@ describe('POI search client', () => {
     const controller = new AbortController();
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 503, json: async () => ({ detail: 'index failed' }) }));
     await expect(searchPois({ datasetId: 'demo' }, controller.signal)).rejects.toThrow('index failed');
-    expect(fetch).toHaveBeenCalledWith('/api/pois/search?dataset_id=demo', { signal: controller.signal });
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/pois/search?dataset_id=demo',
+      expect.objectContaining({ signal: controller.signal, credentials: 'same-origin' }),
+    );
     vi.unstubAllGlobals();
   });
 

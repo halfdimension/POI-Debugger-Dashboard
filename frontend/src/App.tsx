@@ -19,6 +19,11 @@ import { SelectedPoiDetails } from './components/inspection/SelectedPoiDetails';
 import { MapContextMenu, type MapContextMenuLocation } from './components/map/MapContextMenu';
 import { bindDashboardMapEvents } from './components/map/dashboardMapEvents';
 import { registerDashboardMapLayers } from './components/map/dashboardMapLayers';
+import {
+  createDashboardMapSourceManager,
+  type DashboardGeoJsonSourceId,
+  type DashboardMapSourceManager,
+} from './components/map/dashboardMapSources';
 import { visibleMapBounds } from './components/map/mapBounds';
 import {
   bindDebouncedViewportListener,
@@ -93,6 +98,7 @@ type Basemap = 'openfreemap' | 'mapmyindia';
 function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () => Promise<void> }) {
   const mapContainer = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
+  const mapSourceManagerRef = useRef<DashboardMapSourceManager | null>(null);
   const workspaceRef = useRef<HTMLElement | null>(null);
   const analysisWorkspaceRef = useRef<HTMLElement | null>(null);
 
@@ -111,28 +117,10 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
   }
 
   function syncGeoJsonSource(
-    sourceId: string,
+    sourceId: DashboardGeoJsonSourceId,
     data: GeoJSON.FeatureCollection,
-  ) {
-    const map = mapRef.current;
-    if (!map) return;
-
-    const apply = () => {
-      const source =
-        map.getSource(sourceId) as maplibregl.GeoJSONSource | undefined;
-
-      if (!source) return false;
-
-      source.setData(data);
-      return true;
-    };
-
-    // Normal case: map/source already exists.
-    if (apply()) return;
-
-    // Defensive case: route response arrived around map/style startup.
-    // Replay once MapLibre reaches an idle state.
-    map.once('idle', apply);
+  ): void {
+    mapSourceManagerRef.current?.update(sourceId, data);
   }
 
 
@@ -1164,6 +1152,8 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
       zoom: config.frontend.default_zoom,
     });
     mapRef.current = map;
+    const sourceManager = createDashboardMapSourceManager(map);
+    mapSourceManagerRef.current = sourceManager;
     map.addControl(new maplibregl.NavigationControl(), 'top-right');
 
     let disposed = false;
@@ -1173,6 +1163,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
       registerDashboardMapLayers(map, {
         initialPois: showPois ? filteredPois : EMPTY_FC,
       });
+      sourceManager.flush();
 
       disposeDashboardMapEvents = bindDashboardMapEvents(map, {
         onPoiSelected: (feature) => {
@@ -1212,6 +1203,10 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
       disposed = true;
       map.off('load', handleMapLoad);
       disposeDashboardMapEvents?.();
+      sourceManager.dispose();
+      if (mapSourceManagerRef.current === sourceManager) {
+        mapSourceManagerRef.current = null;
+      }
       closeActivePoiPopup();
       map.remove();
       mapRef.current = null;
@@ -1422,16 +1417,8 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
   }, [config]);
 
   useEffect(() => {
-    const map = mapRef.current;
-    if (!map) return;
     const data = showPois ? filteredPois : EMPTY_FC;
-    const apply = () => {
-      const source = map.getSource('pois') as maplibregl.GeoJSONSource | undefined;
-      source?.setData(data);
-    };
-    if (map.isStyleLoaded() && map.getSource('pois')) apply();
-    else map.once('idle', apply);
-    return () => { map.off('idle', apply); };
+    syncGeoJsonSource('pois', data);
   }, [filteredPois, showPois, config]);
 
   useEffect(() => {
@@ -1456,18 +1443,10 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
   }, [routeView, config]);
 
   useEffect(() => {
-    const map = mapRef.current;
-    if (!map) return;
-    const data = selectedPoi
+    const data: GeoJSON.FeatureCollection = selectedPoi
       ? { type: 'FeatureCollection', features: [selectedPoi] }
       : EMPTY_FC;
-    const apply = () => {
-      const source = map.getSource('selected-poi') as maplibregl.GeoJSONSource | undefined;
-      source?.setData(data as GeoJSON.FeatureCollection);
-    };
-    if (map.isStyleLoaded() && map.getSource('selected-poi')) apply();
-    else map.once('idle', apply);
-    return () => { map.off('idle', apply); };
+    syncGeoJsonSource('selected-poi', data);
   }, [selectedPoi, config]);
 
   useEffect(() => {
@@ -1479,8 +1458,6 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
   }, [osrmRouteGeoJson]);
 
   useEffect(() => {
-    const map = mapRef.current;
-    if (!map || !map.isStyleLoaded()) return;
     const features: GeoJSON.Feature[] = [];
     if (start) features.push({
       type: 'Feature',
@@ -1492,13 +1469,10 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
       geometry: { type: 'Point', coordinates: end },
       properties: { kind: 'end' },
     });
-    const source = map.getSource('route-points') as maplibregl.GeoJSONSource | undefined;
-    source?.setData({ type: 'FeatureCollection', features });
+    syncGeoJsonSource('route-points', { type: 'FeatureCollection', features });
   }, [start, end]);
 
   useEffect(() => {
-    const map = mapRef.current;
-    if (!map || !map.isStyleLoaded()) return;
     const features: GeoJSON.Feature[] = maneuverViews
       .filter((item) => item.coordinate)
       .map((item) => ({
@@ -1510,28 +1484,21 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
           instruction: item.maneuver.instruction ?? '',
         },
       }));
-    const source = map.getSource('maneuver-points') as maplibregl.GeoJSONSource | undefined;
-    source?.setData({ type: 'FeatureCollection', features });
+    syncGeoJsonSource('maneuver-points', { type: 'FeatureCollection', features });
   }, [maneuverViews, selectedManeuverIndex]);
 
   useEffect(() => {
-    const map = mapRef.current;
-    if (!map || !map.isStyleLoaded()) return;
-
     const selectedOsrmStep =
       selectedOsrmStepIndex === null
         ? null
         : osrmStepViews.find((item) => item.index === selectedOsrmStepIndex) ?? null;
 
-    const source =
-      map.getSource('osrm-selected-maneuver') as maplibregl.GeoJSONSource | undefined;
-
     if (!selectedOsrmStep?.coordinate) {
-      source?.setData(EMPTY_FC);
+      syncGeoJsonSource('osrm-selected-maneuver', EMPTY_FC);
       return;
     }
 
-    source?.setData({
+    syncGeoJsonSource('osrm-selected-maneuver', {
       type: 'FeatureCollection',
       features: [{
         type: 'Feature',
@@ -1548,8 +1515,6 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
   }, [selectedOsrmStepIndex, osrmStepViews]);
 
   useEffect(() => {
-    const map = mapRef.current;
-    if (!map || !map.isStyleLoaded()) return;
     const features: GeoJSON.Feature[] = nearbyPois.map((item) => ({
       ...item.feature,
       properties: {
@@ -1557,14 +1522,10 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
         _debug_distance_m: item.distanceM.toFixed(1),
       },
     }));
-    const source = map.getSource('nearby-pois') as maplibregl.GeoJSONSource | undefined;
-    source?.setData({ type: 'FeatureCollection', features });
+    syncGeoJsonSource('nearby-pois', { type: 'FeatureCollection', features });
   }, [nearbyPois]);
 
   useEffect(() => {
-    const map = mapRef.current;
-    if (!map || !map.isStyleLoaded()) return;
-
     const features: GeoJSON.Feature<GeoJSON.Point>[] = routeNarrationPois.map((item) => ({
       ...item.evidence.feature,
       properties: {
@@ -1577,20 +1538,16 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
       },
     }));
 
-    const source = map.getSource('route-narration-pois') as maplibregl.GeoJSONSource | undefined;
-    source?.setData({ type: 'FeatureCollection', features });
+    syncGeoJsonSource('route-narration-pois', { type: 'FeatureCollection', features });
   }, [routeNarrationPois]);
 
   useEffect(() => {
-    const map = mapRef.current;
-    if (!map || !map.isStyleLoaded()) return;
-    const source = map.getSource('narration-poi') as maplibregl.GeoJSONSource | undefined;
     if (!primaryNarrationEvidence) {
-      source?.setData(EMPTY_FC);
+      syncGeoJsonSource('narration-poi', EMPTY_FC);
       return;
     }
 
-    source?.setData({
+    syncGeoJsonSource('narration-poi', {
       type: 'FeatureCollection',
       features: [{
         ...primaryNarrationEvidence.feature,

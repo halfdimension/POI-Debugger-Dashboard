@@ -69,6 +69,11 @@ backend:
   # Persistent, rebuildable SQLite POI indexes. Relative paths use the repo root.
   poi_index_dir: "./.cache/poi-search"
 
+  # The legacy full-collection API is for small compatibility datasets only.
+  # Larger datasets must use the bounded /api/pois/search endpoint.
+  legacy_poi_feature_limit: 50000
+  legacy_poi_geojson_byte_limit: 67108864
+
   # Durable authenticated-user settings. Keep this separate from POI indexes.
   preference_db_path: "./data/user-preferences.sqlite3"
 

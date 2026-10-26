@@ -521,6 +521,7 @@ class PoiSearchTest(unittest.TestCase):
             "backend": {"poi_index_dir": str(self.root / "metadata-index")},
             "datasets": self.datasets,
         })
+        manager.reload("company")
         summary = manager.describe()["datasets"][2]
         self.assertEqual(summary["priority"], {
             "rank_order": "ascending", "minimum": 1.0, "maximum": 24.0,

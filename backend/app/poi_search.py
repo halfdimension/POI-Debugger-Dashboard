@@ -305,6 +305,21 @@ class PoiSearchIndex:
             except OSError as exc:
                 raise PoiSearchError("The POI search index could not be invalidated") from exc
 
+    def rebuild(self, dataset_id: str) -> Path:
+        """Atomically replace one index, preserving the old file on failure."""
+        if dataset_id not in self._datasets:
+            raise PoiSearchNotFoundError("Unknown dataset")
+        with self._lock_for(dataset_id):
+            cfg = self._datasets[dataset_id]
+            try:
+                source_kind, source_path = _source(cfg)
+                fingerprint = _fingerprint(source_kind, source_path)
+            except OSError as exc:
+                raise PoiSearchError("The configured POI source is unavailable") from exc
+            db_path = self._db_path(dataset_id)
+            self._build(db_path, fingerprint, source_kind, source_path, cfg)
+            return db_path
+
     def _current_database(self, dataset_id: str) -> tuple[Path, str]:
         if dataset_id not in self._datasets:
             raise PoiSearchNotFoundError("Unknown dataset")

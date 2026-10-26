@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from .config import load_settings
 from .auth import AuthManager
 from .admin import admin_router
-from .datasets import DatasetError, DatasetManager
+from .datasets import DatasetError, DatasetManager, DatasetTooLargeError
 from .poi_search import (
     PoiSearchError,
     PoiSearchNotFoundError,
@@ -173,12 +173,19 @@ def reload_dataset_pois(dataset_id: str, request: Request) -> dict[str, Any]:
         dataset = datasets.reload(dataset_id)
     except DatasetError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except PoiSearchError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     return {"ok": True, "active_dataset": _effective_dataset_id(request), "dataset": dataset}
 
 
 @protected.get("/api/pois")
 def get_pois(request: Request, dataset_id: str | None = None) -> dict[str, Any]:
-    return datasets.get_pois(_effective_dataset_id(request, dataset_id))
+    try:
+        return datasets.get_pois(_effective_dataset_id(request, dataset_id))
+    except DatasetTooLargeError as exc:
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
+    except DatasetError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @protected.get("/api/pois/search")

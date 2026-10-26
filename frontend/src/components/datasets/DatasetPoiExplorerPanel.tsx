@@ -70,14 +70,16 @@ export function DatasetPoiExplorerPanel({
         </div>
         {datasetMessage && <div className="dataset-message">{datasetMessage}</div>}
         {activeDataset?.error && <div className="dataset-warning">{activeDataset.error}</div>}
+        {activeDataset?.preparation_state === 'pending' && <div className="dataset-message" role="status">Statistics are pending. Reload POIs to prepare them.</div>}
+        {activeDataset?.preparation_state === 'preparing' && <div className="dataset-message" role="status">Statistics are being prepared.</div>}
         <div className="kv"><span>Source</span><code title={activeDataset?.source_path ?? ''}>{activeDataset?.source_kind ?? '—'} · {basename(activeDataset?.source_path ?? undefined)}</code></div>
         <div className="kv"><span>PBF</span><code title={activeDataset?.pbf_path ?? config.data.pbf_path}>{basename(activeDataset?.pbf_path ?? config.data.pbf_path)}</code></div>
         <div className="dataset-stats">
-          <div><strong>{activeDataset?.stats?.total_rows ?? 0}</strong><span>rows</span></div>
-          <div><strong>{activeDataset?.stats?.valid_pois ?? 0}</strong><span>valid POIs</span></div>
-          <div><strong>{activeDataset?.stats?.invalid_coordinates ?? 0}</strong><span>bad coords</span></div>
-          <div><strong>{activeDataset?.stats?.duplicate_poi_ids ?? 0}</strong><span>duplicate POI IDs</span></div>
-          <div><strong>{activeDataset?.stats?.duplicate_node_ids ?? 0}</strong><span>duplicate node IDs</span></div>
+          <div><strong>{activeDataset?.stats?.total_rows ?? '—'}</strong><span>rows</span></div>
+          <div><strong>{activeDataset?.stats?.valid_pois ?? '—'}</strong><span>valid POIs</span></div>
+          <div><strong>{activeDataset?.stats?.invalid_coordinates ?? '—'}</strong><span>bad coords</span></div>
+          <div><strong>{activeDataset?.stats?.duplicate_poi_ids ?? '—'}</strong><span>duplicate POI IDs</span></div>
+          <div><strong>{activeDataset?.stats?.duplicate_node_ids ?? '—'}</strong><span>duplicate node IDs</span></div>
         </div>
         <div className="dataset-note">Dataset switching changes the debugger POI layer only. It does not restart Valhalla or swap the tile set used by the running Valhalla service.</div>
       </section>

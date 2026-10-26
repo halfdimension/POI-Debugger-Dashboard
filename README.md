@@ -398,16 +398,18 @@ independently.
 
 Phase 2A adds a runtime dataset registry and removes the manual CSV-to-GeoJSON step for normal testing.
 
-- If `poi_csv_path` exists, `/api/pois` is generated directly from that CSV in memory.
-- CSV rows are validated for coordinates and summarized in the dashboard.
-- `Reload POIs` rereads the source file without restarting the debugger.
+- If `poi_csv_path` exists, small compatibility datasets can be returned by `/api/pois`; large datasets use bounded search endpoints.
+- Dataset selection and registry reads return lightweight metadata. Statistics are explicitly pending until prepared by `Reload POIs`.
+- `Reload POIs` streams CSV statistics with bounded memory and rebuilds that dataset's search index without restarting the debugger.
 - Optional `datasets:` entries can be activated at runtime.
 - Dataset activation changes debugger-side POI data only; it does not restart Valhalla or change the tiles used by the running Valhalla process.
 
 ### Bounded POI search API
 
 `GET /api/pois/search` searches a named dataset without activating it. The
-legacy `/api/pois`, activation, and reload endpoints remain unchanged.
+legacy `/api/pois` remains available for small datasets but returns HTTP 413
+above `backend.legacy_poi_feature_limit` (50,000 by default). Activation is
+metadata-only; reload prepares statistics and atomically rebuilds one index.
 
 | Parameter | Meaning |
 | --- | --- |
@@ -524,8 +526,9 @@ exact total.
 Indexes default to `.cache/poi-search`, which is ignored by Git, and can be
 moved with `backend.poi_index_dir` or `VPD_POI_INDEX_DIR`. A source
 path/size/mtime fingerprint is checked before every search. Builds use a
-temporary database and atomic replacement; reload invalidates that dataset's
-index and makes existing cursors stale. Indexes are opened per request rather
+temporary database and atomic replacement; reload replaces only that dataset's
+index and makes existing cursors stale. A failed rebuild preserves the previous
+index file. Indexes are opened per request rather
 than retained in an unbounded connection or feature cache.
 
 The lock and atomic-publish guarantees apply within one backend process. Keep

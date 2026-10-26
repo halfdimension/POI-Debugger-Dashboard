@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent } from 'react';
 import maplibregl, { LngLatBounds, Map as MapLibreMap } from 'maplibre-gl';
 import { createScenario, deleteScenario, getDatasets, getOsrmStatus, getScenarios, getValhallaStatus, reloadDatasetPois, requestCompareRoute, updatePreferences, updateScenario } from './api';
 import { updateCoordinateValue } from './coordinates';
@@ -39,6 +39,7 @@ import {
   togglePanel,
 } from './layoutState';
 import type { CandidateAnalysis, CandidateAnalysisManeuver, DatasetRegistryResponse, DatasetSummary, DebuggerConfig, LngLat, Maneuver, OsrmRouteResponse, OsrmStep, RouteScenario, ScenarioRegistryResponse, UserPreferencesPatch, ValhallaRouteResponse } from './types';
+import { useVerticalPanelResize } from './useVerticalPanelResize';
 
 declare const __VPD_MOCK_API__: boolean;
 
@@ -50,6 +51,17 @@ const NEARBY_POI_LIMIT = 12;
 const NARRATION_POI_MAX_DISTANCE_M = 500;
 const VIEWPORT_POI_LIMIT = 500;
 const SEARCH_POI_LIMIT = 50;
+const ANALYSIS_HEIGHT_STORAGE_KEY = 'poi-dashboard.analysis-height';
+const DEFAULT_ANALYSIS_HEIGHT = 300;
+
+function storedAnalysisHeight(): number {
+  try {
+    const value = Number(window.localStorage.getItem(ANALYSIS_HEIGHT_STORAGE_KEY));
+    return Number.isFinite(value) && value > 0 ? value : DEFAULT_ANALYSIS_HEIGHT;
+  } catch {
+    return DEFAULT_ANALYSIS_HEIGHT;
+  }
+}
 
 function visibleMapBounds(map: MapLibreMap): PoiBounds | null {
   const bounds = map.getBounds();
@@ -276,6 +288,8 @@ type Basemap = 'openfreemap' | 'mapmyindia';
 function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () => Promise<void> }) {
   const mapContainer = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
+  const workspaceRef = useRef<HTMLElement | null>(null);
+  const analysisWorkspaceRef = useRef<HTMLElement | null>(null);
 
   // Keep at most one POI popup open at any time.
   const activePoiPopupRef = useRef<maplibregl.Popup | null>(null);
@@ -370,6 +384,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
   const [routeComparisonCollapsed, setRouteComparisonCollapsed] = useState(true);
   const [routePoiCardCollapsed, setRoutePoiCardCollapsed] = useState(true);
   const [layout, setLayout] = useState(initialDashboardLayout);
+  const [preferredAnalysisHeight, setPreferredAnalysisHeight] = useState(storedAnalysisHeight);
   const [inspectorTab, setInspectorTab] = useState<'poi' | 'route' | 'maneuver'>('route');
   const [testcaseTab, setTestcaseTab] = useState<TestcaseTab>('mine');
   const [map3D, setMap3D] = useState(false);
@@ -386,6 +401,18 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
   const lastSavedPreferencesRef = useRef('');
   const preferencesReadyRef = useRef(false);
   const routeRequestRef = useRef<AbortController | null>(null);
+
+  const persistAnalysisHeight = useCallback((height: number) => {
+    setPreferredAnalysisHeight(height);
+    try { window.localStorage.setItem(ANALYSIS_HEIGHT_STORAGE_KEY, String(Math.round(height))); } catch { /* Storage can be unavailable in hardened browsers. */ }
+  }, []);
+  const analysisResize = useVerticalPanelResize({
+    workspaceRef,
+    panelRef: analysisWorkspaceRef,
+    preferredHeight: preferredAnalysisHeight,
+    onPreferredHeightChange: persistAnalysisHeight,
+    disabled: layout.analysisCollapsed,
+  });
 
   const [scenarioRegistry, setScenarioRegistry] = useState<ScenarioRegistryResponse | null>(null);
   const [scenarioName, setScenarioName] = useState('');
@@ -3066,7 +3093,9 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
       </header>
 
       {workspaceView === 'admin' ? <AdminConsole /> : <main
+        ref={workspaceRef}
         className={`workspace${layout.leftCollapsed ? ' left-collapsed' : ''}${layout.rightCollapsed ? ' right-collapsed' : ''}${layout.analysisCollapsed ? ' analysis-collapsed' : ''}`}
+        style={{ '--analysis-height': `${analysisResize.liveHeight}px` } as CSSProperties}
       >
         <Sidebar
           side="left"
@@ -3544,6 +3573,12 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
         <AnalysisWorkspace
           activeTab={layout.activeAnalysisTab}
           collapsed={layout.analysisCollapsed}
+          panelRef={analysisWorkspaceRef}
+          resizing={analysisResize.resizing}
+          liveHeight={analysisResize.liveHeight}
+          minimumHeight={analysisResize.minimumHeight}
+          maximumHeight={analysisResize.maximumHeight}
+          resizeHandleProps={analysisResize.resizeHandleProps}
           onSelectTab={(tab) => setLayout((current) => selectAnalysisTab(current, tab))}
           onToggle={() => toggleLayoutPanel('analysis')}
         >

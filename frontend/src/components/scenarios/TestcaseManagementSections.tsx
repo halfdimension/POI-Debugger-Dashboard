@@ -70,12 +70,14 @@ function TestcaseRow({ scenario, sharedView, activeDataset, busy, runAllBusy, ro
       {mismatch && <em className="testcase-dataset-warning">Dataset unavailable here. Activate {scenario.dataset} to run.</em>}
       <details className="testcase-details"><summary>Details</summary><code>{scenario.request.start.lon.toFixed(6)}, {scenario.request.start.lat.toFixed(6)} → {scenario.request.end.lon.toFixed(6)}, {scenario.request.end.lat.toFixed(6)} · {scenario.request.costing}</code></details>
     </span>
-    <div>
+    <div className="testcase-row__actions">
       <button onClick={onLoad} disabled={busy || runAllBusy}>Load</button>
       <button onClick={onRun} disabled={busy || runAllBusy || routeBusy || mismatch}>Run</button>
-      {isOwner && <button onClick={onEdit} disabled={busy || runAllBusy}>Edit</button>}
-      {isOwner && <button onClick={onVisibility} disabled={busy || runAllBusy}>Make {visibility === 'shared' ? 'Private' : 'Shared'}</button>}
-      {isOwner && <button className="danger-button" onClick={onDelete} disabled={busy || runAllBusy}>Delete</button>}
+      {isOwner && <span className="testcase-owner-actions" aria-label="Owner actions">
+        <button onClick={onEdit} disabled={busy || runAllBusy}>Edit</button>
+        <button onClick={onVisibility} disabled={busy || runAllBusy}>Make {visibility === 'shared' ? 'Private' : 'Shared'}</button>
+        <button className="danger-button" onClick={onDelete} disabled={busy || runAllBusy}>Delete</button>
+      </span>}
     </div>
   </div>;
 }

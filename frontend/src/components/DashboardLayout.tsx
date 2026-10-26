@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import type { PointerEventHandler, KeyboardEventHandler, ReactNode, RefObject } from 'react';
 import type { AnalysisTab } from '../layoutState';
 
 export function Sidebar({
@@ -68,18 +68,48 @@ const ANALYSIS_TABS: { id: AnalysisTab; label: string }[] = [
 export function AnalysisWorkspace({
   activeTab,
   collapsed,
+  panelRef,
+  resizing,
+  liveHeight,
+  minimumHeight,
+  maximumHeight,
+  resizeHandleProps,
   onSelectTab,
   onToggle,
   children,
 }: {
   activeTab: AnalysisTab;
   collapsed: boolean;
+  panelRef: RefObject<HTMLElement | null>;
+  resizing: boolean;
+  liveHeight: number;
+  minimumHeight: number;
+  maximumHeight: number;
+  resizeHandleProps: {
+    onPointerDown: PointerEventHandler<HTMLElement>;
+    onPointerMove: PointerEventHandler<HTMLElement>;
+    onPointerUp: PointerEventHandler<HTMLElement>;
+    onPointerCancel: PointerEventHandler<HTMLElement>;
+    onKeyDown: KeyboardEventHandler<HTMLElement>;
+  };
   onSelectTab: (tab: AnalysisTab) => void;
   onToggle: () => void;
   children: ReactNode;
 }) {
   return (
-    <section className={`analysis-workspace${collapsed ? ' is-collapsed' : ''}`} aria-label="Analysis workspace">
+    <section ref={panelRef} className={`analysis-workspace${collapsed ? ' is-collapsed' : ''}${resizing ? ' is-resizing' : ''}`} aria-label="Analysis workspace">
+      {!collapsed && <div
+        className="analysis-resize-handle"
+        role="separator"
+        aria-label="Resize analysis workspace"
+        aria-orientation="horizontal"
+        aria-valuemin={Math.round(minimumHeight)}
+        aria-valuemax={Math.round(maximumHeight)}
+        aria-valuenow={Math.round(liveHeight)}
+        aria-valuetext={`${Math.round(liveHeight)} pixels`}
+        tabIndex={0}
+        {...resizeHandleProps}
+      ><span /></div>}
       <div className="analysis-tabs" role="tablist" aria-label="Diagnostic views">
         {ANALYSIS_TABS.map((tab) => (
           <button

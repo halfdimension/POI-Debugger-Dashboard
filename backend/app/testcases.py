@@ -84,15 +84,21 @@ class TestcaseRepository:
         unknown = sorted(set(payload) - {"name", "description", "dataset", "request", "expectation", "revision"})
         if unknown:
             raise TestcaseError(f"Unknown testcase fields: {', '.join(unknown)}")
-        name = str(payload.get("name", "")).strip()
+        if not isinstance(payload.get("name"), str):
+            raise TestcaseError("Testcase name must be a string")
+        name = payload["name"].strip()
         if not name:
             raise TestcaseError("Testcase name is required")
         if len(name) > MAX_NAME_LENGTH:
             raise TestcaseError(f"Testcase name must be at most {MAX_NAME_LENGTH} characters")
-        description = str(payload.get("description", "")).strip()
+        if not isinstance(payload.get("description", ""), str):
+            raise TestcaseError("Testcase description must be a string")
+        description = payload.get("description", "").strip()
         if len(description) > MAX_DESCRIPTION_LENGTH:
             raise TestcaseError(f"Testcase description must be at most {MAX_DESCRIPTION_LENGTH} characters")
-        dataset = str(payload.get("dataset", "")).strip()
+        if not isinstance(payload.get("dataset"), str):
+            raise TestcaseError("Testcase dataset must be a string")
+        dataset = payload["dataset"].strip()
         if dataset not in self._dataset_ids:
             raise TestcaseError(f"Unknown dataset: {dataset}")
         try:

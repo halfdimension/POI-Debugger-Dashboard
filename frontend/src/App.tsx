@@ -2586,6 +2586,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
     const currentForbidden = scenario.expectation?.instruction_not_contains ?? '';
     const forbidden = window.prompt('Forbidden Odin text. Leave blank if not needed.', currentForbidden);
     if (forbidden === null) return;
+    const replaceRoute = Boolean(start && end && window.confirm('Replace the saved route and dataset with the current dashboard configuration?'));
 
     setScenarioBusy(true);
     setError('');
@@ -2594,6 +2595,14 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
         revision: scenario.revision,
         name: name.trim(),
         description: description.trim(),
+        ...(replaceRoute && start && end ? {
+          dataset: datasetRegistry?.active_dataset ?? config?.active_dataset ?? scenario.dataset,
+          request: {
+            start: { lon: start[0], lat: start[1] },
+            end: { lon: end[0], lat: end[1] },
+            costing: 'auto',
+          },
+        } : {}),
         expectation: {
           landmark_name: contains.trim(),
           instruction_contains: contains.trim(),

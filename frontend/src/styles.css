@@ -580,8 +580,7 @@ button { cursor: pointer; }
 }
 .poi-advanced-filters__body {
   display: grid;
-  grid-template-columns: minmax(100px, .65fr) minmax(90px, 1fr);
-  gap: 5px 9px;
+  gap: 8px;
   align-items: center;
   padding: 8px 9px;
 }
@@ -592,10 +591,52 @@ button { cursor: pointer; }
 .poi-advanced-filters__body input {
   padding: 6px 8px;
 }
+.poi-advanced-filters select {
+  min-width: 0;
+  border: 1px solid #cfd6df;
+  border-radius: 7px;
+  background: white;
+  padding: 6px 8px;
+}
+.poi-advanced-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(120px, 1fr);
+  gap: 8px;
+}
+.poi-advanced-toolbar fieldset {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 10px;
+  margin: 0;
+  border: 0;
+  padding: 0;
+}
+.poi-advanced-toolbar legend { margin-bottom: 3px; color: #374151; font-size: 10px; font-weight: 700; }
+.poi-advanced-toolbar label { display: flex; align-items: center; gap: 5px; }
+.poi-advanced-toolbar > label { display: grid; align-items: initial; }
+.poi-condition-list { display: grid; gap: 6px; }
+.poi-condition-row {
+  display: grid;
+  grid-template-columns: minmax(92px, 1fr) minmax(105px, 1fr) minmax(100px, 1.35fr) auto;
+  gap: 5px;
+  align-items: center;
+  padding: 6px;
+  border: 1px solid #e1e6ed;
+  border-radius: 7px;
+  background: white;
+}
+.poi-condition-row button, .poi-advanced-actions button { padding: 6px 8px; }
+.poi-between-inputs { display: grid; grid-template-columns: 1fr auto 1fr; gap: 4px; align-items: center; }
+.poi-condition-no-value { color: #667085; font-size: 10px; }
+.poi-condition-error { grid-column: 1 / -1; color: #b42318 !important; }
+.poi-advanced-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.poi-advanced-actions .primary { margin-left: auto; background: #175cd3; color: white; border-color: #175cd3; }
 .poi-advanced-filters__body small {
-  grid-column: 1 / -1;
   color: #7a8492;
   font-size: 9px;
+}
+@media (max-width: 760px) {
+  .poi-advanced-toolbar, .poi-condition-row { grid-template-columns: 1fr; }
 }
 .poi-checkboxes {
   display: flex;

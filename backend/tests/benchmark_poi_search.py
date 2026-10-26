@@ -180,6 +180,47 @@ def _query_plans(db_path: Path) -> dict[str, list[str]]:
         "ORDER BY COALESCE(p.priority,-1) DESC, p.name_norm, p.id LIMIT ?",
         ("%generated school%", "generated school%", 100, 100, "", 100, "", 0, 101),
     )
+    explain(
+        "structured_priority_equality",
+        "SELECT p.id FROM pois p WHERE p.priority=? "
+        "ORDER BY COALESCE(p.priority,-1) DESC, p.name_norm, p.id LIMIT ?",
+        (80, 101),
+    )
+    explain(
+        "structured_priority_range_rank_scan",
+        "SELECT p.id FROM pois p INDEXED BY pois_rank "
+        "WHERE p.priority BETWEEN ? AND ? "
+        "ORDER BY COALESCE(p.priority,-1) DESC, p.name_norm, p.id LIMIT ?",
+        (60, 90, 101),
+    )
+    explain(
+        "structured_selective_name_contains",
+        "SELECT p.id FROM pois p WHERE p.id IN "
+        "(SELECT rowid FROM poi_fields_fts WHERE name_norm LIKE ?) "
+        "ORDER BY COALESCE(p.priority,-1) DESC, p.name_norm, p.id LIMIT ?",
+        ("%school 999%", 101),
+    )
+    explain(
+        "structured_broad_name_priority_rank_scan",
+        "SELECT p.id FROM pois p INDEXED BY pois_rank "
+        "WHERE p.name_norm LIKE ? AND p.priority>=? "
+        "ORDER BY COALESCE(p.priority,-1) DESC, p.name_norm, p.id LIMIT ?",
+        ("%school%", 70, 101),
+    )
+    explain(
+        "structured_type_priority_rank_scan",
+        "SELECT p.id FROM pois p INDEXED BY pois_rank "
+        "WHERE p.landmark_type_norm=? AND p.priority>=? "
+        "ORDER BY COALESCE(p.priority,-1) DESC, p.name_norm, p.id LIMIT ?",
+        ("fuel", 70, 101),
+    )
+    explain(
+        "structured_ascending_priority_rank_scan",
+        "SELECT p.id FROM pois p INDEXED BY pois_rank_ascending "
+        "WHERE p.priority BETWEEN ? AND ? "
+        "ORDER BY COALESCE(p.priority,1e308) ASC, p.name_norm, p.id LIMIT ?",
+        (1, 24, 101),
+    )
     return plans
 
 
@@ -261,6 +302,62 @@ def _run(root: Path, args: argparse.Namespace) -> dict[str, Any]:
         "literal_special",
         lambda: reopened.search("benchmark", q="%", limit=100),
     )
+    record(
+        "structured_priority_equality",
+        lambda: reopened.query("benchmark", conditions=[
+            {"field": "priority", "operator": "eq", "value": 80}
+        ], limit=100),
+    )
+    record(
+        "structured_priority_range",
+        lambda: reopened.query("benchmark", conditions=[
+            {"field": "priority", "operator": "between", "value": [60, 90]}
+        ], limit=100),
+    )
+    structured_page = record(
+        "structured_name_and_priority",
+        lambda: reopened.query("benchmark", mode="and", conditions=[
+            {"field": "name", "operator": "contains", "value": "school"},
+            {"field": "priority", "operator": "gte", "value": 70},
+        ], limit=100),
+    )
+    record(
+        "structured_type_and_priority",
+        lambda: reopened.query("benchmark", mode="and", conditions=[
+            {"field": "landmark_type", "operator": "eq", "value": "fuel"},
+            {"field": "priority", "operator": "gte", "value": 70},
+        ], limit=100),
+    )
+    record(
+        "structured_name_or_name",
+        lambda: reopened.query("benchmark", mode="or", conditions=[
+            {"field": "name", "operator": "contains", "value": "school 999"},
+            {"field": "name", "operator": "contains", "value": "school 1999"},
+        ], limit=100),
+    )
+    record(
+        "structured_mixed_indexed",
+        lambda: reopened.query("benchmark", mode="and", conditions=[
+            {"field": "landmark_type", "operator": "eq", "value": "school"},
+            {"field": "mappls_poi_id", "operator": "contains", "value": "999"},
+            {"field": "visible", "operator": "is_visible"},
+        ], limit=100),
+    )
+    record(
+        "structured_broad_or",
+        lambda: reopened.query("benchmark", mode="or", conditions=[
+            {"field": "landmark_type", "operator": "eq", "value": "school"},
+            {"field": "priority", "operator": "gte", "value": 0},
+        ], limit=100),
+    )
+    if structured_page["next_cursor"]:
+        record(
+            "structured_combined_second_page",
+            lambda: reopened.query("benchmark", mode="and", conditions=[
+                {"field": "name", "operator": "contains", "value": "school"},
+                {"field": "priority", "operator": "gte", "value": 70},
+            ], limit=100, cursor=structured_page["next_cursor"]),
+        )
     if first["next_cursor"]:
         record(
             "broad_second_page",

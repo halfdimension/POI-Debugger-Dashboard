@@ -55,6 +55,34 @@ describe('development mock API contracts', () => {
     expect((excluded?.body as any).features).toEqual([]);
   });
 
+  it('supports structured AND/OR, priority ranges, identifiers and quick-search combination', async () => {
+    const state = createMockApiState();
+    const andResult = await handleMockApi('POST', '/api/pois/query', {
+      dataset_id: 'mock-demo', q: 'metro', mode: 'and',
+      conditions: [{ field: 'priority', operator: 'gte', value: 90 }, { field: 'visible', operator: 'is_visible' }],
+    }, state);
+    expect((andResult?.body as any).features.map((item: any) => item.properties.mappls_poi_id)).toEqual(['mock-001']);
+
+    const orResult = await handleMockApi('POST', '/api/pois/query', {
+      dataset_id: 'mock-demo', mode: 'or',
+      conditions: [{ field: 'priority', operator: 'between', value: [70, 80] }, { field: 'new_node_id', operator: 'eq', value: '910004' }],
+    }, state);
+    expect((orResult?.body as any).features).toHaveLength(3);
+  });
+
+  it('binds structured cursors and rejects invalid field/operator combinations', async () => {
+    const state = createMockApiState();
+    const payload = { dataset_id: 'mock-demo', mode: 'and', conditions: [{ field: 'priority', operator: 'gte', value: 1 }], limit: 2 };
+    const first = await handleMockApi('POST', '/api/pois/query', payload, state);
+    const cursor = (first?.body as any).next_cursor;
+    const second = await handleMockApi('POST', '/api/pois/query', { ...payload, cursor }, state);
+    expect((second?.body as any).features).toHaveLength(2);
+    expect((await handleMockApi('POST', '/api/pois/query', { ...payload, mode: 'or', cursor }, state))?.status).toBe(400);
+    expect((await handleMockApi('POST', '/api/pois/query', {
+      dataset_id: 'mock-demo', mode: 'and', conditions: [{ field: 'priority', operator: 'contains', value: '8' }],
+    }, state))?.status).toBe(400);
+  });
+
   it('is opt-in and cannot activate for builds or preview', () => {
     expect(shouldEnableMockApi('serve', 'development', false, undefined)).toBe(false);
     expect(shouldEnableMockApi('serve', 'development', false, '1')).toBe(true);

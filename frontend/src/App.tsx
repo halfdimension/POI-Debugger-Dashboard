@@ -4,7 +4,7 @@ import { activateDataset, createScenario, deleteScenario, getDatasets, getOsrmSt
 import { updateCoordinateValue } from './coordinates';
 import { decodePolyline6 } from './polyline';
 import { pointFeature, propNumber, propText } from './poi';
-import { mergePoiPages, searchPois, type PoiBounds, type PoiSearchResponse } from './poiSearchApi';
+import { mergePoiPages, queryPois, searchPois, type PoiBounds, type PoiSearchCondition, type PoiSearchResponse } from './poiSearchApi';
 import { evaluateScenario, type ScenarioRunResult } from './scenarioAssertions';
 import { loadInitialDashboard } from './initialization';
 import { AnalysisWorkspace, Sidebar } from './components/DashboardLayout';
@@ -402,11 +402,15 @@ export default function App() {
 
   const [poiSearch, setPoiSearch] = useState('');
   const [debouncedPoiSearch, setDebouncedPoiSearch] = useState('');
-  const [poiType, setPoiType] = useState('all');
-  const [minPriority, setMinPriority] = useState(0);
-  const [visibleOnly, setVisibleOnly] = useState(true);
+  const [draftConditions, setDraftConditions] = useState<PoiSearchCondition[]>([]);
+  const [advancedConditions, setAdvancedConditions] = useState<PoiSearchCondition[]>([]);
+  const [conditionMode, setConditionMode] = useState<'and' | 'or'>('and');
+  const [appliedConditionMode, setAppliedConditionMode] = useState<'and' | 'or'>('and');
+  const [searchScope, setSearchScope] = useState<'dataset' | 'viewport'>('dataset');
+  const [appliedSearchScope, setAppliedSearchScope] = useState<'dataset' | 'viewport'>('dataset');
   const [showPois, setShowPois] = useState(true);
-  const searchCriteriaKey = `${datasetRegistry?.active_dataset ?? ''}|${poiSearch.trim()}|${poiType}|${minPriority}|${visibleOnly}`;
+  const searchViewportRevision = appliedSearchScope === 'viewport' ? viewportRevision : 0;
+  const searchCriteriaKey = JSON.stringify([datasetRegistry?.active_dataset ?? '', debouncedPoiSearch.trim(), appliedConditionMode, advancedConditions, appliedSearchScope, searchViewportRevision]);
   const searchCriteriaRef = useRef(searchCriteriaKey);
   searchCriteriaRef.current = searchCriteriaKey;
 
@@ -427,6 +431,26 @@ export default function App() {
   const availablePoiTypes = useMemo(() => {
     return Object.keys(activeDataset?.stats?.landmark_types ?? {}).sort((a, b) => a.localeCompare(b));
   }, [activeDataset]);
+
+  const advancedFilters = {
+    conditions: draftConditions,
+    mode: conditionMode,
+    scope: searchScope,
+    availablePoiTypes,
+    priorityPolicy: activeDataset?.priority ?? { rank_order: 'descending' as const, minimum: null, maximum: null },
+    onConditionsChange: setDraftConditions,
+    onModeChange: setConditionMode,
+    onScopeChange: setSearchScope,
+    onApply: () => {
+      setAdvancedConditions(draftConditions);
+      setAppliedConditionMode(conditionMode);
+      setAppliedSearchScope(searchScope);
+    },
+    onClear: () => {
+      setDraftConditions([]);
+      setAdvancedConditions([]);
+    },
+  };
 
   const fullTypeStats = useMemo(() => {
     return Object.entries(activeDataset?.stats?.landmark_types ?? {})
@@ -1805,10 +1829,6 @@ export default function App() {
     setViewportMeta((state) => ({ ...state, loading: true, error: '' }));
     searchPois({
       datasetId,
-      q: debouncedPoiSearch || undefined,
-      type: poiType === 'all' ? undefined : poiType,
-      minPriority: minPriority > 0 ? minPriority : undefined,
-      visible: visibleOnly ? true : undefined,
       bbox,
       limit: VIEWPORT_POI_LIMIT,
     }, controller.signal).then((response) => {
@@ -1820,26 +1840,28 @@ export default function App() {
       setViewportMeta({ loading: false, capped: false, error: err instanceof Error ? err.message : String(err) });
     });
     return () => { current = false; controller.abort(); };
-  }, [datasetRegistry?.active_dataset, viewportRevision, debouncedPoiSearch, poiType, minPriority, visibleOnly]);
+  }, [datasetRegistry?.active_dataset, viewportRevision]);
 
   useEffect(() => {
     const datasetId = datasetRegistry?.active_dataset;
-    const query = poiSearch.trim();
+    const query = debouncedPoiSearch.trim();
+    const hasSearch = Boolean(query || advancedConditions.length);
     loadMoreControllerRef.current?.abort();
     setSearchFeatures([]);
     setSearchResponse(null);
-    setSearchState({ loading: Boolean(datasetId && query), loadingMore: false, error: '' });
-    if (!datasetId || !query) return;
+    setSearchState({ loading: Boolean(datasetId && hasSearch), loadingMore: false, error: '' });
+    if (!datasetId || !hasSearch) return;
+    const bbox = appliedSearchScope === 'viewport' && mapRef.current ? (visibleMapBounds(mapRef.current) ?? undefined) : undefined;
+    if (appliedSearchScope === 'viewport' && !bbox) {
+      setSearchState({ loading: false, loadingMore: false, error: 'The current viewport crosses the antimeridian and cannot be searched.' });
+      return;
+    }
     const controller = new AbortController();
     let current = true;
-    const timer = window.setTimeout(() => {
-      searchPois({
-        datasetId, q: query,
-        type: poiType === 'all' ? undefined : poiType,
-        minPriority: minPriority > 0 ? minPriority : undefined,
-        visible: visibleOnly ? true : undefined,
-        limit: SEARCH_POI_LIMIT,
-      }, controller.signal).then((response) => {
+    const request = advancedConditions.length
+      ? queryPois({ datasetId, q: query, mode: appliedConditionMode, conditions: advancedConditions, bbox, limit: SEARCH_POI_LIMIT }, controller.signal)
+      : searchPois({ datasetId, q: query, bbox, limit: SEARCH_POI_LIMIT }, controller.signal);
+    request.then((response) => {
         if (!current) return;
         setSearchResponse(response);
         setSearchFeatures(response.features);
@@ -1848,9 +1870,8 @@ export default function App() {
         if (!current || err instanceof DOMException && err.name === 'AbortError') return;
         setSearchState({ loading: false, loadingMore: false, error: err instanceof Error ? err.message : String(err) });
       });
-    }, 300);
-    return () => { current = false; window.clearTimeout(timer); controller.abort(); };
-  }, [datasetRegistry?.active_dataset, poiSearch, poiType, minPriority, visibleOnly, searchRetry]);
+    return () => { current = false; controller.abort(); };
+  }, [datasetRegistry?.active_dataset, debouncedPoiSearch, advancedConditions, appliedConditionMode, appliedSearchScope, searchViewportRevision, searchRetry]);
 
   useEffect(() => {
     const datasetId = datasetRegistry?.active_dataset;
@@ -2099,12 +2120,6 @@ export default function App() {
     });
   }, [primaryNarrationEvidence]);
 
-  useEffect(() => {
-    if (poiType !== 'all' && !availablePoiTypes.includes(poiType)) {
-      setPoiType('all');
-    }
-  }, [availablePoiTypes, poiType]);
-
   async function refreshActiveDataset(message = '') {
     const registry = await getDatasets();
     setDatasetRegistry(registry);
@@ -2125,13 +2140,11 @@ export default function App() {
     loadMoreControllerRef.current = controller;
     setSearchState((state) => ({ ...state, loadingMore: true, error: '' }));
     try {
-      const response = await searchPois({
-        datasetId, q: poiSearch.trim(),
-        type: poiType === 'all' ? undefined : poiType,
-        minPriority: minPriority > 0 ? minPriority : undefined,
-        visible: visibleOnly ? true : undefined,
-        limit: SEARCH_POI_LIMIT, cursor,
-      }, controller.signal);
+      const bbox = appliedSearchScope === 'viewport' && mapRef.current ? (visibleMapBounds(mapRef.current) ?? undefined) : undefined;
+      if (appliedSearchScope === 'viewport' && !bbox) throw new Error('The current viewport cannot be searched.');
+      const response = advancedConditions.length
+        ? await queryPois({ datasetId, q: debouncedPoiSearch.trim(), mode: appliedConditionMode, conditions: advancedConditions, bbox, limit: SEARCH_POI_LIMIT, cursor }, controller.signal)
+        : await searchPois({ datasetId, q: debouncedPoiSearch.trim(), bbox, limit: SEARCH_POI_LIMIT, cursor }, controller.signal);
       if (searchCriteriaRef.current !== requestCriteria) return;
       setSearchFeatures((features) => mergePoiPages(features, response.features));
       setSearchResponse(response);
@@ -2781,9 +2794,12 @@ export default function App() {
 
   function resetPoiFilters() {
     setPoiSearch('');
-    setPoiType('all');
-    setMinPriority(0);
-    setVisibleOnly(true);
+    setDraftConditions([]);
+    setAdvancedConditions([]);
+    setConditionMode('and');
+    setAppliedConditionMode('and');
+    setSearchScope('dataset');
+    setAppliedSearchScope('dataset');
     setShowPois(true);
   }
 
@@ -2897,18 +2913,13 @@ export default function App() {
             searchResults={searchResults}
             availablePoiTypes={availablePoiTypes}
             poiSearch={poiSearch}
-            poiType={poiType}
-            minPriority={minPriority}
-            visibleOnly={visibleOnly}
+            advancedFilters={advancedFilters}
             showPois={showPois}
             searchLoading={searchState.loading}
             searchLoadingMore={searchState.loadingMore}
             searchError={searchState.error}
             searchHasMore={searchResponse?.has_more === true}
             onSearchChange={setPoiSearch}
-            onTypeChange={setPoiType}
-            onMinimumPriorityChange={setMinPriority}
-            onVisibleOnlyChange={setVisibleOnly}
             onShowPoisChange={setShowPois}
             onResetFilters={resetPoiFilters}
             onFocusPoi={focusPoiFeature}
@@ -3306,9 +3317,7 @@ export default function App() {
             availablePoiTypes={availablePoiTypes}
             fullTypeStats={fullTypeStats}
             poiSearch={poiSearch}
-            poiType={poiType}
-            minPriority={minPriority}
-            visibleOnly={visibleOnly}
+            advancedFilters={advancedFilters}
             showPois={showPois}
             searchLoading={searchState.loading}
             searchLoadingMore={searchState.loadingMore}
@@ -3317,9 +3326,6 @@ export default function App() {
             onChangeDataset={changeDataset}
             onReloadDataset={reloadActiveDataset}
             onSearchChange={setPoiSearch}
-            onTypeChange={setPoiType}
-            onMinimumPriorityChange={setMinPriority}
-            onVisibleOnlyChange={setVisibleOnly}
             onShowPoisChange={setShowPois}
             onResetFilters={resetPoiFilters}
             onFocusPoi={focusPoiFeature}

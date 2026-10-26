@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .poi_search import PoiSearchIndex
+from .poi_search import PoiSearchIndex, priority_policy
 
 
 FALSE_VALUES = {"0", "false", "no", "n", "off"}
@@ -114,6 +114,7 @@ class DatasetManager:
         summary = {
             "id": dataset_id,
             "name": cfg.get("name", dataset_id),
+            "priority": priority_policy(cfg),
             "map_bounds": deepcopy(cfg.get("map_bounds")),
             "pbf_path": cfg.get("pbf_path"),
             "poi_csv_path": cfg.get("poi_csv_path"),

@@ -403,6 +403,76 @@ SQLite binary ordering of normalized Unicode names can differ from JavaScript
 `localeCompare`, but membership and the higher-value prefix/priority ordering
 are unchanged. Duplicate names and identifiers remain separate features.
 
+This legacy ranking treats larger numbers as higher-ranked, and
+`min_priority` means the numeric predicate `priority >= value`. That conflicts
+with the current company convention in which priority 1 ranks above priority
+24. These GET semantics are intentionally retained for compatibility; callers
+must not interpret `min_priority` as “higher priority than.”
+
+### Structured POI query API
+
+`POST /api/pois/query` adds field-specific conditions without changing the
+legacy GET contract. It uses the same per-dataset SQLite index and returns the
+same bounded FeatureCollection envelope.
+
+```json
+{
+  "dataset_id": "rohtak_lmg",
+  "q": "Delhi",
+  "mode": "and",
+  "conditions": [
+    { "field": "name", "operator": "contains", "value": "Metro" },
+    { "field": "priority", "operator": "gte", "value": 7 }
+  ],
+  "bbox": [76.47, 28.83, 76.71, 28.96],
+  "limit": 50,
+  "cursor": null
+}
+```
+
+The allowlisted field/operator pairs are:
+
+| Field | Operators |
+| --- | --- |
+| `name` | `contains`, `eq` |
+| `priority` | `eq`, `gt`, `gte`, `lt`, `lte`, `between` (two-number array) |
+| `landmark_type` | `eq` |
+| `mappls_poi_id`, `new_node_id`, `osm_source_id` | `eq`, `contains` |
+| `visible` | `is_visible`, `is_hidden` (no value) |
+
+At most 10 conditions are accepted. Text is non-empty and at most 200
+characters; priority values are finite and may be constrained by optional
+dataset bounds. `mode` is
+`and` or `or`. The exact expression is `q AND (condition group)`; an empty
+`q` evaluates only the group. `bbox`, when present, is also ANDed with the
+whole expression. There are no nested groups.
+
+Structured results use the selected dataset's configured priority order, then
+normalized name and source row ID. With `q`, name-prefix matches remain first,
+followed by the configured priority order, name, and source row ID. Numeric
+operators never change meaning: `gte` is numeric `>=`, even when smaller
+numbers rank higher. Cursors bind the dataset, index generation, quick text,
+mode, ordered conditions, bbox, and values; changing any of them rejects the
+cursor. The builder's “Entire selected dataset” scope omits `bbox`, while
+“Current map viewport” sends it.
+
+Priority business rules are dataset metadata rather than global constants:
+
+```yaml
+datasets:
+  company_data:
+    priority:
+      rank_order: ascending  # smaller values rank first
+      minimum: 1             # optional
+      maximum: 24            # optional
+```
+
+Omitting `priority` gives unbounded numeric filters and descending structured
+ranking for compatibility with earlier dashboard behavior. Category choices
+are never configured as a fixed list; the API derives `landmark_types` from
+the selected dataset and the frontend rebuilds the dropdown when metadata
+changes.
+
 The endpoint uses a lazily built SQLite FTS5 trigram index plus an R-tree. FTS
 preserves partial substring matching; one- and two-character searches are
 valid but cannot benefit from trigram pruning and should not be used for normal

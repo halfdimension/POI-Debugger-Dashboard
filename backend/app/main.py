@@ -170,6 +170,38 @@ def search_pois(
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
+@app.post("/api/pois/query")
+def query_pois(payload: dict[str, Any]) -> dict[str, Any]:
+    """Field-specific search. Quick text is ANDed with the condition group."""
+    try:
+        raw_bbox = payload.get("bbox")
+        if raw_bbox is None:
+            bbox = None
+        elif isinstance(raw_bbox, list):
+            bbox = parse_bbox(",".join(str(value) for value in raw_bbox))
+        elif isinstance(raw_bbox, str):
+            bbox = parse_bbox(raw_bbox)
+        else:
+            raise PoiSearchValidationError(
+                "bbox must be [west,south,east,north]"
+            )
+        return datasets.search_index.query(
+            payload.get("dataset_id"),
+            q=payload.get("q"),
+            mode=payload.get("mode", "and"),
+            conditions=payload.get("conditions", []),
+            bbox=bbox,
+            limit=payload.get("limit", 100),
+            cursor=payload.get("cursor"),
+        )
+    except PoiSearchNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except PoiSearchValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except PoiSearchError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
 @app.get("/api/scenarios")
 def get_scenarios() -> dict[str, Any]:
     return scenarios.list()

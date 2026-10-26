@@ -35,6 +35,7 @@ function dataset(id: string, name: string, validPois: number, sourceKind: 'geojs
   return {
     id,
     name,
+    priority: { rank_order: 'ascending', minimum: null, maximum: null },
     map_bounds: [[77.212, 28.625], [77.232, 28.638]],
     poi_geojson_path: `[mock]/${id}.geojson`,
     source_kind: sourceKind,
@@ -183,6 +184,57 @@ function send(res: ServerResponse, status: number, body: unknown): void {
   res.end(JSON.stringify(body));
 }
 
+const MOCK_OPERATORS: Record<string, string[]> = {
+  name: ['contains', 'eq'], priority: ['eq', 'gt', 'gte', 'lt', 'lte', 'between'],
+  landmark_type: ['eq'], mappls_poi_id: ['eq', 'contains'], new_node_id: ['eq', 'contains'],
+  osm_source_id: ['eq', 'contains'], visible: ['is_visible', 'is_hidden'],
+};
+
+function mockConditionMatches(properties: Record<string, unknown>, condition: JsonObject): boolean {
+  const field = String(condition.field);
+  const operator = String(condition.operator);
+  if (field === 'visible') {
+    const visible = !['no', 'false', '0', 'n'].includes(String(properties.visible ?? 'yes').toLowerCase());
+    return operator === 'is_visible' ? visible : !visible;
+  }
+  if (field === 'priority') {
+    const actual = Number(properties.priority);
+    if (operator === 'between') {
+      const value = condition.value as unknown[];
+      return actual >= Number(value[0]) && actual <= Number(value[1]);
+    }
+    const expected = Number(condition.value);
+    return operator === 'eq' ? actual === expected : operator === 'gt' ? actual > expected :
+      operator === 'gte' ? actual >= expected : operator === 'lt' ? actual < expected : actual <= expected;
+  }
+  const actual = String(properties[field] ?? '').trim().toLowerCase();
+  const expected = String(condition.value ?? '').trim().toLowerCase();
+  return operator === 'eq' ? actual === expected : actual.includes(expected);
+}
+
+function validateMockConditions(raw: unknown, priority: { minimum: number | null; maximum: number | null }): string | null {
+  if (!Array.isArray(raw)) return 'conditions must be an array';
+  if (raw.length > 10) return 'conditions must contain at most 10 items';
+  for (const [index, item] of raw.entries()) {
+    if (!item || typeof item !== 'object') return `condition ${index + 1} must be an object`;
+    const condition = item as JsonObject;
+    const field = String(condition.field ?? '');
+    const operator = String(condition.operator ?? '');
+    if (!MOCK_OPERATORS[field]) return `Unsupported condition field: ${field}`;
+    if (!MOCK_OPERATORS[field].includes(operator)) return `Operator ${operator} is not supported for ${field}`;
+    if (field === 'priority') {
+      const values = operator === 'between' ? condition.value : [condition.value];
+      if (!Array.isArray(values) || values.length !== (operator === 'between' ? 2 : 1) || values.some((value) => !Number.isFinite(Number(value)))) return 'Priority must be numeric';
+      if (priority.minimum !== null && values.some((value) => Number(value) < priority.minimum!)) return `Priority must be at least ${priority.minimum}`;
+      if (priority.maximum !== null && values.some((value) => Number(value) > priority.maximum!)) return `Priority must be at most ${priority.maximum}`;
+      if (operator === 'between' && Number(values[0]) > Number(values[1])) return 'Priority between lower bound must not exceed upper bound';
+    } else if (field !== 'visible' && (typeof condition.value !== 'string' || !condition.value.trim() || condition.value.length > 200)) {
+      return `${field} requires a non-empty text value of at most 200 characters`;
+    }
+  }
+  return null;
+}
+
 export async function handleMockApi(method: string, pathname: string, body: JsonObject, state: MockApiState): Promise<{ status: number; body: unknown } | null> {
   const requestUrl = new URL(pathname, 'http://vite.local');
   pathname = requestUrl.pathname;
@@ -241,6 +293,52 @@ export async function handleMockApi(method: string, pathname: string, body: Json
     const features = matches.slice(offset, offset + limit);
     const hasMore = offset + limit < matches.length;
     return ok({ type: 'FeatureCollection', dataset_id: datasetId, features, returned: features.length, has_more: hasMore, next_cursor: hasMore ? String(offset + limit) : null });
+  }
+  if (method === 'POST' && pathname === '/api/pois/query') {
+    const datasetId = typeof body.dataset_id === 'string' ? body.dataset_id : '';
+    const selected = DATASETS.find((item) => item.id === datasetId);
+    if (!datasetId) return ok({ detail: 'dataset_id is required' }, 400);
+    if (!selected) return ok({ detail: `Dataset not found: ${datasetId}` }, 404);
+    if (datasetId === 'mock-error') return ok({ detail: 'Synthetic POI index error' }, 503);
+    const mode = body.mode ?? 'and';
+    if (mode !== 'and' && mode !== 'or') return ok({ detail: "mode must be 'and' or 'or'" }, 400);
+    const conditionError = validateMockConditions(body.conditions ?? [], selected.priority);
+    if (conditionError) return ok({ detail: conditionError }, 400);
+    const conditions = body.conditions as JsonObject[] ?? [];
+    const q = String(body.q ?? '').trim().toLowerCase();
+    if (q.length > 200) return ok({ detail: 'q must not exceed 200 characters' }, 400);
+    const limit = body.limit === undefined ? 100 : Number(body.limit);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 500) return ok({ detail: 'limit must be between 1 and 500' }, 400);
+    const bbox = body.bbox as number[] | undefined;
+    if (bbox && (bbox.length !== 4 || bbox.some((value) => !Number.isFinite(value)) || bbox[0] > bbox[2] || bbox[1] > bbox[3])) return ok({ detail: 'bbox must be [west,south,east,north]' }, 400);
+    const signature = JSON.stringify([datasetId, q, mode, conditions, bbox ?? null]);
+    const cursor = body.cursor as JsonObject | string | undefined;
+    let offset = 0;
+    if (cursor !== undefined) {
+      try {
+        const decoded = JSON.parse(String(cursor)) as { signature: string; offset: number };
+        if (decoded.signature !== signature || !Number.isInteger(decoded.offset) || decoded.offset < 0) throw new Error();
+        offset = decoded.offset;
+      } catch { return ok({ detail: 'Pagination cursor does not match this query' }, 400); }
+    }
+    const allFeatures = datasetId === 'mock-demo' ? DEMO_POIS.features : [];
+    const matches = allFeatures.filter((feature) => {
+      const properties = feature.properties as Record<string, unknown>;
+      const quickText = [properties.name, properties.mappls_poi_id, properties.new_node_id, properties.osm_source_id, properties.landmark_type].join(' ').toLowerCase();
+      const conditionMatches = conditions.map((condition) => mockConditionMatches(properties, condition));
+      const advancedMatch = conditions.length === 0 || (mode === 'and' ? conditionMatches.every(Boolean) : conditionMatches.some(Boolean));
+      const [lon, lat] = feature.geometry.coordinates;
+      return (!q || quickText.includes(q)) && advancedMatch && (!bbox || (lon >= bbox[0] && lon <= bbox[2] && lat >= bbox[1] && lat <= bbox[3]));
+    }).sort((a, b) => {
+      const prefix = q ? Number(String(b.properties.name).toLowerCase().startsWith(q)) - Number(String(a.properties.name).toLowerCase().startsWith(q)) : 0;
+      const priority = selected.priority.rank_order === 'ascending'
+        ? a.properties.priority - b.properties.priority
+        : b.properties.priority - a.properties.priority;
+      return prefix || priority || String(a.properties.name).localeCompare(String(b.properties.name)) || String(a.id).localeCompare(String(b.id));
+    });
+    const features = matches.slice(offset, offset + limit);
+    const hasMore = offset + limit < matches.length;
+    return ok({ type: 'FeatureCollection', dataset_id: datasetId, features, returned: features.length, has_more: hasMore, next_cursor: hasMore ? JSON.stringify({ signature, offset: offset + limit }) : null });
   }
   if (method === 'GET' && pathname === '/api/scenarios') return ok({ directory: '[mock]', count: state.scenarios.length, scenarios: state.scenarios, errors: [] });
   if (method === 'GET' && (pathname === '/api/valhalla/status' || pathname === '/api/osrm/status')) return ok({ ok: true, url: `mock://${pathname.includes('valhalla') ? 'valhalla' : 'osrm'}/status`, response: { version: 'synthetic' } });

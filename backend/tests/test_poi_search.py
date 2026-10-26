@@ -73,6 +73,7 @@ class PoiSearchTest(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.a_csv = self.root / "a.csv"
         self.b_csv = self.root / "b.csv"
+        self.c_csv = self.root / "company.csv"
         write_csv(
             self.a_csv,
             [
@@ -84,9 +85,22 @@ class PoiSearchTest(unittest.TestCase):
             ],
         )
         write_csv(self.b_csv, [row("Other Dataset", "other-1", poi_id="MMI-OTHER")])
+        write_csv(
+            self.c_csv,
+            [
+                row("Company First", "company-1", kind="metro", priority=1),
+                row("Company Last", "company-24", kind="fuel", priority=24),
+                row("Company Middle", "company-12", kind="metro", priority=12),
+            ],
+        )
         self.datasets = {
             "a": {"id": "a", "poi_csv_path": str(self.a_csv)},
             "b": {"id": "b", "poi_csv_path": str(self.b_csv)},
+            "company": {
+                "id": "company",
+                "poi_csv_path": str(self.c_csv),
+                "priority": {"rank_order": "ascending", "minimum": 1, "maximum": 24},
+            },
         }
         self.index = PoiSearchIndex(self.datasets, self.root / "indexes")
 
@@ -146,6 +160,14 @@ class PoiSearchTest(unittest.TestCase):
         self.assertIn("Alpha School", names[0])
         self.assertEqual(names[1], ["Other Dataset"])
         self.assertEqual(names[3], ["Other Dataset"])
+        condition = [{"field": "priority", "operator": "gte", "value": 0}]
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            structured = [
+                executor.submit(self.index.query, dataset_id, conditions=condition)
+                for dataset_id in ("a", "b", "a", "b")
+            ]
+        self.assertEqual(structured[0].result()["returned"], 3)
+        self.assertEqual(structured[1].result()["returned"], 1)
 
     def test_explicit_search_does_not_change_active_dataset_and_reload_invalidates(self) -> None:
         manager = DatasetManager(
@@ -293,6 +315,164 @@ class PoiSearchTest(unittest.TestCase):
         self.assertEqual(index.search("special", q="%")["returned"], 1)
         self.assertEqual(index.search("special", q="_")["returned"], 1)
         self.assertEqual(index.search("special", q="\\")["returned"], 1)
+
+    def test_structured_single_fields_priority_ranges_and_missing_values(self) -> None:
+        self.assertEqual(
+            self.index.query("a", conditions=[{"field": "name", "operator": "contains", "value": "ALPHA"}])["returned"],
+            2,
+        )
+        self.assertEqual(
+            self.index.query("a", conditions=[{"field": "priority", "operator": "eq", "value": 80}])["returned"],
+            1,
+        )
+        ranged = self.index.query(
+            "a",
+            conditions=[{"field": "priority", "operator": "between", "value": [20, 50]}],
+        )
+        self.assertEqual(
+            [feature["properties"]["new_node_id"] for feature in ranged["features"]],
+            ["node-1"],
+        )
+        self.assertEqual(
+            self.index.query("a", conditions=[{"field": "visible", "operator": "is_hidden"}])["returned"],
+            1,
+        )
+
+    def test_structured_and_or_identifiers_and_quick_search(self) -> None:
+        combined = self.index.query(
+            "a",
+            q="school",
+            mode="and",
+            conditions=[
+                {"field": "name", "operator": "contains", "value": "alpha"},
+                {"field": "priority", "operator": "gte", "value": 70},
+            ],
+        )
+        self.assertEqual(
+            [feature["properties"]["new_node_id"] for feature in combined["features"]],
+            ["node-2"],
+        )
+        either = self.index.query(
+            "a",
+            mode="or",
+            conditions=[
+                {"field": "mappls_poi_id", "operator": "eq", "value": "mmi-two"},
+                {"field": "osm_source_id", "operator": "contains", "value": "ABC"},
+            ],
+        )
+        self.assertEqual(
+            {feature["properties"]["new_node_id"] for feature in either["features"]},
+            {"node-2", "node-3"},
+        )
+
+    def test_structured_validation_injection_and_dataset_isolation(self) -> None:
+        invalid = (
+            [{"field": "priority", "operator": "contains", "value": "8"}],
+            [{"field": "name", "operator": "contains", "value": ""}],
+            [{"field": "priority", "operator": "between", "value": [90, 60]}],
+            [{"field": "visible", "operator": "eq", "value": True}],
+            [{"field": "name; DROP TABLE pois", "operator": "eq", "value": "x"}],
+        )
+        for conditions in invalid:
+            with self.subTest(conditions=conditions), self.assertRaises(PoiSearchValidationError):
+                self.index.query("a", conditions=conditions)
+        injected = self.index.query(
+            "a",
+            conditions=[{"field": "name", "operator": "eq", "value": "' OR 1=1 --"}],
+        )
+        self.assertEqual(injected["returned"], 0)
+        self.assertEqual(
+            self.index.query("b", conditions=[{"field": "name", "operator": "contains", "value": "other"}])["returned"],
+            1,
+        )
+
+    def test_structured_stable_pagination_duplicate_identity_and_cursor_binding(self) -> None:
+        first = self.index.query("a", mode="or", conditions=[
+            {"field": "mappls_poi_id", "operator": "eq", "value": "MMI-ONE"},
+            {"field": "name", "operator": "contains", "value": "priority"},
+        ], limit=1)
+        second = self.index.query("a", mode="or", conditions=[
+            {"field": "mappls_poi_id", "operator": "eq", "value": "MMI-ONE"},
+            {"field": "name", "operator": "contains", "value": "priority"},
+        ], limit=1, cursor=first["next_cursor"])
+        ids = [feature["properties"]["new_node_id"] for feature in first["features"] + second["features"]]
+        self.assertEqual(ids, ["node-1", "node-4"])
+        with self.assertRaises(PoiSearchValidationError):
+            self.index.query(
+                "a",
+                conditions=[{"field": "mappls_poi_id", "operator": "eq", "value": "MMI-ONE"}],
+                limit=1,
+                cursor=first["next_cursor"],
+            )
+
+    def test_configured_ascending_priority_ranking_and_numeric_comparators(self) -> None:
+        structured = self.index.query("company", q="company")
+        self.assertEqual(
+            [feature["properties"]["priority"] for feature in structured["features"]],
+            ["1", "12", "24"],
+        )
+        paged: list[str] = []
+        cursor = None
+        while True:
+            page = self.index.query("company", q="company", limit=1, cursor=cursor)
+            paged.extend(feature["properties"]["priority"] for feature in page["features"])
+            cursor = page["next_cursor"]
+            if cursor is None:
+                break
+        self.assertEqual(paged, ["1", "12", "24"])
+        with patch("backend.app.poi_search.BROAD_QUERY_THRESHOLD", 1):
+            broad = self.index.query("company", q="company")
+        self.assertEqual(
+            [feature["properties"]["priority"] for feature in broad["features"]],
+            ["1", "12", "24"],
+        )
+        legacy = self.index.search("company", q="company")
+        self.assertEqual(
+            [feature["properties"]["priority"] for feature in legacy["features"]],
+            ["24", "12", "1"],
+        )
+        numerically_gte = self.index.query(
+            "company",
+            conditions=[{"field": "priority", "operator": "gte", "value": 12}],
+        )
+        self.assertEqual(
+            [feature["properties"]["priority"] for feature in numerically_gte["features"]],
+            ["12", "24"],
+        )
+        numerically_lte = self.index.query(
+            "company",
+            conditions=[{"field": "priority", "operator": "lte", "value": 12}],
+        )
+        self.assertEqual(
+            [feature["properties"]["priority"] for feature in numerically_lte["features"]],
+            ["1", "12"],
+        )
+        for value in (0, 25):
+            with self.assertRaises(PoiSearchValidationError):
+                self.index.query(
+                    "company",
+                    conditions=[{"field": "priority", "operator": "eq", "value": value}],
+                )
+        self.assertEqual(
+            self.index.query("a", conditions=[{"field": "priority", "operator": "gte", "value": -100}])["returned"],
+            3,
+        )
+
+    def test_dataset_metadata_tracks_priority_policy_and_dynamic_categories(self) -> None:
+        manager = DatasetManager({
+            "active_dataset": "company",
+            "backend": {"poi_index_dir": str(self.root / "metadata-index")},
+            "datasets": self.datasets,
+        })
+        summary = manager.describe()["datasets"][2]
+        self.assertEqual(summary["priority"], {
+            "rank_order": "ascending", "minimum": 1.0, "maximum": 24.0,
+        })
+        self.assertEqual(summary["stats"]["landmark_types"], {"metro": 2, "fuel": 1})
+        write_csv(self.c_csv, [row("Changed", "changed", kind="hospital", priority=2)])
+        manager.reload("company")
+        refreshed = manager.describe()["datasets"][2]
+        self.assertEqual(refreshed["stats"]["landmark_types"], {"hospital": 1})
 
 
 if __name__ == "__main__":

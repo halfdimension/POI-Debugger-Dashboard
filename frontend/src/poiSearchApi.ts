@@ -13,6 +13,27 @@ export interface PoiSearchParams {
   cursor?: string;
 }
 
+export type PoiConditionField = 'name' | 'priority' | 'landmark_type' | 'mappls_poi_id' | 'new_node_id' | 'osm_source_id' | 'visible';
+export type PoiConditionOperator = 'contains' | 'eq' | 'gt' | 'gte' | 'lt' | 'lte' | 'between' | 'is_visible' | 'is_hidden';
+export type PoiConditionValue = string | number | [number, number];
+
+export interface PoiSearchCondition {
+  id: string;
+  field: PoiConditionField;
+  operator: PoiConditionOperator;
+  value?: PoiConditionValue;
+}
+
+export interface PoiQueryParams {
+  datasetId: string;
+  q?: string;
+  mode: 'and' | 'or';
+  conditions: PoiSearchCondition[];
+  bbox?: PoiBounds;
+  limit?: number;
+  cursor?: string;
+}
+
 export interface PoiSearchResponse extends FeatureCollection<Point> {
   dataset_id: string;
   features: Feature<Point>[];
@@ -63,12 +84,46 @@ export async function searchPois(params: PoiSearchParams, signal?: AbortSignal):
   return body as PoiSearchResponse;
 }
 
+export function buildPoiQueryBody(params: PoiQueryParams): Record<string, unknown> {
+  if (!params.datasetId.trim()) throw new Error('dataset_id is required');
+  if (params.bbox) serializePoiBounds(params.bbox);
+  return {
+    dataset_id: params.datasetId,
+    q: params.q?.trim() ?? '',
+    mode: params.mode,
+    conditions: params.conditions.map(({ field, operator, value }) => ({
+      field,
+      operator,
+      ...(value === undefined ? {} : { value }),
+    })),
+    ...(params.bbox ? { bbox: params.bbox } : {}),
+    ...(params.limit === undefined ? {} : { limit: params.limit }),
+    ...(params.cursor ? { cursor: params.cursor } : {}),
+  };
+}
+
+export async function queryPois(params: PoiQueryParams, signal?: AbortSignal): Promise<PoiSearchResponse> {
+  const response = await fetch('/api/pois/query', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(buildPoiQueryBody(params)),
+    signal,
+  });
+  let body: unknown;
+  try { body = await response.json(); } catch { body = null; }
+  if (!response.ok) {
+    const detail = typeof (body as { detail?: unknown } | null)?.detail === 'string'
+      ? (body as { detail: string }).detail
+      : `POI query request failed: ${response.status}`;
+    throw new PoiSearchRequestError(detail, response.status);
+  }
+  return body as PoiSearchResponse;
+}
+
 export function poiFeatureKey(feature: Feature<Point>): string {
   const props = feature.properties ?? {};
-  const identifier = props.mappls_poi_id ?? props.new_node_id ?? props.osm_source_id ?? feature.id;
-  return identifier !== undefined && identifier !== ''
-    ? String(identifier)
-    : `${feature.geometry.coordinates[0]},${feature.geometry.coordinates[1]}|${String(props.name ?? '')}`;
+  return [feature.id ?? '', props.mappls_poi_id ?? '', props.new_node_id ?? '', props.osm_source_id ?? '',
+    feature.geometry.coordinates[0], feature.geometry.coordinates[1], props.name ?? ''].join('|');
 }
 
 export function mergePoiPages(current: Feature<Point>[], next: Feature<Point>[]): Feature<Point>[] {

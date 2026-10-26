@@ -74,11 +74,16 @@ datasets:
   # landmark_priority, and landmark_visible. This remains debugger-only metadata.
   cp_official_lmg:
     name: "CP - Official LMG"
+    priority: &company_priority
+      rank_order: ascending
+      minimum: 1
+      maximum: 24
     pbf_path: "/home/cn004231/harsh/poi_official_data/delhi_small_lmg.osm.pbf"
     poi_csv_path: "./data/cp_official_lmg.landmarks.csv"
 
   rohtak_lmg:
     name: "Rohtak - Official LMG"
+    priority: *company_priority
     pbf_path: "/home/cn004231/harsh/poi_official_data/Rohtak/rohtak_lmg.osm.pbf"
     poi_csv_path: "./data/rohtak_lmg.landmarks.csv"
     osrm_landmark_debug_jsonl_path: "./data/rohtak_lmg.turn_debug_v2.jsonl"
@@ -87,6 +92,7 @@ datasets:
 
   mix_data:
     name: "Mix Data - Official LMG"
+    priority: *company_priority
     pbf_path: "/home/cn004231/harsh/poi_official_data/mix_data/mix_data.osm.pbf"
     poi_csv_path: "./data/mix_data.landmarks.csv"
     # MapLibre bounds: [[west, south], [east, north]].
@@ -94,6 +100,7 @@ datasets:
 
   new_data:
     name: "New Data - 16 SEPT"
+    priority: *company_priority
     pbf_path: "/home/cn004231/harsh/poi_official_data/New_Data/NextGen_All_India_Driving_LMG_v2026.08.pbf"
     poi_csv_path: "./data/weekly_2026_08.landmarks.csv"
     # MapLibre bounds: [[west, south], [east, north]].

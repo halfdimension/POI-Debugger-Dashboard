@@ -1,6 +1,6 @@
 import { propText } from '../../poi';
 import type { DatasetRegistryResponse, DatasetSummary, DebuggerConfig } from '../../types';
-import { AdvancedPoiFilters } from './PoiExplorer';
+import { AdvancedPoiFilters, type AdvancedPoiFiltersProps } from './PoiExplorer';
 
 export interface DatasetPoiExplorerPanelProps {
   activeDataset: DatasetSummary | null;
@@ -13,9 +13,7 @@ export interface DatasetPoiExplorerPanelProps {
   availablePoiTypes: string[];
   fullTypeStats: [string, number][];
   poiSearch: string;
-  poiType: string;
-  minPriority: number;
-  visibleOnly: boolean;
+  advancedFilters: AdvancedPoiFiltersProps;
   showPois: boolean;
   searchLoading: boolean;
   searchLoadingMore: boolean;
@@ -24,9 +22,6 @@ export interface DatasetPoiExplorerPanelProps {
   onChangeDataset: (datasetId: string) => void;
   onReloadDataset: () => void;
   onSearchChange: (value: string) => void;
-  onTypeChange: (value: string) => void;
-  onMinimumPriorityChange: (value: number) => void;
-  onVisibleOnlyChange: (value: boolean) => void;
   onShowPoisChange: (value: boolean) => void;
   onResetFilters: () => void;
   onFocusPoi: (feature: GeoJSON.Feature<GeoJSON.Point>) => void;
@@ -43,11 +38,10 @@ function basename(path?: string): string {
 export function DatasetPoiExplorerPanel({
   activeDataset, datasetRegistry, datasetBusy, datasetMessage, config,
   filteredPoiFeatures, searchResults, availablePoiTypes, fullTypeStats,
-  poiSearch, poiType, minPriority, visibleOnly, showPois,
+  poiSearch, advancedFilters, showPois,
   searchLoading, searchLoadingMore, searchError, searchHasMore,
   onChangeDataset: changeDataset, onReloadDataset: reloadActiveDataset,
-  onSearchChange: setPoiSearch, onTypeChange: setPoiType,
-  onMinimumPriorityChange: setMinPriority, onVisibleOnlyChange: setVisibleOnly,
+  onSearchChange: setPoiSearch,
   onShowPoisChange: setShowPois, onResetFilters: resetPoiFilters,
   onFocusPoi: focusPoiFeature,
   onLoadMore, onRetrySearch,
@@ -105,22 +99,9 @@ export function DatasetPoiExplorerPanel({
           <button type="button" onClick={resetPoiFilters}>Reset filters</button>
         </div>
   
-        <div className="poi-filter-grid">
-          <div>
-            <label>Landmark type</label>
-            <select value={poiType} onChange={(event) => setPoiType(event.target.value)}>
-              <option value="all">All types</option>
-              {availablePoiTypes.map((type) => (
-                <option key={type} value={type}>{type}</option>
-              ))}
-            </select>
-          </div>
-        </div>
-
-        <AdvancedPoiFilters inputId="dataset-poi-min-priority" minPriority={minPriority} onMinimumPriorityChange={setMinPriority} />
+        <AdvancedPoiFilters {...advancedFilters} availablePoiTypes={availablePoiTypes} />
   
         <div className="poi-checkboxes">
-          <label><input type="checkbox" checked={visibleOnly} onChange={(event) => setVisibleOnly(event.target.checked)} /> Visible only</label>
           <label><input type="checkbox" checked={showPois} onChange={(event) => setShowPois(event.target.checked)} /> Show POIs on map</label>
         </div>
   
@@ -129,7 +110,7 @@ export function DatasetPoiExplorerPanel({
           <span>Map/search filters do not change either routing engine.</span>
         </div>
   
-        {poiSearch.trim() && (
+        {(poiSearch.trim() || advancedFilters.conditions.length > 0) && (
           <div className="poi-search-results">
             <div className="poi-section-title">Search results</div>
             {searchLoading && <div className="empty-state" role="status">Searching POIs…</div>}
@@ -160,7 +141,10 @@ export function DatasetPoiExplorerPanel({
         <div className="poi-type-stats">
           <div className="poi-section-title">Dataset type distribution</div>
           {fullTypeStats.slice(0, 8).map(([type, count]) => (
-            <button key={type} onClick={() => setPoiType(type)} title={`Filter to ${type}`}>
+            <button key={type} disabled={advancedFilters.conditions.length >= 10} onClick={() => advancedFilters.onConditionsChange([
+              ...advancedFilters.conditions,
+              { id: `${Date.now()}-${type}`, field: 'landmark_type', operator: 'eq', value: type },
+            ])} title={`Add ${type} as an advanced condition`}>
               <span>{type}</span><strong>{count}</strong>
             </button>
           ))}

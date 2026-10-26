@@ -1,5 +1,11 @@
 export type LngLat = [number, number];
 
+export interface PriorityPolicy {
+  rank_order: 'ascending' | 'descending';
+  minimum: number | null;
+  maximum: number | null;
+}
+
 export interface DatasetStats {
   total_rows: number;
   valid_pois: number;
@@ -14,6 +20,7 @@ export interface DatasetStats {
 export interface DatasetSummary {
   id: string;
   name: string;
+  priority: PriorityPolicy;
   map_bounds?: [LngLat, LngLat] | null;
   pbf_path?: string;
   poi_csv_path?: string;

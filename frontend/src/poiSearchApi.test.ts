@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { buildPoiSearchUrl, mergePoiPages, searchPois, serializePoiBounds } from './poiSearchApi';
+import { buildPoiQueryBody, buildPoiSearchUrl, mergePoiPages, queryPois, searchPois, serializePoiBounds } from './poiSearchApi';
 
 const feature = (id: string) => ({
   type: 'Feature' as const,
@@ -48,8 +48,37 @@ describe('POI search client', () => {
     vi.unstubAllGlobals();
   });
 
+  it('serializes structured fields, numeric ranges, mode, scope bounds and cursor', () => {
+    expect(buildPoiQueryBody({
+      datasetId: 'weekly', q: 'Delhi', mode: 'or', bbox: [76, 27, 78, 29], limit: 50, cursor: 'next',
+      conditions: [
+        { id: 'ui-1', field: 'priority', operator: 'between', value: [60, 90] },
+        { id: 'ui-2', field: 'landmark_type', operator: 'eq', value: 'fuel' },
+      ],
+    })).toEqual({
+      dataset_id: 'weekly', q: 'Delhi', mode: 'or', bbox: [76, 27, 78, 29], limit: 50, cursor: 'next',
+      conditions: [
+        { field: 'priority', operator: 'between', value: [60, 90] },
+        { field: 'landmark_type', operator: 'eq', value: 'fuel' },
+      ],
+    });
+  });
+
+  it('posts a structured query with cancellation support', async () => {
+    const controller = new AbortController();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ features: [] }) }));
+    await queryPois({ datasetId: 'demo', mode: 'and', conditions: [{ id: '1', field: 'visible', operator: 'is_visible' }] }, controller.signal);
+    expect(fetch).toHaveBeenCalledWith('/api/pois/query', expect.objectContaining({ method: 'POST', signal: controller.signal }));
+    vi.unstubAllGlobals();
+  });
+
   it('merges pages without duplicate POIs', () => {
     expect(mergePoiPages([feature('one'), feature('two')], [feature('two'), feature('three')]).map((item) => item.properties?.name))
       .toEqual(['one', 'two', 'three']);
+  });
+
+  it('does not collapse separate POIs that reuse an external identifier', () => {
+    const duplicateAtAnotherLocation = { ...feature('one'), geometry: { type: 'Point' as const, coordinates: [78, 29] } };
+    expect(mergePoiPages([feature('one')], [duplicateAtAnotherLocation])).toHaveLength(2);
   });
 });

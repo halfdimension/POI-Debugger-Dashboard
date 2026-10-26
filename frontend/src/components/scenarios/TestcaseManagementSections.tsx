@@ -1,11 +1,13 @@
 import type { Dispatch, FormEvent, SetStateAction } from 'react';
+import type { TestcaseTab } from '../../features/testcases/useTestcaseManagement';
 import type { ScenarioRunResult } from '../../scenarioAssertions';
-import type { DatasetRegistryResponse, DebuggerConfig, LngLat, RouteScenario, ScenarioRegistryResponse } from '../../types';
+import type { LngLat, RouteScenario, ScenarioRegistryResponse } from '../../types';
+
+export type { TestcaseTab } from '../../features/testcases/useTestcaseManagement';
 
 export interface TestcaseManagementProps {
   registry: ScenarioRegistryResponse | null;
-  datasetRegistry: DatasetRegistryResponse | null;
-  config: DebuggerConfig;
+  activeDataset: string;
   start: LngLat | null;
   end: LngLat | null;
   scenarioName: string;
@@ -36,8 +38,6 @@ export interface TestcaseManagementProps {
   onChangeVisibility: (scenario: RouteScenario) => void;
   onDelete: (scenario: RouteScenario) => void;
 }
-
-export type TestcaseTab = 'mine' | 'shared' | 'legacy';
 
 export interface TestcaseManagementSectionsProps extends TestcaseManagementProps {
   activeTab: TestcaseTab;
@@ -84,13 +84,12 @@ function TestcaseRow({ scenario, sharedView, activeDataset, busy, runAllBusy, ro
 
 export function TestcaseManagementSections(props: TestcaseManagementSectionsProps) {
   const {
-    registry, datasetRegistry, config, start, end, scenarioName, scenarioNotes, scenarioVisibility,
+    registry, activeDataset, start, end, scenarioName, scenarioNotes, scenarioVisibility,
     expectedText, forbiddenText, myQuery, sharedQuery, scenarioBusy, scenarioMessage, runAllBusy,
     routeBusy, runResults, setScenarioName, setScenarioNotes, setScenarioVisibility, setExpectedText,
     setForbiddenText, setMyQuery, setSharedQuery, onBrowse, onSave, onRunAll, onLoad, onRun,
     onEditExpectation, onChangeVisibility, onDelete, activeTab, onSelectTab,
   } = props;
-  const activeDataset = datasetRegistry?.active_dataset ?? config?.active_dataset ?? '';
   const mine = registry?.scenarios ?? [];
   const shared = registry?.shared_scenarios ?? [];
   const legacy = registry?.legacy_scenarios ?? [];

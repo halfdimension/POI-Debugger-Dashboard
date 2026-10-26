@@ -1,11 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import maplibregl, { LngLatBounds, Map as MapLibreMap } from 'maplibre-gl';
-import { createScenario, deleteScenario, getDatasets, getOsrmStatus, getScenarios, getValhallaStatus, reloadDatasetPois, requestCompareRoute, updatePreferences, updateScenario } from './api';
+import { getDatasets, getOsrmStatus, getValhallaStatus, reloadDatasetPois, requestCompareRoute, updatePreferences } from './api';
 import { haversineMeters, updateCoordinateValue } from './coordinates';
 import { decodePolyline6 } from './polyline';
 import { pointFeature, propNumber, propText } from './poi';
 import { fetchDiagnosticPois, mergePoiPages, queryPois, searchPois, type PoiBounds, type PoiSearchCondition, type PoiSearchResponse } from './poiSearchApi';
-import { evaluateScenario, type ScenarioRunResult } from './scenarioAssertions';
 import { loadInitialDashboard } from './initialization';
 import { developmentLogin, getAuthConfig, getCurrentSession, logout, setAuthSession, type AuthConfig, type AuthSession } from './auth';
 import { AnalysisWorkspace, Sidebar } from './components/DashboardLayout';
@@ -33,7 +32,9 @@ import {
 import { RouteSetupControls } from './components/route/RouteSetupControls';
 import { RouteComparisonSummary } from './components/route/RouteComparisonSummary';
 import { SavedScenarioControls } from './components/scenarios/SavedScenarioControls';
-import { TestcaseManagementSections, type TestcaseTab } from './components/scenarios/TestcaseManagementSections';
+import { TestcaseManagementSections } from './components/scenarios/TestcaseManagementSections';
+import { testcaseRoutePoints } from './features/testcases/testcaseExecution';
+import { useTestcaseManagement, type TestcaseTab } from './features/testcases/useTestcaseManagement';
 import {
   initialDashboardLayout,
   selectAnalysisTab,
@@ -47,7 +48,7 @@ import {
   normalizeNarrationText,
   osrmInstructionText,
 } from './narration';
-import type { CandidateAnalysis, CandidateAnalysisManeuver, DatasetRegistryResponse, DatasetSummary, DebuggerConfig, LngLat, OsrmRouteResponse, RouteScenario, ScenarioRegistryResponse, UserPreferencesPatch, ValhallaRouteResponse } from './types';
+import type { CandidateAnalysis, CandidateAnalysisManeuver, DatasetRegistryResponse, DatasetSummary, DebuggerConfig, LngLat, OsrmRouteResponse, RouteScenario, UserPreferencesPatch, ValhallaRouteResponse } from './types';
 import { useVerticalPanelResize } from './useVerticalPanelResize';
 
 declare const __VPD_MOCK_API__: boolean;
@@ -329,7 +330,6 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
   const [layout, setLayout] = useState(initialDashboardLayout);
   const [preferredAnalysisHeight, setPreferredAnalysisHeight] = useState(storedAnalysisHeight);
   const [inspectorTab, setInspectorTab] = useState<'poi' | 'route' | 'maneuver'>('route');
-  const [testcaseTab, setTestcaseTab] = useState<TestcaseTab>('mine');
   const [map3D, setMap3D] = useState(false);
   const [showCandidateMap, setShowCandidateMap] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -357,18 +357,14 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
     disabled: layout.analysisCollapsed,
   });
 
-  const [scenarioRegistry, setScenarioRegistry] = useState<ScenarioRegistryResponse | null>(null);
-  const [scenarioName, setScenarioName] = useState('');
-  const [scenarioNotes, setScenarioNotes] = useState('');
-  const [scenarioVisibility, setScenarioVisibility] = useState<'private' | 'shared'>('private');
-  const [scenarioMyQuery, setScenarioMyQuery] = useState('');
-  const [scenarioSharedQuery, setScenarioSharedQuery] = useState('');
-  const [scenarioBusy, setScenarioBusy] = useState(false);
-  const [scenarioMessage, setScenarioMessage] = useState('');
-  const [scenarioExpectedText, setScenarioExpectedText] = useState('');
-  const [scenarioForbiddenText, setScenarioForbiddenText] = useState('');
-  const [scenarioRunResults, setScenarioRunResults] = useState<Record<string, ScenarioRunResult>>({});
-  const [runAllBusy, setRunAllBusy] = useState(false);
+  const testcases = useTestcaseManagement({
+    activeDatasetId: datasetRegistry?.active_dataset ?? config?.active_dataset,
+    start,
+    end,
+    onError: setError,
+    onLoadIntoDashboard: loadTestcaseIntoDashboard,
+    executeRoute: executeTestcaseRoute,
+  });
 
   const [poiSearch, setPoiSearch] = useState('');
   const [debouncedPoiSearch, setDebouncedPoiSearch] = useState('');
@@ -395,7 +391,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
   };
 
   const openTestcases = (tab: TestcaseTab) => {
-    setTestcaseTab(tab);
+    testcases.setActiveTab(tab);
     setLayout((current) => selectAnalysisTab(current, 'scenarios'));
   };
 
@@ -1258,7 +1254,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
         if (cancelled) return;
         setConfig(initial.config);
         setDatasetRegistry(initial.datasets);
-        setScenarioRegistry(initial.scenarios);
+        testcases.initializeRegistry(initial.scenarios);
         basemapRef.current = initial.preferences.preferred_basemap;
         setBasemap(initial.preferences.preferred_basemap);
         setMap3D(initial.preferences.map_display_mode === '3d');
@@ -2485,44 +2481,8 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
     await executeRoute(start, end, 'auto');
   }
 
-  async function refreshScenarios(message = '') {
-    const registry = await getScenarios({
-      myQuery: scenarioMyQuery,
-      myOffset: scenarioRegistry?.offset ?? 0,
-      sharedQuery: scenarioSharedQuery,
-      sharedOffset: scenarioRegistry?.shared_offset ?? 0,
-    });
-    setScenarioRegistry(registry);
-    if (message) setScenarioMessage(message);
-  }
-
-  async function browseScenarios(scope: 'mine' | 'shared', query: string, offset: number) {
-    setScenarioBusy(true);
-    setError('');
-    try {
-      const registry = await getScenarios({
-        myQuery: scope === 'mine' ? query : scenarioMyQuery,
-        myOffset: scope === 'mine' ? offset : scenarioRegistry?.offset ?? 0,
-        sharedQuery: scope === 'shared' ? query : scenarioSharedQuery,
-        sharedOffset: scope === 'shared' ? offset : scenarioRegistry?.shared_offset ?? 0,
-      });
-      setScenarioRegistry(registry);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setScenarioBusy(false);
-    }
-  }
-
-  function scenarioPoints(scenario: RouteScenario): { routeStart: LngLat; routeEnd: LngLat } {
-    return {
-      routeStart: [scenario.request.start.lon, scenario.request.start.lat],
-      routeEnd: [scenario.request.end.lon, scenario.request.end.lat],
-    };
-  }
-
-  function loadScenario(scenario: RouteScenario) {
-    const { routeStart, routeEnd } = scenarioPoints(scenario);
+  function loadTestcaseIntoDashboard(scenario: RouteScenario): void {
+    const { routeStart, routeEnd } = testcaseRoutePoints(scenario);
     setStart(routeStart);
     setEnd(routeEnd);
     setRoute(null);
@@ -2540,9 +2500,6 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
       EMPTY_FC,
     );
 
-    setError('');
-    setScenarioMessage(`Loaded ${scenario.name}.`);
-
     if (mapRef.current) {
       const bounds = new LngLatBounds(routeStart, routeStart);
       bounds.extend(routeEnd);
@@ -2550,183 +2507,14 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
     }
   }
 
-  async function runSavedScenario(scenario: RouteScenario): Promise<ScenarioRunResult | null> {
-    const activeId = datasetRegistry?.active_dataset ?? config?.active_dataset ?? '';
-    if (scenario.dataset !== activeId) {
-      const message = `Scenario uses dataset "${scenario.dataset}" but the active debugger dataset is "${activeId || 'unknown'}". Activate the matching dataset before running it.`;
-      setError(message);
-      const result: ScenarioRunResult = { status: 'error', checkedAt: new Date().toISOString(), actualInstructions: [], matchedInstructions: [], failures: [], error: message };
-      setScenarioRunResults((previous) => ({ ...previous, [scenario.id]: result }));
-      return result;
-    }
-
-    const { routeStart, routeEnd } = scenarioPoints(scenario);
+  async function executeTestcaseRoute(
+    routeStart: LngLat,
+    routeEnd: LngLat,
+    costing: string,
+  ): Promise<ValhallaRouteResponse | null> {
     setStart(routeStart);
     setEnd(routeEnd);
-    setScenarioMessage(`Running ${scenario.name}.`);
-    const response = await executeRoute(routeStart, routeEnd, scenario.request.costing || 'auto');
-    if (!response) {
-      const result: ScenarioRunResult = { status: 'error', checkedAt: new Date().toISOString(), actualInstructions: [], matchedInstructions: [], failures: [], error: 'Route request failed.' };
-      setScenarioRunResults((previous) => ({ ...previous, [scenario.id]: result }));
-      return result;
-    }
-
-    const result = evaluateScenario(scenario, response);
-    setScenarioRunResults((previous) => ({ ...previous, [scenario.id]: result }));
-    setScenarioMessage(`${scenario.name}: ${result.status === 'pass' ? 'PASS' : result.status === 'fail' ? 'FAIL' : 'route ran; no expectation configured'}.`);
-    return result;
-  }
-
-  async function editScenarioExpectation(scenario: RouteScenario) {
-    const name = window.prompt('Testcase name.', scenario.name);
-    if (name === null || !name.trim()) return;
-    const description = window.prompt('Testcase description.', scenario.description ?? '');
-    if (description === null) return;
-    const currentContains = scenario.expectation?.instruction_contains ?? scenario.expectation?.landmark_name ?? '';
-    const contains = window.prompt('Expected Odin text / landmark name. Leave blank for no positive assertion.', currentContains);
-    if (contains === null) return;
-    const currentForbidden = scenario.expectation?.instruction_not_contains ?? '';
-    const forbidden = window.prompt('Forbidden Odin text. Leave blank if not needed.', currentForbidden);
-    if (forbidden === null) return;
-    const replaceRoute = Boolean(start && end && window.confirm('Replace the saved route and dataset with the current dashboard configuration?'));
-
-    setScenarioBusy(true);
-    setError('');
-    try {
-      await updateScenario(scenario.id, {
-        revision: scenario.revision,
-        name: name.trim(),
-        description: description.trim(),
-        ...(replaceRoute && start && end ? {
-          dataset: datasetRegistry?.active_dataset ?? config?.active_dataset ?? scenario.dataset,
-          request: {
-            start: { lon: start[0], lat: start[1] },
-            end: { lon: end[0], lat: end[1] },
-            costing: 'auto',
-          },
-        } : {}),
-        expectation: {
-          landmark_name: contains.trim(),
-          instruction_contains: contains.trim(),
-          instruction_not_contains: forbidden.trim(),
-          case_sensitive: false,
-        },
-      });
-      setScenarioRunResults((previous) => {
-        const next = { ...previous };
-        delete next[scenario.id];
-        return next;
-      });
-      await refreshScenarios(`Updated testcase ${name.trim()}.`);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setScenarioBusy(false);
-    }
-  }
-
-  async function runAllScenarios() {
-    const scenarios = scenarioRegistry?.scenarios ?? [];
-    const activeId = datasetRegistry?.active_dataset ?? config?.active_dataset ?? '';
-    const runnable = scenarios.filter((scenario) => scenario.dataset === activeId);
-    if (runnable.length === 0) {
-      setScenarioMessage('No saved scenarios match the active dataset.');
-      return;
-    }
-
-    setRunAllBusy(true);
-    setScenarioMessage(`Running ${runnable.length} scenarios…`);
-    let pass = 0;
-    let fail = 0;
-    let noExpectation = 0;
-    let errors = 0;
-    try {
-      for (const scenario of runnable) {
-        const result = await runSavedScenario(scenario);
-        if (!result) continue;
-        if (result.status === 'pass') pass += 1;
-        else if (result.status === 'fail') fail += 1;
-        else if (result.status === 'no-expectation') noExpectation += 1;
-        else errors += 1;
-      }
-      setScenarioMessage(`Run all complete: ${pass} PASS · ${fail} FAIL · ${noExpectation} NO EXPECTATION · ${errors} ERROR.`);
-    } finally {
-      setRunAllBusy(false);
-    }
-  }
-
-  async function saveCurrentScenario() {
-    if (!start || !end) {
-      setError('Set both start and end coordinates before saving a scenario.');
-      return;
-    }
-    if (!scenarioName.trim()) {
-      setError('Enter a scenario name before saving.');
-      return;
-    }
-
-    const datasetId = datasetRegistry?.active_dataset ?? config?.active_dataset ?? 'default';
-    setScenarioBusy(true);
-    setError('');
-    setScenarioMessage('');
-    try {
-      const created = await createScenario({
-        name: scenarioName.trim(),
-        visibility: scenarioVisibility,
-        dataset: datasetId,
-        request: {
-          start: { lon: start[0], lat: start[1] },
-          end: { lon: end[0], lat: end[1] },
-          costing: 'auto',
-        },
-        description: scenarioNotes.trim(),
-        expectation: {
-          landmark_name: scenarioExpectedText.trim(),
-          instruction_contains: scenarioExpectedText.trim(),
-          instruction_not_contains: scenarioForbiddenText.trim(),
-          case_sensitive: false,
-        },
-      });
-      setScenarioName('');
-      setScenarioNotes('');
-      setScenarioExpectedText('');
-      setScenarioForbiddenText('');
-      setScenarioVisibility('private');
-      await refreshScenarios(`Saved scenario ${created.name}.`);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setScenarioBusy(false);
-    }
-  }
-
-  async function changeScenarioVisibility(scenario: RouteScenario) {
-    const visibility = scenario.visibility === 'shared' ? 'private' : 'shared';
-    setScenarioBusy(true);
-    setError('');
-    try {
-      await updateScenario(scenario.id, { revision: scenario.revision, visibility });
-      await refreshScenarios(`${scenario.name} is now ${visibility}.`);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setScenarioBusy(false);
-    }
-  }
-
-  async function removeScenario(scenario: RouteScenario) {
-    if (!window.confirm(`Delete saved scenario "${scenario.name}"?`)) return;
-    setScenarioBusy(true);
-    setError('');
-    setScenarioMessage('');
-    try {
-      await deleteScenario(scenario.id);
-      await refreshScenarios(`Deleted scenario ${scenario.name}.`);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setScenarioBusy(false);
-    }
+    return executeRoute(routeStart, routeEnd, costing);
   }
 
   function set3DView(enabled: boolean) {
@@ -3087,9 +2875,9 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
           />
 
           <SavedScenarioControls
-            mineCount={scenarioRegistry?.total ?? 0}
-            sharedCount={scenarioRegistry?.shared_total ?? 0}
-            legacyCount={scenarioRegistry?.legacy_scenarios?.length ?? 0}
+            mineCount={testcases.registry?.total ?? 0}
+            sharedCount={testcases.registry?.shared_total ?? 0}
+            legacyCount={testcases.registry?.legacy_scenarios?.length ?? 0}
             onOpen={openTestcases}
           />
         </Sidebar>
@@ -3540,40 +3328,39 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
             selectedOsrmAnalysis={selectedOsrmCandidateAnalysis}
             showCandidatesOnMap={showCandidateMap}
             testcaseWorkspace={<TestcaseManagementSections
-              activeTab={testcaseTab}
-              onSelectTab={setTestcaseTab}
-              registry={scenarioRegistry}
-              datasetRegistry={datasetRegistry}
-              config={config}
+              activeTab={testcases.activeTab}
+              onSelectTab={testcases.setActiveTab}
+              registry={testcases.registry}
+              activeDataset={datasetRegistry?.active_dataset ?? config.active_dataset ?? ''}
               start={start}
               end={end}
-              scenarioName={scenarioName}
-              scenarioNotes={scenarioNotes}
-              scenarioVisibility={scenarioVisibility}
-              expectedText={scenarioExpectedText}
-              forbiddenText={scenarioForbiddenText}
-              myQuery={scenarioMyQuery}
-              sharedQuery={scenarioSharedQuery}
-              scenarioBusy={scenarioBusy}
-              scenarioMessage={scenarioMessage}
-              runAllBusy={runAllBusy}
+              scenarioName={testcases.name}
+              scenarioNotes={testcases.notes}
+              scenarioVisibility={testcases.visibility}
+              expectedText={testcases.expectedText}
+              forbiddenText={testcases.forbiddenText}
+              myQuery={testcases.myQuery}
+              sharedQuery={testcases.sharedQuery}
+              scenarioBusy={testcases.busy}
+              scenarioMessage={testcases.message}
+              runAllBusy={testcases.runAllBusy}
               routeBusy={busy}
-              runResults={scenarioRunResults}
-              setScenarioName={setScenarioName}
-              setScenarioNotes={setScenarioNotes}
-              setScenarioVisibility={setScenarioVisibility}
-              setExpectedText={setScenarioExpectedText}
-              setForbiddenText={setScenarioForbiddenText}
-              setMyQuery={setScenarioMyQuery}
-              setSharedQuery={setScenarioSharedQuery}
-              onBrowse={browseScenarios}
-              onSave={saveCurrentScenario}
-              onRunAll={runAllScenarios}
-              onLoad={loadScenario}
-              onRun={runSavedScenario}
-              onEditExpectation={editScenarioExpectation}
-              onChangeVisibility={changeScenarioVisibility}
-              onDelete={removeScenario}
+              runResults={testcases.runResults}
+              setScenarioName={testcases.setName}
+              setScenarioNotes={testcases.setNotes}
+              setScenarioVisibility={testcases.setVisibility}
+              setExpectedText={testcases.setExpectedText}
+              setForbiddenText={testcases.setForbiddenText}
+              setMyQuery={testcases.setMyQuery}
+              setSharedQuery={testcases.setSharedQuery}
+              onBrowse={testcases.browse}
+              onSave={testcases.saveCurrent}
+              onRunAll={testcases.runAll}
+              onLoad={testcases.load}
+              onRun={testcases.run}
+              onEditExpectation={testcases.edit}
+              onChangeVisibility={testcases.changeVisibility}
+              onDelete={testcases.remove}
             />}
             getOsrmInstruction={osrmInstructionText}
             onFocusManeuver={focusManeuver}

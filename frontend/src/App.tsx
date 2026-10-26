@@ -1238,6 +1238,12 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
   }, [layout.leftCollapsed, layout.rightCollapsed, layout.analysisCollapsed]);
 
   useEffect(() => {
+    if (workspaceView !== 'debugger') return;
+    const frame = window.requestAnimationFrame(() => mapRef.current?.resize());
+    return () => window.cancelAnimationFrame(frame);
+  }, [workspaceView]);
+
+  useEffect(() => {
     const map = mapRef.current;
     if (!map || !config || !activeDataset) return;
 
@@ -2169,8 +2175,10 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
         </div>
       </header>
 
-      {workspaceView === 'admin' ? <AdminConsole /> : <main
+      {workspaceView === 'admin' && <AdminConsole />}
+      <main
         ref={workspaceRef}
+        hidden={workspaceView !== 'debugger'}
         className={`workspace${layout.leftCollapsed ? ' left-collapsed' : ''}${layout.rightCollapsed ? ' right-collapsed' : ''}${layout.analysisCollapsed ? ' analysis-collapsed' : ''}`}
         style={{ '--analysis-height': `${analysisResize.liveHeight}px` } as CSSProperties}
       >
@@ -2714,7 +2722,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
             onToggleCandidatesOnMap={() => setShowCandidateMap((current) => !current)}
           />
         </AnalysisWorkspace>
-      </main>}
+      </main>
     </div>
   );
 }

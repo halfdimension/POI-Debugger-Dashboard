@@ -1657,98 +1657,6 @@ button { cursor: pointer; }
   }
 }
 
-/* ===== Collapsible analysis panel ===== */
-
-/*
- * Normal:
- *   map = remaining width
- *   analysis panel = 420px
- *
- * Collapsed:
- *   map = almost entire screen
- *   panel rail = 48px
- */
-.workspace {
-  transition: grid-template-columns .20s ease;
-}
-
-.workspace.right-collapsed {
-  grid-template-columns: minmax(0, 1fr) 48px;
-}
-
-/* The second workspace child is the analysis aside. */
-.workspace > aside {
-  position: relative;
-  min-width: 0;
-}
-
-.right-panel-toggle-row {
-  position: sticky;
-  top: 0;
-  z-index: 20;
-  display: flex;
-  justify-content: flex-start;
-  margin-bottom: 6px;
-  background: #f4f6f8;
-}
-
-.right-panel-toggle {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-
-  border: 1px solid #cbd5e1;
-  border-radius: 7px;
-
-  background: #ffffff;
-  padding: 5px 8px;
-
-  color: #334155;
-  font-size: 10px;
-  font-weight: 800;
-
-  cursor: pointer;
-}
-
-.right-panel-toggle:hover {
-  background: #f8fafc;
-  border-color: #94a3b8;
-}
-
-/*
- * Hide all normal analysis-panel content while collapsed.
- * Keep only the toggle.
- */
-.workspace.right-collapsed > aside > :not(.right-panel-toggle-row) {
-  display: none !important;
-}
-
-.workspace.right-collapsed > aside {
-  overflow: hidden !important;
-  padding-left: 5px !important;
-  padding-right: 5px !important;
-}
-
-.workspace.right-collapsed .right-panel-toggle-row {
-  height: 100%;
-  margin: 0;
-  justify-content: center;
-  align-items: flex-start;
-}
-
-.workspace.right-collapsed .right-panel-toggle {
-  margin-top: 8px;
-  width: 36px;
-  padding: 8px 4px;
-  flex-direction: column;
-}
-
-.workspace.right-collapsed .right-panel-toggle span {
-  writing-mode: vertical-rl;
-  transform: rotate(180deg);
-  font-size: 9px;
-}
-
 /*
  * MapLibre needs a resize event when its CSS container changes dimensions.
  * The browser resize observer usually catches this, but the transition keeps
@@ -3275,3 +3183,6 @@ summary:focus-visible,
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; }
 }
+
+/* Keep the debugger mounted for MapLibre while the admin workspace is active. */
+.workspace[hidden] { display: none; }

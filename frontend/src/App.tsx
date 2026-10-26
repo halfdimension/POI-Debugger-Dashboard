@@ -17,14 +17,13 @@ import type { ManeuverView, NarrationPoiEvidence, NearbyPoi, OsrmRouteNarrationP
 import { ManeuverInspection } from './components/inspection/ManeuverInspection';
 import { SelectedPoiDetails } from './components/inspection/SelectedPoiDetails';
 import { MapContextMenu, type MapContextMenuLocation } from './components/map/MapContextMenu';
+import { bindDashboardMapEvents } from './components/map/dashboardMapEvents';
 import { registerDashboardMapLayers } from './components/map/dashboardMapLayers';
 import { visibleMapBounds } from './components/map/mapBounds';
 import {
   bindDebouncedViewportListener,
-  expandPoiCluster,
   incompleteViewportMessage,
   INDIVIDUAL_POI_LAYER_ID,
-  POI_CLUSTER_COUNT_LAYER_ID,
   POI_CLUSTER_LAYER_ID,
   ViewportRequestCoordinator,
   viewportPoiLabel,
@@ -1167,170 +1166,53 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
     mapRef.current = map;
     map.addControl(new maplibregl.NavigationControl(), 'top-right');
 
-    map.on('load', () => {
+    let disposed = false;
+    let disposeDashboardMapEvents: (() => void) | null = null;
+    const handleMapLoad = () => {
+      if (disposed || disposeDashboardMapEvents) return;
       registerDashboardMapLayers(map, {
         initialPois: showPois ? filteredPois : EMPTY_FC,
       });
 
-      const showPoiPopup = (event: maplibregl.MapLayerMouseEvent) => {
-        const rawFeature = event.features?.[0];
-        if (!rawFeature || rawFeature.geometry.type !== 'Point') return;
-        const feature = rawFeature as GeoJSON.Feature<GeoJSON.Point>;
-        const coordinates = feature.geometry.coordinates.slice() as LngLat;
-        setSelectedPoi(feature);
-        setInspectorTab('poi');
-        setLayout((current) => ({ ...current, rightCollapsed: false }));
-        openPoiPopup(
-          map,
-          coordinates,
-          feature.properties ?? {},
-        );
-      };
-
-      map.on('click', POI_CLUSTER_LAYER_ID, (event) => {
-        event.originalEvent.stopPropagation();
-        const feature = event.features?.[0] as GeoJSON.Feature | undefined;
-        if (feature) void expandPoiCluster(map, feature);
-      });
-
-      map.on('click', INDIVIDUAL_POI_LAYER_ID, showPoiPopup);
-      map.on('click', 'selected-poi', showPoiPopup);
-      map.on('click', 'nearby-pois', showPoiPopup);
-      map.on('click', 'narration-poi', showPoiPopup);
-
-      map.on('click', 'route-narration-pois', (event) => {
-        const rawFeature = event.features?.[0];
-        if (!rawFeature || rawFeature.geometry.type !== 'Point') return;
-
-        const feature = rawFeature as GeoJSON.Feature<GeoJSON.Point>;
-        const coordinates = feature.geometry.coordinates.slice() as LngLat;
-        const maneuverIndex = Number(feature.properties?._primary_maneuver_index);
-        if (Number.isFinite(maneuverIndex)) {
+      disposeDashboardMapEvents = bindDashboardMapEvents(map, {
+        onPoiSelected: (feature) => {
+          setSelectedPoi(feature);
+          setInspectorTab('poi');
+          setLayout((current) => ({ ...current, rightCollapsed: false }));
+        },
+        onRouteNarrationManeuverSelected: (maneuverIndex) => {
           setSelectedManeuverIndex(maneuverIndex);
           setInspectorTab('maneuver');
           setLayout((current) => ({ ...current, rightCollapsed: false }));
-          window.setTimeout(() => {
-            document.querySelector(`[data-maneuver-index="${maneuverIndex}"]`)
-              ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          }, 80);
-        }
-
-        setSelectedPoi(feature);
-        setInspectorTab('poi');
-        setLayout((current) => ({ ...current, rightCollapsed: false }));
-        map.flyTo({ center: coordinates, zoom: Math.max(map.getZoom(), 17), essential: true });
-        openPoiPopup(
-          map,
-          coordinates,
-          feature.properties ?? {},
-        );
-      });
-
-
-      map.on(
-        'click',
-        'candidate-analysis-pois',
-        (event) => {
-          event.originalEvent.stopPropagation();
-
-          const feature = event.features?.[0];
-
-          if (
-            !feature ||
-            feature.geometry?.type !== 'Point'
-          ) {
-            return;
-          }
-
-          const coordinate =
-            feature.geometry.coordinates as LngLat;
-
-          const properties =
-            feature.properties ?? {};
-
-          const popupProperties = {
-            name:
-              properties.name ??
-              'Candidate POI',
-            poi_id:
-              properties.poi_id ??
-              '',
-            status:
-              properties.status ??
-              '',
-            selected:
-              properties.selected ??
-              false,
-            engine:
-              properties.engine ??
-              '',
-            route_edge_role:
-              properties.route_edge_role ??
-              '',
-            association_confidence:
-              properties.association_confidence ??
-              '',
-            association_augmented:
-              properties.association_augmented ??
-              '',
-            incoming_association_augmented:
-              properties.incoming_association_augmented ??
-              '',
-            outgoing_association_augmented:
-              properties.outgoing_association_augmented ??
-              '',
-            maneuver_distance_m:
-              properties.maneuver_distance_m ??
-              '',
-            perpendicular_distance_m:
-              properties.perpendicular_distance_m ??
-              '',
-            distance_m:
-              properties.distance_m ??
-              '',
-            priority:
-              properties.priority ??
-              '',
-            reason:
-              properties.reason ??
-              '',
-          };
-
-          openPoiPopup(
-            map,
-            coordinate,
-            popupProperties,
-          );
         },
-      );
-
-      map.on('click', 'maneuver-points', (event) => {
-        const feature = event.features?.[0];
-        if (!feature || feature.geometry.type !== 'Point') return;
-        const index = Number(feature.properties?.index);
-        const coordinates = feature.geometry.coordinates.slice() as LngLat;
-        if (Number.isFinite(index)) {
-          setSelectedManeuverIndex(index);
+        onManeuverScrollRequested: (maneuverIndex) => {
+          document.querySelector(`[data-maneuver-index="${maneuverIndex}"]`)
+            ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        },
+        onManeuverSelected: (maneuverIndex) => {
+          setSelectedManeuverIndex(maneuverIndex);
           setSelectedOsrmStepIndex(null);
           setInspectorTab('maneuver');
           setLayout((current) => ({ ...current, rightCollapsed: false }));
-        }
-        closeActivePoiPopup();
-        map.flyTo({ center: coordinates, zoom: Math.max(map.getZoom(), 17), essential: true });
+        },
+        openPoiPopup: (coordinate, properties) => {
+          openPoiPopup(map, coordinate, properties);
+        },
+        closeActivePoiPopup,
       });
-
-      for (const layerId of [POI_CLUSTER_LAYER_ID, INDIVIDUAL_POI_LAYER_ID, 'selected-poi', 'nearby-pois', 'route-narration-pois', 'narration-poi', 'maneuver-points', 'candidate-analysis-pois']) {
-        map.on('mouseenter', layerId, () => { map.getCanvas().style.cursor = 'pointer'; });
-        map.on('mouseleave', layerId, () => { map.getCanvas().style.cursor = ''; });
-      }
 
       if (map3D) {
         map.jumpTo({ pitch: 60, bearing: 25 });
       }
       void installMapmyindiaBasemap(map);
-    });
+    };
+    map.on('load', handleMapLoad);
 
     return () => {
+      disposed = true;
+      map.off('load', handleMapLoad);
+      disposeDashboardMapEvents?.();
+      closeActivePoiPopup();
       map.remove();
       mapRef.current = null;
     };

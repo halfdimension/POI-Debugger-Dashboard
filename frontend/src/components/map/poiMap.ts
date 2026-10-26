@@ -40,6 +40,7 @@ type ClusterExpansionMap = Pick<maplibregl.Map, 'getSource' | 'getZoom' | 'easeT
 export async function expandPoiCluster(
   map: ClusterExpansionMap,
   feature: Feature,
+  shouldApply = () => true,
 ): Promise<boolean> {
   if (!isPoiClusterFeature(feature) || feature.geometry.type !== 'Point') return false;
   const clusterId = Number(feature.properties?.cluster_id);
@@ -48,6 +49,7 @@ export async function expandPoiCluster(
 
   try {
     const expansionZoom = await source.getClusterExpansionZoom(clusterId);
+    if (!shouldApply()) return false;
     map.easeTo({
       center: feature.geometry.coordinates as [number, number],
       zoom: Math.max(map.getZoom(), Math.min(expansionZoom, map.getZoom() + 4)),

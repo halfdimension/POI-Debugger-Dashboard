@@ -24,7 +24,7 @@ SEARCH_FIELDS = (
 FALSE_VISIBLE_VALUES = {"0", "false", "no", "n"}
 LAT_CANDIDATES = ("lat", "latitude", "y")
 LON_CANDIDATES = ("lon", "lng", "longitude", "x")
-SCHEMA_VERSION = "5"
+SCHEMA_VERSION = "6"
 DEFAULT_LIMIT = 100
 MAX_LIMIT = 500
 BROAD_QUERY_THRESHOLD = 1_000
@@ -33,6 +33,20 @@ MAX_TEXT_LENGTH = 200
 PRIORITY_ASCENDING = "ascending"
 PRIORITY_DESCENDING = "descending"
 EARTH_RADIUS_M = 6_371_008.8
+
+# Viewport visualization is intentionally separate from ranked POI search. A
+# response contains at most this many geographical features, regardless of the
+# number of source records represented by those features.
+VIEWPORT_DEFAULT_MAX_FEATURES = 500
+VIEWPORT_MAX_FEATURES = 1_000
+VIEWPORT_MAX_ZOOM = 22.0
+VIEWPORT_INDIVIDUAL_MIN_ZOOM = 15.0
+VIEWPORT_MAX_PAYLOAD_BYTES = 2 * 1024 * 1024
+VIEWPORT_AGGREGATION_LEVEL_OFFSET = 3
+SPATIAL_MAX_LEVEL = 16
+CLUSTER_MEMBER_DEFAULT_LIMIT = 100
+CLUSTER_MEMBER_MAX_LIMIT = 500
+SPATIAL_STRATEGY = "equirectangular_grid_v1"
 
 STRUCTURED_OPERATORS = {
     "name": {"contains", "eq"},
@@ -66,6 +80,39 @@ class PoiSearchNotFoundError(PoiSearchError):
 
 class PoiSearchNotReadyError(PoiSearchError):
     """The persistent index must be prepared by an authorized job."""
+
+
+class PoiSearchStaleGenerationError(PoiSearchValidationError):
+    """A generation-bound viewport reference no longer names the active index."""
+
+
+class PoiSearchPayloadTooLargeError(PoiSearchError):
+    """A visualization result cannot fit inside the bounded payload."""
+
+
+def _spatial_cell_index(value: float, *, minimum: float, span: float, level: int) -> int:
+    """Assign a coordinate to one half-open grid cell (the final cell is closed)."""
+    cell_count = 1 << level
+    index = math.floor(((value - minimum) / span) * cell_count)
+    return min(cell_count - 1, max(0, index))
+
+
+def _spatial_cell(lon: float, lat: float, level: int) -> tuple[int, int]:
+    return (
+        _spatial_cell_index(lon, minimum=-180.0, span=360.0, level=level),
+        _spatial_cell_index(lat, minimum=-90.0, span=180.0, level=level),
+    )
+
+
+def _spatial_cell_bounds(
+    level: int, cell_x: int, cell_y: int
+) -> tuple[float, float, float, float]:
+    cell_count = 1 << level
+    width = 360.0 / cell_count
+    height = 180.0 / cell_count
+    west = -180.0 + cell_x * width
+    south = -90.0 + cell_y * height
+    return west, south, west + width, south + height
 
 
 def _haversine_meters(
@@ -367,10 +414,31 @@ class PoiSearchIndex:
             uri = path.resolve().as_uri() + "?mode=ro"
             with closing(sqlite3.connect(uri, uri=True)) as connection:
                 values = dict(connection.execute("SELECT key, value FROM metadata"))
+                required_objects = {
+                    str(row[0])
+                    for row in connection.execute(
+                        "SELECT name FROM sqlite_master "
+                        "WHERE name IN ("
+                        "'pois', 'poi_geo', 'poi_fts', 'spatial_cells', "
+                        "'pois_spatial_cell', 'spatial_cells_yx'"
+                        ")"
+                    )
+                }
             return (
                 values.get("schema_version") == SCHEMA_VERSION
                 and values.get("source_fingerprint") == fingerprint
                 and bool(values.get("generation"))
+                and values.get("spatial_strategy") == SPATIAL_STRATEGY
+                and values.get("spatial_max_level") == str(SPATIAL_MAX_LEVEL)
+                and required_objects
+                == {
+                    "pois",
+                    "poi_geo",
+                    "poi_fts",
+                    "spatial_cells",
+                    "pois_spatial_cell",
+                    "spatial_cells_yx",
+                }
             )
         except (OSError, sqlite3.Error):
             return False
@@ -405,7 +473,9 @@ class PoiSearchIndex:
                         priority REAL,
                         visible INTEGER NOT NULL,
                         lon REAL NOT NULL,
-                        lat REAL NOT NULL
+                        lat REAL NOT NULL,
+                        spatial_x INTEGER NOT NULL,
+                        spatial_y INTEGER NOT NULL
                     );
                     CREATE VIRTUAL TABLE poi_fts USING fts5(
                         search_text, tokenize='trigram'
@@ -417,6 +487,13 @@ class PoiSearchIndex:
                     CREATE VIRTUAL TABLE poi_geo USING rtree(
                         id, min_lon, max_lon, min_lat, max_lat
                     );
+                    CREATE TABLE spatial_cells (
+                        level INTEGER NOT NULL,
+                        cell_x INTEGER NOT NULL,
+                        cell_y INTEGER NOT NULL,
+                        poi_count INTEGER NOT NULL,
+                        PRIMARY KEY (level, cell_x, cell_y)
+                    ) WITHOUT ROWID;
                     """
                 )
                 iterator = _iter_csv(source_path, cfg) if source_kind == "csv" else _iter_geojson(source_path)
@@ -426,6 +503,9 @@ class PoiSearchIndex:
                         properties = {}
                     coordinates = feature["geometry"]["coordinates"]
                     lon, lat = float(coordinates[0]), float(coordinates[1])
+                    spatial_x, spatial_y = _spatial_cell(
+                        lon, lat, SPATIAL_MAX_LEVEL
+                    )
                     name_norm = _text(properties.get("name")).lower()
                     landmark_type = _text(properties.get("landmark_type")).strip()
                     landmark_type_norm = landmark_type.lower()
@@ -436,7 +516,7 @@ class PoiSearchIndex:
                         _text(properties.get(field)) for field in SEARCH_FIELDS
                     ).lower()
                     connection.execute(
-                        "INSERT INTO pois VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        "INSERT INTO pois VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                         (
                             ordinal,
                             json.dumps(feature, ensure_ascii=False, separators=(",", ":")),
@@ -451,6 +531,8 @@ class PoiSearchIndex:
                             int(_visible(properties.get("visible"))),
                             lon,
                             lat,
+                            spatial_x,
+                            spatial_y,
                         ),
                     )
                     connection.execute(
@@ -475,6 +557,7 @@ class PoiSearchIndex:
                     CREATE INDEX pois_osm_id ON pois(osm_source_id_norm);
                     CREATE INDEX pois_priority ON pois(priority);
                     CREATE INDEX pois_visible ON pois(visible);
+                    CREATE INDEX pois_spatial_cell ON pois(spatial_x, spatial_y, id);
                     CREATE INDEX pois_name_exact ON pois(name_norm);
                     CREATE INDEX pois_name_prefix ON pois(name_norm COLLATE NOCASE);
                     CREATE INDEX pois_rank ON pois(
@@ -485,12 +568,32 @@ class PoiSearchIndex:
                     );
                     """
                 )
+                connection.execute(
+                    "INSERT INTO spatial_cells(level, cell_x, cell_y, poi_count) "
+                    "SELECT ?, spatial_x, spatial_y, COUNT(*) FROM pois "
+                    "GROUP BY spatial_x, spatial_y",
+                    (SPATIAL_MAX_LEVEL,),
+                )
+                for level in range(SPATIAL_MAX_LEVEL - 1, -1, -1):
+                    connection.execute(
+                        "INSERT INTO spatial_cells(level, cell_x, cell_y, poi_count) "
+                        "SELECT ?, cell_x / 2, cell_y / 2, SUM(poi_count) "
+                        "FROM spatial_cells WHERE level = ? "
+                        "GROUP BY cell_x / 2, cell_y / 2",
+                        (level, level + 1),
+                    )
+                connection.execute(
+                    "CREATE INDEX spatial_cells_yx "
+                    "ON spatial_cells(level, cell_y, cell_x)"
+                )
                 connection.executemany(
                     "INSERT INTO metadata VALUES (?, ?)",
                     (
                         ("schema_version", SCHEMA_VERSION),
                         ("source_fingerprint", fingerprint),
                         ("generation", uuid.uuid4().hex),
+                        ("spatial_strategy", SPATIAL_STRATEGY),
+                        ("spatial_max_level", str(SPATIAL_MAX_LEVEL)),
                     ),
                 )
                 connection.commit()
@@ -514,6 +617,624 @@ class PoiSearchIndex:
             if not self._valid_database(path, fingerprint):
                 self._build(path, fingerprint, source_kind, source_path, cfg)
             return path
+
+    @staticmethod
+    def _serialized_bytes(value: dict[str, Any]) -> int:
+        return len(
+            json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode(
+                "utf-8"
+            )
+        )
+
+    @classmethod
+    def _finalize_viewport_response(cls, response: dict[str, Any]) -> dict[str, Any]:
+        # Iterate to the tiny fixed point created by including the byte count's
+        # own digits in the serialized envelope.
+        response["meta"]["serialized_bytes"] = 0
+        while True:
+            size = cls._serialized_bytes(response)
+            if response["meta"]["serialized_bytes"] == size:
+                break
+            response["meta"]["serialized_bytes"] = size
+        return response
+
+    @staticmethod
+    def _viewport_bbox_sql() -> str:
+        # R-tree values are outward-rounded float32 bounds. The REAL predicates
+        # are the authoritative inclusive viewport-boundary check.
+        return (
+            "g.max_lon >= ? AND g.min_lon <= ? "
+            "AND g.max_lat >= ? AND g.min_lat <= ? "
+            "AND p.lon >= ? AND p.lon <= ? "
+            "AND p.lat >= ? AND p.lat <= ?"
+        )
+
+    @staticmethod
+    def _viewport_bbox_params(
+        bbox: tuple[float, float, float, float]
+    ) -> tuple[float, ...]:
+        west, south, east, north = bbox
+        return west, east, south, north, west, east, south, north
+
+    @staticmethod
+    def _individual_item(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "id": f"poi-{int(row['id'])}",
+            "source_record_id": int(row["id"]),
+            "coordinates": [float(row["lon"]), float(row["lat"])],
+            "feature": json.loads(row["feature_json"]),
+        }
+
+    @staticmethod
+    def _generation(connection: sqlite3.Connection) -> str:
+        row = connection.execute(
+            "SELECT value FROM metadata WHERE key='generation'"
+        ).fetchone()
+        if row is None or not row[0]:
+            raise PoiSearchError("The POI search index has no generation")
+        return str(row[0])
+
+    def _individual_viewport_response(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        dataset_id: str,
+        generation: str,
+        bbox: tuple[float, float, float, float],
+        zoom: float,
+        max_features: int,
+    ) -> dict[str, Any] | None:
+        where = self._viewport_bbox_sql()
+        params = self._viewport_bbox_params(bbox)
+        probe = connection.execute(
+            "SELECT p.id, LENGTH(p.feature_json) AS feature_bytes "
+            "FROM poi_geo g JOIN pois p ON p.id = g.id "
+            f"WHERE {where} ORDER BY p.id ASC LIMIT ?",
+            (*params, max_features + 1),
+        ).fetchall()
+        if len(probe) > max_features:
+            return None
+        # Avoid materializing large source properties when the complete
+        # individual envelope clearly cannot fit the payload budget.
+        estimated_bytes = sum(int(row["feature_bytes"]) for row in probe)
+        estimated_bytes += len(probe) * 256 + 2_048
+        if estimated_bytes > VIEWPORT_MAX_PAYLOAD_BYTES:
+            return None
+
+        rows = connection.execute(
+            "SELECT p.id, p.feature_json, p.lon, p.lat "
+            "FROM poi_geo g JOIN pois p ON p.id = g.id "
+            f"WHERE {where} ORDER BY p.id ASC",
+            params,
+        ).fetchall()
+        items = [self._individual_item(row) for row in rows]
+        response = {
+            "dataset_id": dataset_id,
+            "generation": generation,
+            "bbox": list(bbox),
+            "zoom": zoom,
+            "mode": "individual",
+            "complete": True,
+            "total_matching_pois": len(items),
+            "aggregates": [],
+            "individual_pois": items,
+            "meta": {
+                "spatial_strategy": SPATIAL_STRATEGY,
+                "requested_aggregation_level": None,
+                "aggregation_level": None,
+                "adaptive_coarsening": False,
+                "feature_count": len(items),
+                "aggregate_count": 0,
+                "individual_count": len(items),
+                "represented_poi_count": len(items),
+                "max_features": max_features,
+                "server_max_features": VIEWPORT_MAX_FEATURES,
+                "max_payload_bytes": VIEWPORT_MAX_PAYLOAD_BYTES,
+            },
+        }
+        self._finalize_viewport_response(response)
+        if response["meta"]["serialized_bytes"] > VIEWPORT_MAX_PAYLOAD_BYTES:
+            return None
+        return response
+
+    @staticmethod
+    def _candidate_cells(
+        connection: sqlite3.Connection,
+        *,
+        bbox: tuple[float, float, float, float],
+        level: int,
+        limit: int,
+    ) -> list[sqlite3.Row]:
+        west, south, east, north = bbox
+        min_x, min_y = _spatial_cell(west, south, level)
+        max_x, max_y = _spatial_cell(east, north, level)
+        if max_x - min_x <= max_y - min_y:
+            index_hint = ""
+            order_by = "cell_x ASC, cell_y ASC"
+        else:
+            index_hint = " INDEXED BY spatial_cells_yx"
+            order_by = "cell_y ASC, cell_x ASC"
+        return connection.execute(
+            f"SELECT cell_x, cell_y, poi_count FROM spatial_cells{index_hint} "
+            "WHERE level = ? AND cell_x BETWEEN ? AND ? "
+            "AND cell_y BETWEEN ? AND ? "
+            f"ORDER BY {order_by} LIMIT ?",
+            (level, min_x, max_x, min_y, max_y, limit),
+        ).fetchall()
+
+    def _partial_cell_count(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        level: int,
+        cell_x: int,
+        cell_y: int,
+        bounds: tuple[float, float, float, float],
+    ) -> int:
+        scale = 1 << (SPATIAL_MAX_LEVEL - level)
+        min_spatial_x = cell_x * scale
+        max_spatial_x = (cell_x + 1) * scale - 1
+        min_spatial_y = cell_y * scale
+        max_spatial_y = (cell_y + 1) * scale - 1
+        row = connection.execute(
+            "SELECT COUNT(*) FROM poi_geo g JOIN pois p ON p.id = g.id "
+            f"WHERE {self._viewport_bbox_sql()} "
+            "AND p.spatial_x BETWEEN ? AND ? "
+            "AND p.spatial_y BETWEEN ? AND ?",
+            (
+                *self._viewport_bbox_params(bounds),
+                min_spatial_x,
+                max_spatial_x,
+                min_spatial_y,
+                max_spatial_y,
+            ),
+        ).fetchone()
+        return int(row[0])
+
+    def _cluster_reference(
+        self,
+        *,
+        dataset_id: str,
+        generation: str,
+        level: int,
+        cell_x: int,
+        cell_y: int,
+        bounds: tuple[float, float, float, float],
+    ) -> tuple[str, str]:
+        reference = self._encode_cursor(
+            {
+                "kind": "viewport_cluster",
+                "version": 1,
+                "dataset_hash": hashlib.sha256(
+                    dataset_id.encode("utf-8")
+                ).hexdigest(),
+                "generation": generation,
+                "level": level,
+                "cell_x": cell_x,
+                "cell_y": cell_y,
+                "bounds": list(bounds),
+            }
+        )
+        identifier = "cluster-" + hashlib.sha256(
+            reference.encode("ascii")
+        ).hexdigest()[:24]
+        return identifier, reference
+
+    def _aggregated_viewport_response(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        dataset_id: str,
+        generation: str,
+        bbox: tuple[float, float, float, float],
+        zoom: float,
+        max_features: int,
+        requested_level: int,
+    ) -> dict[str, Any]:
+        level = requested_level
+        while True:
+            candidates = self._candidate_cells(
+                connection,
+                bbox=bbox,
+                level=level,
+                limit=max_features + 1,
+            )
+            if len(candidates) > max_features:
+                level -= 1
+                continue
+
+            aggregates: list[dict[str, Any]] = []
+            total = 0
+            west, south, east, north = bbox
+            for row in candidates:
+                cell_x = int(row["cell_x"])
+                cell_y = int(row["cell_y"])
+                cell_bounds = _spatial_cell_bounds(level, cell_x, cell_y)
+                represented_bounds = (
+                    max(west, cell_bounds[0]),
+                    max(south, cell_bounds[1]),
+                    min(east, cell_bounds[2]),
+                    min(north, cell_bounds[3]),
+                )
+                fully_contained = (
+                    cell_bounds[0] >= west
+                    and cell_bounds[1] >= south
+                    and cell_bounds[2] <= east
+                    and cell_bounds[3] <= north
+                )
+                count = (
+                    int(row["poi_count"])
+                    if fully_contained
+                    else self._partial_cell_count(
+                        connection,
+                        level=level,
+                        cell_x=cell_x,
+                        cell_y=cell_y,
+                        bounds=represented_bounds,
+                    )
+                )
+                if count == 0:
+                    continue
+                identifier, reference = self._cluster_reference(
+                    dataset_id=dataset_id,
+                    generation=generation,
+                    level=level,
+                    cell_x=cell_x,
+                    cell_y=cell_y,
+                    bounds=represented_bounds,
+                )
+                aggregates.append(
+                    {
+                        "id": identifier,
+                        "source_record_count": count,
+                        "coordinates": [
+                            (represented_bounds[0] + represented_bounds[2]) / 2,
+                            (represented_bounds[1] + represented_bounds[3]) / 2,
+                        ],
+                        "coordinate_kind": "represented_bounds_center",
+                        "bounds": list(represented_bounds),
+                        "aggregation_level": level,
+                        "cluster_ref": reference,
+                    }
+                )
+                total += count
+
+            response = {
+                "dataset_id": dataset_id,
+                "generation": generation,
+                "bbox": list(bbox),
+                "zoom": zoom,
+                "mode": "aggregated",
+                "complete": True,
+                "total_matching_pois": total,
+                "aggregates": aggregates,
+                "individual_pois": [],
+                "meta": {
+                    "spatial_strategy": SPATIAL_STRATEGY,
+                    "requested_aggregation_level": requested_level,
+                    "aggregation_level": level,
+                    "adaptive_coarsening": level < requested_level,
+                    "feature_count": len(aggregates),
+                    "aggregate_count": len(aggregates),
+                    "individual_count": 0,
+                    "represented_poi_count": total,
+                    "max_features": max_features,
+                    "server_max_features": VIEWPORT_MAX_FEATURES,
+                    "max_payload_bytes": VIEWPORT_MAX_PAYLOAD_BYTES,
+                },
+            }
+            self._finalize_viewport_response(response)
+            if response["meta"]["serialized_bytes"] <= VIEWPORT_MAX_PAYLOAD_BYTES:
+                return response
+            if level == 0:
+                raise PoiSearchPayloadTooLargeError(
+                    "The viewport result cannot fit the maximum response payload"
+                )
+            level -= 1
+
+    def viewport(
+        self,
+        dataset_id: str,
+        *,
+        bbox: tuple[float, float, float, float] | None,
+        zoom: float,
+        max_features: int = VIEWPORT_DEFAULT_MAX_FEATURES,
+    ) -> dict[str, Any]:
+        """Return exact, bounded geographical coverage for map visualization."""
+        if not isinstance(dataset_id, str) or not dataset_id.strip():
+            raise PoiSearchValidationError("dataset_id is required")
+        if dataset_id not in self._datasets:
+            raise PoiSearchNotFoundError("Unknown dataset")
+        if bbox is None:
+            raise PoiSearchValidationError("bbox is required")
+        if (
+            isinstance(zoom, bool)
+            or not isinstance(zoom, (int, float))
+            or not math.isfinite(zoom)
+            or not 0 <= zoom <= VIEWPORT_MAX_ZOOM
+        ):
+            raise PoiSearchValidationError(
+                f"zoom must be a finite number between 0 and {VIEWPORT_MAX_ZOOM:g}"
+            )
+        if (
+            isinstance(max_features, bool)
+            or not isinstance(max_features, int)
+            or not 1 <= max_features <= VIEWPORT_MAX_FEATURES
+        ):
+            raise PoiSearchValidationError(
+                f"max_features must be between 1 and {VIEWPORT_MAX_FEATURES}"
+            )
+        requested_level = min(
+            SPATIAL_MAX_LEVEL,
+            max(0, math.floor(float(zoom)) + VIEWPORT_AGGREGATION_LEVEL_OFFSET),
+        )
+
+        with self._lock_for(dataset_id):
+            db_path, _ = self._current_database(dataset_id)
+            uri = db_path.resolve().as_uri() + "?mode=ro"
+            with closing(sqlite3.connect(uri, uri=True)) as connection:
+                connection.row_factory = sqlite3.Row
+                generation = self._generation(connection)
+                if zoom >= VIEWPORT_INDIVIDUAL_MIN_ZOOM:
+                    individual = self._individual_viewport_response(
+                        connection,
+                        dataset_id=dataset_id,
+                        generation=generation,
+                        bbox=bbox,
+                        zoom=float(zoom),
+                        max_features=max_features,
+                    )
+                    if individual is not None:
+                        return individual
+                return self._aggregated_viewport_response(
+                    connection,
+                    dataset_id=dataset_id,
+                    generation=generation,
+                    bbox=bbox,
+                    zoom=float(zoom),
+                    max_features=max_features,
+                    requested_level=requested_level,
+                )
+
+    def _validated_cluster_reference(
+        self,
+        raw: str,
+        *,
+        dataset_id: str,
+        generation: str,
+    ) -> dict[str, Any]:
+        if not isinstance(raw, str) or not raw or len(raw) > 4096:
+            raise PoiSearchValidationError("Invalid cluster reference")
+        try:
+            payload = self._decode_cursor(raw)
+        except PoiSearchValidationError as exc:
+            raise PoiSearchValidationError("Invalid cluster reference") from exc
+        if payload.get("kind") != "viewport_cluster" or payload.get("version") != 1:
+            raise PoiSearchValidationError("Invalid cluster reference")
+        dataset_hash = hashlib.sha256(dataset_id.encode("utf-8")).hexdigest()
+        if payload.get("dataset_hash") != dataset_hash:
+            raise PoiSearchValidationError(
+                "Cluster reference does not match this dataset"
+            )
+        if payload.get("generation") != generation:
+            raise PoiSearchStaleGenerationError("Cluster reference is stale")
+        level = payload.get("level")
+        cell_x = payload.get("cell_x")
+        cell_y = payload.get("cell_y")
+        if any(
+            isinstance(value, bool) or not isinstance(value, int)
+            for value in (level, cell_x, cell_y)
+        ):
+            raise PoiSearchValidationError("Invalid cluster reference")
+        if not 0 <= level <= SPATIAL_MAX_LEVEL:
+            raise PoiSearchValidationError("Invalid cluster reference")
+        cell_count = 1 << level
+        if not (0 <= cell_x < cell_count and 0 <= cell_y < cell_count):
+            raise PoiSearchValidationError("Invalid cluster reference")
+        raw_bounds = payload.get("bounds")
+        if not isinstance(raw_bounds, list) or len(raw_bounds) != 4:
+            raise PoiSearchValidationError("Invalid cluster reference")
+        if any(isinstance(value, bool) for value in raw_bounds):
+            raise PoiSearchValidationError("Invalid cluster reference")
+        try:
+            bounds = tuple(float(value) for value in raw_bounds)
+        except (TypeError, ValueError) as exc:
+            raise PoiSearchValidationError("Invalid cluster reference") from exc
+        if not all(math.isfinite(value) for value in bounds):
+            raise PoiSearchValidationError("Invalid cluster reference")
+        west, south, east, north = bounds
+        cell_bounds = _spatial_cell_bounds(level, cell_x, cell_y)
+        if (
+            west > east
+            or south > north
+            or west < cell_bounds[0]
+            or south < cell_bounds[1]
+            or east > cell_bounds[2]
+            or north > cell_bounds[3]
+        ):
+            raise PoiSearchValidationError("Invalid cluster reference")
+        return {
+            "level": level,
+            "cell_x": cell_x,
+            "cell_y": cell_y,
+            "bounds": bounds,
+            "full_cell": bounds == cell_bounds,
+        }
+
+    def viewport_cluster_members(
+        self,
+        dataset_id: str,
+        *,
+        cluster_ref: str,
+        limit: int = CLUSTER_MEMBER_DEFAULT_LIMIT,
+        cursor: str | None = None,
+    ) -> dict[str, Any]:
+        """Page source records represented by one generation-bound aggregate."""
+        if not isinstance(dataset_id, str) or not dataset_id.strip():
+            raise PoiSearchValidationError("dataset_id is required")
+        if dataset_id not in self._datasets:
+            raise PoiSearchNotFoundError("Unknown dataset")
+        if (
+            isinstance(limit, bool)
+            or not isinstance(limit, int)
+            or not 1 <= limit <= CLUSTER_MEMBER_MAX_LIMIT
+        ):
+            raise PoiSearchValidationError(
+                f"limit must be between 1 and {CLUSTER_MEMBER_MAX_LIMIT}"
+            )
+        if cursor is not None and not isinstance(cursor, str):
+            raise PoiSearchValidationError("Invalid pagination cursor")
+
+        with self._lock_for(dataset_id):
+            db_path, _ = self._current_database(dataset_id)
+            uri = db_path.resolve().as_uri() + "?mode=ro"
+            with closing(sqlite3.connect(uri, uri=True)) as connection:
+                connection.row_factory = sqlite3.Row
+                generation = self._generation(connection)
+                cluster = self._validated_cluster_reference(
+                    cluster_ref,
+                    dataset_id=dataset_id,
+                    generation=generation,
+                )
+                cluster_id = "cluster-" + hashlib.sha256(
+                    cluster_ref.encode("ascii")
+                ).hexdigest()[:24]
+                after_id = 0
+                if cursor:
+                    page = self._decode_cursor(cursor)
+                    if page.get("kind") != "viewport_cluster_cursor":
+                        raise PoiSearchValidationError("Invalid pagination cursor")
+                    if page.get("generation") != generation:
+                        raise PoiSearchStaleGenerationError(
+                            "Pagination cursor is stale"
+                        )
+                    if (
+                        page.get("dataset_hash")
+                        != hashlib.sha256(dataset_id.encode("utf-8")).hexdigest()
+                        or page.get("cluster_id") != cluster_id
+                    ):
+                        raise PoiSearchValidationError(
+                            "Pagination cursor does not match this cluster"
+                        )
+                    try:
+                        after_id = int(page["after_id"])
+                    except (KeyError, TypeError, ValueError) as exc:
+                        raise PoiSearchValidationError(
+                            "Invalid pagination cursor"
+                        ) from exc
+                    if after_id < 1:
+                        raise PoiSearchValidationError("Invalid pagination cursor")
+
+                level = cluster["level"]
+                scale = 1 << (SPATIAL_MAX_LEVEL - level)
+                spatial_bounds = (
+                    cluster["cell_x"] * scale,
+                    (cluster["cell_x"] + 1) * scale - 1,
+                    cluster["cell_y"] * scale,
+                    (cluster["cell_y"] + 1) * scale - 1,
+                )
+                if cluster["full_cell"]:
+                    total_row = connection.execute(
+                        "SELECT poi_count FROM spatial_cells "
+                        "WHERE level = ? AND cell_x = ? AND cell_y = ?",
+                        (level, cluster["cell_x"], cluster["cell_y"]),
+                    ).fetchone()
+                    total = int(total_row[0]) if total_row is not None else 0
+                    rows = connection.execute(
+                        "SELECT p.id, p.feature_json, p.lon, p.lat FROM pois p "
+                        "WHERE p.spatial_x BETWEEN ? AND ? "
+                        "AND p.spatial_y BETWEEN ? AND ? AND p.id > ? "
+                        "ORDER BY p.id ASC LIMIT ?",
+                        (*spatial_bounds, after_id, limit + 1),
+                    ).fetchall()
+                else:
+                    base_where = (
+                        self._viewport_bbox_sql()
+                        + " AND p.spatial_x BETWEEN ? AND ?"
+                        + " AND p.spatial_y BETWEEN ? AND ?"
+                    )
+                    base_params = (
+                        *self._viewport_bbox_params(cluster["bounds"]),
+                        *spatial_bounds,
+                    )
+                    total = int(
+                        connection.execute(
+                            "SELECT COUNT(*) FROM poi_geo g "
+                            "JOIN pois p ON p.id = g.id "
+                            f"WHERE {base_where}",
+                            base_params,
+                        ).fetchone()[0]
+                    )
+                    rows = connection.execute(
+                        "SELECT p.id, p.feature_json, p.lon, p.lat "
+                        "FROM poi_geo g JOIN pois p ON p.id = g.id "
+                        f"WHERE {base_where} AND p.id > ? "
+                        "ORDER BY p.id ASC LIMIT ?",
+                        (*base_params, after_id, limit + 1),
+                    ).fetchall()
+                if total < 1:
+                    raise PoiSearchValidationError("Invalid cluster reference")
+
+        available = rows[:limit]
+        items: list[dict[str, Any]] = []
+        used_bytes = 2_048
+        for row in available:
+            item = self._individual_item(row)
+            item_bytes = len(
+                json.dumps(item, ensure_ascii=False, separators=(",", ":")).encode(
+                    "utf-8"
+                )
+            )
+            if items and used_bytes + item_bytes > VIEWPORT_MAX_PAYLOAD_BYTES:
+                break
+            if not items and used_bytes + item_bytes > VIEWPORT_MAX_PAYLOAD_BYTES:
+                raise PoiSearchPayloadTooLargeError(
+                    "A cluster member exceeds the maximum response payload"
+                )
+            items.append(item)
+            used_bytes += item_bytes
+
+        while True:
+            has_more = len(rows) > len(items)
+            next_cursor = None
+            if has_more and items:
+                next_cursor = self._encode_cursor(
+                    {
+                        "kind": "viewport_cluster_cursor",
+                        "dataset_hash": hashlib.sha256(
+                            dataset_id.encode("utf-8")
+                        ).hexdigest(),
+                        "generation": generation,
+                        "cluster_id": cluster_id,
+                        "after_id": items[-1]["source_record_id"],
+                    }
+                )
+            response = {
+                "dataset_id": dataset_id,
+                "generation": generation,
+                "cluster_id": cluster_id,
+                "cluster_ref": cluster_ref,
+                "bounds": list(cluster["bounds"]),
+                "aggregation_level": cluster["level"],
+                "total_matching_pois": total,
+                "individual_pois": items,
+                "returned": len(items),
+                "has_more": has_more,
+                "next_cursor": next_cursor,
+                "meta": {
+                    "order": "source_record_id_ascending",
+                    "max_limit": CLUSTER_MEMBER_MAX_LIMIT,
+                    "max_payload_bytes": VIEWPORT_MAX_PAYLOAD_BYTES,
+                },
+            }
+            self._finalize_viewport_response(response)
+            if response["meta"]["serialized_bytes"] <= VIEWPORT_MAX_PAYLOAD_BYTES:
+                return response
+            if not items:
+                raise PoiSearchPayloadTooLargeError(
+                    "A cluster member exceeds the maximum response payload"
+                )
+            items.pop()
 
     def nearby(
         self,

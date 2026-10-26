@@ -15,10 +15,14 @@ from .auth import AuthManager
 from .admin import admin_router
 from .datasets import DatasetError, DatasetManager, DatasetTooLargeError
 from .poi_search import (
+    CLUSTER_MEMBER_DEFAULT_LIMIT,
     PoiSearchError,
     PoiSearchNotFoundError,
     PoiSearchNotReadyError,
+    PoiSearchPayloadTooLargeError,
+    PoiSearchStaleGenerationError,
     PoiSearchValidationError,
+    VIEWPORT_DEFAULT_MAX_FEATURES,
     parse_bbox,
 )
 from .preparation_jobs import (
@@ -250,6 +254,83 @@ def search_pois(
         )
     except PoiSearchNotReadyError as exc:
         raise _index_not_ready(selected_dataset_id) from exc
+    except PoiSearchNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except PoiSearchValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except PoiSearchError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@protected.get("/api/pois/viewport")
+def viewport_pois(
+    request: Request,
+    dataset_id: str | None = None,
+    bbox: str | None = None,
+    zoom: float | None = None,
+    max_features: int = VIEWPORT_DEFAULT_MAX_FEATURES,
+) -> dict[str, Any]:
+    """Return exact, bounded map coverage; this is not a ranked search API."""
+    if not isinstance(dataset_id, str) or not dataset_id.strip():
+        raise HTTPException(status_code=400, detail="dataset_id is required")
+    if zoom is None:
+        raise HTTPException(status_code=400, detail="zoom is required")
+    selected_dataset_id = _effective_dataset_id(request, dataset_id)
+    try:
+        return datasets.search_index.viewport(
+            selected_dataset_id,
+            bbox=parse_bbox(bbox),
+            zoom=zoom,
+            max_features=max_features,
+        )
+    except PoiSearchNotReadyError as exc:
+        raise _index_not_ready(selected_dataset_id) from exc
+    except PoiSearchNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except PoiSearchPayloadTooLargeError as exc:
+        raise HTTPException(
+            status_code=413,
+            detail={"code": "poi_payload_too_large", "message": str(exc)},
+        ) from exc
+    except PoiSearchValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except PoiSearchError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@protected.get("/api/pois/viewport/cluster-members")
+def viewport_cluster_members(
+    request: Request,
+    dataset_id: str | None = None,
+    cluster_ref: str | None = None,
+    limit: int = CLUSTER_MEMBER_DEFAULT_LIMIT,
+    cursor: str | None = None,
+) -> dict[str, Any]:
+    """Page the source records represented by an authoritative aggregate."""
+    if not isinstance(dataset_id, str) or not dataset_id.strip():
+        raise HTTPException(status_code=400, detail="dataset_id is required")
+    if not isinstance(cluster_ref, str) or not cluster_ref:
+        raise HTTPException(status_code=400, detail="cluster_ref is required")
+    selected_dataset_id = _effective_dataset_id(request, dataset_id)
+    try:
+        return datasets.search_index.viewport_cluster_members(
+            selected_dataset_id,
+            cluster_ref=cluster_ref,
+            limit=limit,
+            cursor=cursor,
+        )
+    except PoiSearchNotReadyError as exc:
+        raise _index_not_ready(selected_dataset_id) from exc
+    except PoiSearchStaleGenerationError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "poi_index_generation_stale", "message": str(exc)},
+        ) from exc
+    except PoiSearchPayloadTooLargeError as exc:
+        raise HTTPException(
+            status_code=413,
+            detail={"code": "poi_payload_too_large", "message": str(exc)},
+        ) from exc
     except PoiSearchNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except PoiSearchValidationError as exc:

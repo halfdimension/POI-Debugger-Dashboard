@@ -23,6 +23,9 @@ except ImportError:  # pragma: no cover - unavailable on Windows
 from backend.app.poi_search import PoiSearchIndex
 
 
+GENERATOR_VERSION = 3
+
+
 def _generate_source(path: Path, rows: int) -> float:
     started = time.perf_counter()
     with path.open("w", encoding="utf-8", newline="") as handle:
@@ -41,6 +44,7 @@ def _generate_source(path: Path, rows: int) -> float:
             )
         )
         for number in range(rows):
+            dense = number % 10 == 0
             writer.writerow(
                 (
                     f"node-{number}",
@@ -49,8 +53,8 @@ def _generate_source(path: Path, rows: int) -> float:
                     "school" if number % 2 else "fuel",
                     number % 101,
                     "yes",
-                    8 + (number % 2800) / 100,
-                    68 + (number % 2900) / 100,
+                    28.0 if dense else 8 + (number % 2800) / 100,
+                    77.0 if dense else 68 + (number % 2900) / 100,
                     f"osm-{number}",
                 )
             )
@@ -59,7 +63,7 @@ def _generate_source(path: Path, rows: int) -> float:
 
 def _measure(
     callback: Callable[[], dict[str, Any]], iterations: int
-) -> tuple[dict[str, Any], dict[str, float | int]]:
+) -> tuple[dict[str, Any], dict[str, Any]]:
     durations: list[float] = []
     result: dict[str, Any] = {}
     for _ in range(iterations):
@@ -68,12 +72,20 @@ def _measure(
         durations.append(time.perf_counter() - started)
     ordered = sorted(durations)
     tail_index = max(0, min(len(ordered) - 1, int(0.95 * len(ordered) + 0.999999) - 1))
-    return result, {
+    returned = result.get("returned")
+    if returned is None:
+        returned = result.get("meta", {}).get("feature_count", 0)
+    measurement: dict[str, Any] = {
         "median_ms": statistics.median(durations) * 1_000,
         "p95_ms": ordered[tail_index] * 1_000,
-        "returned": result["returned"],
+        "returned": returned,
         "response_bytes": len(json.dumps(result, separators=(",", ":")).encode("utf-8")),
     }
+    if "total_matching_pois" in result:
+        measurement["represented_pois"] = result["total_matching_pois"]
+        measurement["mode"] = result["mode"]
+        measurement["aggregation_level"] = result["meta"]["aggregation_level"]
+    return result, measurement
 
 
 def _query_plans(db_path: Path) -> dict[str, list[str]]:
@@ -122,6 +134,37 @@ def _query_plans(db_path: Path) -> dict[str, list[str]]:
         "WHERE g.max_lon>=? AND g.min_lon<=? AND g.max_lat>=? AND g.min_lat<=? "
         "AND p.lon>=? AND p.lon<=? AND p.lat>=? AND p.lat<=? ORDER BY p.id LIMIT ?",
         (76.9, 77.3, 27.9, 28.3, 76.9, 77.3, 27.9, 28.3, 101),
+    )
+    explain(
+        "viewport_aggregate_cells",
+        "SELECT cell_x, cell_y, poi_count FROM spatial_cells "
+        "WHERE level=? AND cell_x BETWEEN ? AND ? AND cell_y BETWEEN ? AND ? "
+        "ORDER BY cell_x, cell_y LIMIT ?",
+        (10, 700, 760, 550, 610, 501),
+    )
+    explain(
+        "viewport_aggregate_cells_y_first",
+        "SELECT cell_x, cell_y, poi_count FROM spatial_cells "
+        "INDEXED BY spatial_cells_yx "
+        "WHERE level=? AND cell_x BETWEEN ? AND ? AND cell_y BETWEEN ? AND ? "
+        "ORDER BY cell_y, cell_x LIMIT ?",
+        (10, 0, 1023, 550, 560, 501),
+    )
+    explain(
+        "viewport_boundary_count",
+        "SELECT COUNT(*) FROM poi_geo g JOIN pois p ON p.id=g.id "
+        "WHERE g.max_lon>=? AND g.min_lon<=? AND g.max_lat>=? AND g.min_lat<=? "
+        "AND p.lon>=? AND p.lon<=? AND p.lat>=? AND p.lat<=? "
+        "AND p.spatial_x BETWEEN ? AND ? AND p.spatial_y BETWEEN ? AND ?",
+        (76.9, 77.3, 27.9, 28.3, 76.9, 77.3, 27.9, 28.3, 46000, 47000, 42000, 43000),
+    )
+    explain(
+        "viewport_individual_probe",
+        "SELECT p.id, LENGTH(p.feature_json) FROM poi_geo g JOIN pois p ON p.id=g.id "
+        "WHERE g.max_lon>=? AND g.min_lon<=? AND g.max_lat>=? AND g.min_lat<=? "
+        "AND p.lon>=? AND p.lon<=? AND p.lat>=? AND p.lat<=? "
+        "ORDER BY p.id LIMIT ?",
+        (76.9, 77.3, 27.9, 28.3, 76.9, 77.3, 27.9, 28.3, 501),
     )
     explain(
         "text_bbox",
@@ -236,6 +279,8 @@ def _run(root: Path, args: argparse.Namespace) -> dict[str, Any]:
         try:
             benchmark_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
             actual_rows = int(benchmark_metadata["rows"])
+            if int(benchmark_metadata["generator_version"]) != GENERATOR_VERSION:
+                raise ValueError("unsupported generator version")
         except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
             raise SystemExit("benchmark metadata is invalid") from exc
         generation_seconds: float | None = None
@@ -246,7 +291,7 @@ def _run(root: Path, args: argparse.Namespace) -> dict[str, Any]:
         actual_rows = args.rows
         generation_seconds = _generate_source(source, actual_rows)
         metadata_path.write_text(
-            json.dumps({"generator_version": 1, "rows": actual_rows}),
+            json.dumps({"generator_version": GENERATOR_VERSION, "rows": actual_rows}),
             encoding="utf-8",
         )
 
@@ -283,6 +328,36 @@ def _run(root: Path, args: argparse.Namespace) -> dict[str, Any]:
     record(
         "bbox",
         lambda: reopened.search("benchmark", bbox=(76.9, 27.9, 77.3, 28.3), limit=100),
+    )
+    record(
+        "viewport_low_zoom",
+        lambda: reopened.viewport(
+            "benchmark", bbox=(68.0, 8.0, 97.0, 36.0), zoom=3, max_features=500
+        ),
+    )
+    record(
+        "viewport_intermediate_zoom",
+        lambda: reopened.viewport(
+            "benchmark", bbox=(76.0, 27.0, 78.0, 29.0), zoom=10, max_features=500
+        ),
+    )
+    record(
+        "viewport_high_zoom_individual",
+        lambda: reopened.viewport(
+            "benchmark", bbox=(68.0, 8.0, 68.05, 8.05), zoom=18, max_features=500
+        ),
+    )
+    record(
+        "viewport_dense_max_zoom",
+        lambda: reopened.viewport(
+            "benchmark", bbox=(76.9, 27.9, 77.3, 28.3), zoom=18, max_features=500
+        ),
+    )
+    record(
+        "viewport_empty",
+        lambda: reopened.viewport(
+            "benchmark", bbox=(-20.0, -20.0, -10.0, -10.0), zoom=10, max_features=500
+        ),
     )
     record(
         "text_bbox",
@@ -387,6 +462,25 @@ def _run(root: Path, args: argparse.Namespace) -> dict[str, Any]:
     if resource is not None:
         rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
         rss_bytes = int(rss if sys.platform == "darwin" else rss * 1_024)
+    with closing(sqlite3.connect(db_path)) as connection:
+        spatial_rows = int(
+            connection.execute("SELECT COUNT(*) FROM spatial_cells").fetchone()[0]
+        )
+        spatial_rows_by_level = dict(
+            connection.execute(
+                "SELECT level, COUNT(*) FROM spatial_cells GROUP BY level ORDER BY level"
+            )
+        )
+        try:
+            spatial_storage_bytes = dict(
+                connection.execute(
+                    "SELECT name, SUM(pgsize) FROM dbstat "
+                    "WHERE name IN ('spatial_cells', 'spatial_cells_yx', 'pois_spatial_cell') "
+                    "GROUP BY name ORDER BY name"
+                )
+            )
+        except sqlite3.Error:
+            spatial_storage_bytes = None
     return {
         "rows_requested": args.rows,
         "rows_indexed": actual_rows,
@@ -399,6 +493,9 @@ def _run(root: Path, args: argparse.Namespace) -> dict[str, Any]:
         "python_tracemalloc_peak_bytes_during_prepare": python_peak,
         "process_peak_rss_bytes": rss_bytes,
         "index_bytes": sum(path.stat().st_size for path in index_dir.iterdir()),
+        "spatial_index_rows": spatial_rows,
+        "spatial_index_rows_by_level": spatial_rows_by_level,
+        "spatial_storage_bytes": spatial_storage_bytes,
         "warm_iterations": args.iterations,
         "later_page_requested": args.later_page,
         "later_page_reached": reached_page,

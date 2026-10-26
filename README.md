@@ -419,9 +419,10 @@ job may be active across backend workers sharing the job directory. Duplicate
 requests for the same dataset return the existing job.
 
 `GET /api/datasets/preparation-jobs/{job_id}` reports sanitized job state to an
-authenticated user. Search, structured query, and nearby-diagnostics endpoints
-never implicitly build a missing or stale index. They return HTTP 503 with
-`poi_index_not_ready` until a Super Admin preparation job publishes an index.
+authenticated user. Search, structured query, viewport visualization, cluster
+drill-down, and nearby-diagnostics endpoints never implicitly build a missing
+or stale index. They return HTTP 503 with `poi_index_not_ready` until a Super
+Admin preparation job publishes an index.
 
 | Parameter | Meaning |
 | --- | --- |
@@ -528,12 +529,114 @@ are never configured as a fixed list; the API derives `landmark_types` from
 the selected dataset and the frontend rebuilds the dropdown when metadata
 changes.
 
-The endpoint uses a lazily built SQLite FTS5 trigram index plus an R-tree. FTS
+The endpoint uses a prepared SQLite FTS5 trigram index plus an R-tree. FTS
 preserves partial substring matching; one- and two-character searches are
 valid but cannot benefit from trigram pruning and should not be used for normal
 interactive search. All filters are parameterized and combined in SQLite. The
 index returns `limit + 1` rows to determine `has_more` and does not calculate an
 exact total.
+
+### Authoritative viewport visualization API
+
+`GET /api/pois/viewport` is the dataset-coverage API for map rendering. It is
+separate from ranked search and accepts no text or metadata filters.
+
+| Parameter | Meaning |
+| --- | --- |
+| `dataset_id` | Required configured dataset ID. Unlike legacy endpoints, omission never falls back to a user preference. |
+| `bbox` | Required inclusive `west,south,east,north` longitude/latitude bounds. Values must be finite and ordered. Antimeridian-crossing bounds (`west > east`) are explicitly rejected; clients must split them into two requests. |
+| `zoom` | Required finite map zoom from 0 through 22. It selects the initial grid resolution. |
+| `max_features` | Requested geographical feature budget, default 500, minimum 1, hard maximum 1,000. |
+
+The full ordered world bounds are allowed; the level-0 aggregate guarantees a
+bounded representation, so a separate area cap is unnecessary. Crossing the
+antimeridian still requires two independent requests.
+
+Every successful response has complete coverage. `total_matching_pois` is the
+exact number of valid source rows inside the requested bounds, and
+`meta.represented_poi_count` is the sum represented by the returned features.
+For `complete: true`, these values are equal. There is no first-page count and
+no silent truncation.
+
+```json
+{
+  "dataset_id": "new_data",
+  "generation": "8d62d64f4e9d4fd786e96a5aa14cdaf6",
+  "bbox": [76.47, 28.83, 76.71, 28.96],
+  "zoom": 10.0,
+  "mode": "aggregated",
+  "complete": true,
+  "total_matching_pois": 18542,
+  "aggregates": [
+    {
+      "id": "cluster-0123456789abcdef01234567",
+      "source_record_count": 18542,
+      "coordinates": [76.59, 28.895],
+      "coordinate_kind": "represented_bounds_center",
+      "bounds": [76.47, 28.83, 76.71, 28.96],
+      "aggregation_level": 9,
+      "cluster_ref": "opaque-generation-bound-reference"
+    }
+  ],
+  "individual_pois": [],
+  "meta": {
+    "spatial_strategy": "equirectangular_grid_v1",
+    "requested_aggregation_level": 13,
+    "aggregation_level": 9,
+    "adaptive_coarsening": true,
+    "feature_count": 1,
+    "aggregate_count": 1,
+    "individual_count": 0,
+    "represented_poi_count": 18542,
+    "max_features": 500,
+    "server_max_features": 1000,
+    "max_payload_bytes": 2097152,
+    "serialized_bytes": 714
+  }
+}
+```
+
+The prepared index contains exact occupied-cell counts for equirectangular grid
+levels 0 through 16. A request starts at `floor(zoom) + 3`, capped at level 16,
+and coarsens until the occupied cells fit `max_features` and the 2 MiB payload
+budget. At zoom 15 and above, all matching rows are returned as
+`individual_pois` only when both budgets permit it; otherwise the result stays
+aggregated. Each individual entry has `id`, integer `source_record_id`,
+`coordinates`, and the original GeoJSON `feature`. A level has `2^level`
+columns and rows. Grid cells are half-open on
+east/north edges, except the final world cells, so a coordinate on a shared
+edge has exactly one owner. Viewport edges themselves are inclusive. Fully
+covered cells use prepared counts; edge cells use the R-tree plus exact REAL
+coordinate predicates and the same stored cell ownership.
+
+Aggregate coordinates are the center of the aggregate's represented bounds
+(the intersection of its grid cell and the viewport), not a POI location or a
+data centroid. Distinct source rows use their internal ordinal row IDs for
+identity, so duplicate external IDs and repeated coordinates remain separately
+countable.
+
+Dense aggregates are inspectable through:
+
+```text
+GET /api/pois/viewport/cluster-members?dataset_id=new_data&cluster_ref=...&limit=100&cursor=...
+```
+
+The endpoint returns exact `total_matching_pois`, source records ordered by
+`source_record_id`, and an opaque `next_cursor`. `limit` is at most 500 and the
+same 2 MiB payload budget applies. Both the aggregate reference and cursor bind
+the dataset and index generation. A newly published generation makes them
+stale (HTTP 409), so pages from different generations cannot be mixed.
+If even one source member or the coarsest possible envelope cannot fit, the API
+returns HTTP 413 with `code: poi_payload_too_large` instead of claiming complete
+coverage.
+
+Viewport tables are index schema version 6 and are built only by the existing
+authorized preparation worker, in the same temporary SQLite file as FTS and
+R-tree structures. Older indexes deliberately report not ready and require a
+normal Super Admin preparation job. Publication remains one atomic
+`os.replace`: readers already holding the old file descriptor finish against
+that generation, while new readers open the complete new generation. A failed
+build never replaces the previous file.
 
 Indexes default to `.cache/poi-search`, which is ignored by Git, and can be
 moved with `backend.poi_index_dir` or `VPD_POI_INDEX_DIR`. A source
@@ -543,10 +646,9 @@ index and makes existing cursors stale. A failed rebuild preserves the previous
 index file. Indexes are opened per request rather
 than retained in an unbounded connection or feature cache.
 
-The lock and atomic-publish guarantees apply within one backend process. Keep
-the documented single-worker deployment while legacy active-dataset state is
-process-local. Multiple workers can independently notice and rebuild an index,
-so a shared index directory is not yet a coordinated multi-worker build cache.
+Preparation submissions use the shared file-backed job coordinator and Linux
+`flock`, so only one worker builds at a time across backend processes using the
+same job directory. Ordinary request handlers never build an index.
 SQLite FTS5 trigram and R-tree support must be present in the deployment
 Python's standard-library SQLite build; the backend test suite validates this
 requirement in the supported Linux environment.
@@ -560,11 +662,13 @@ host capacity.
 Run the dependency-free search tests from the repository root:
 
 ```bash
-python3 -m unittest backend.tests.test_poi_search
+python3 -m unittest backend.tests.test_poi_search backend.tests.test_viewport_aggregation
 ```
 
-An opt-in generated 700,000-row benchmark reports measured build time, query
-latencies, index size, Python-tracked peak memory, and response sizes:
+An opt-in generated 700,000-row benchmark reports measured build time, search
+and viewport median/P95 latencies, represented/returned counts, response sizes,
+spatial-table rows and page storage, query plans, index size, and Python-tracked
+peak memory:
 
 ```bash
 python3 -m backend.tests.benchmark_poi_search --rows 700000
@@ -588,6 +692,10 @@ not discard the selection. Candidate-analysis features remain sourced from the
 routing response and are not reconstructed from POI search pages.
 
 Dense viewport and route-diagnostic queries are deliberately not auto-paged.
+The Stage 2B frontend still calls `/api/pois/search` with a 500-row viewport
+cap and lets MapLibre cluster only those rows. Stage 5C.R3A adds the authoritative
+backend contract above; the visible map remains non-authoritative until the
+separate R3B frontend integration switches to it.
 The dashboard displays a warning when the 500-feature cap is reached. In that
 case map display, nearby-POI inspection, and narration correlation may be
 incomplete. Fully authoritative dense route correlation needs a future bounded

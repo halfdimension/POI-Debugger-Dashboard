@@ -70,7 +70,8 @@ backend:
   poi_index_dir: "./.cache/poi-search"
 
   # The legacy full-collection API is for small compatibility datasets only.
-  # Larger datasets must use the bounded /api/pois/search endpoint.
+  # Larger datasets use bounded /api/pois/search for ranked results and
+  # /api/pois/viewport for authoritative map coverage.
   legacy_poi_feature_limit: 50000
   legacy_poi_geojson_byte_limit: 67108864
 

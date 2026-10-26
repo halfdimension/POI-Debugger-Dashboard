@@ -46,6 +46,23 @@ describe('development mock API contracts', () => {
     expect((await handleMockApi('GET', '/api/pois/search?dataset_id=mock-demo&bbox=170,-10,-170,10', {}, state))?.status).toBe(400);
   });
 
+  it('supports targeted diagnostic proximity retrieval in mock mode', async () => {
+    const state = createMockApiState();
+    const result = await handleMockApi('POST', '/api/pois/diagnostics/nearby', {
+      dataset_id: 'mock-demo', points: [[77.22105, 28.63091]], radius_m: 30,
+    }, state);
+    expect(result?.status).toBe(200);
+    expect((result?.body as any).complete).toBe(true);
+    expect((result?.body as any).features.map((item: any) => item.properties.name))
+      .toEqual(['Clock Tower Cafe']);
+    const route = await handleMockApi('POST', '/api/route/compare', {
+      locations: [{ lon: 77.2175, lat: 28.6332 }, { lon: 77.2272, lat: 28.6271 }],
+    }, state);
+    expect((route?.body as any).valhalla.candidate_analysis.engine).toBe('valhalla');
+    expect((route?.body as any).osrm.candidate_analysis.engine).toBe('osrm');
+    expect((route?.body as any).osrm.candidate_analysis.error).toContain('intentionally unavailable');
+  });
+
   it('keeps numeric identifier search separate from the priority filter', async () => {
     const state = createMockApiState();
     const included = await handleMockApi('GET', '/api/pois/search?dataset_id=mock-demo&q=910002&min_priority=80', {}, state);

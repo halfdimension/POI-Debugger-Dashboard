@@ -202,6 +202,28 @@ def query_pois(payload: dict[str, Any]) -> dict[str, Any]:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
+@app.post("/api/pois/diagnostics/nearby")
+def nearby_diagnostic_pois(payload: dict[str, Any]) -> dict[str, Any]:
+    """Retrieve source POIs truly within radius of route/maneuver points."""
+    limits = settings.get("diagnostics", {})
+    try:
+        return datasets.search_index.nearby(
+            payload.get("dataset_id"),
+            points=payload.get("points"),
+            radius_m=payload.get("radius_m"),
+            max_results=int(limits.get("max_results", 10_000)),
+            max_candidates=int(limits.get("max_candidates", 100_000)),
+            max_points=int(limits.get("max_points", 1_000)),
+            max_radius_m=float(limits.get("max_radius_m", 2_000)),
+        )
+    except PoiSearchNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except PoiSearchValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except PoiSearchError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
 @app.get("/api/scenarios")
 def get_scenarios() -> dict[str, Any]:
     return scenarios.list()

@@ -31,6 +31,18 @@ function poi(id: string, name: string, coordinates: LngLat, landmarkType: string
   };
 }
 
+function haversineMeters(a: LngLat, b: LngLat): number {
+  const toRadians = (value: number) => value * Math.PI / 180;
+  const lat1 = toRadians(a[1]);
+  const lat2 = toRadians(b[1]);
+  const deltaLat = lat2 - lat1;
+  const deltaLon = toRadians(b[0] - a[0]);
+  const sinLat = Math.sin(deltaLat / 2);
+  const sinLon = Math.sin(deltaLon / 2);
+  const value = sinLat * sinLat + Math.cos(lat1) * Math.cos(lat2) * sinLon * sinLon;
+  return 2 * 6_371_008.8 * Math.asin(Math.min(1, Math.sqrt(value)));
+}
+
 function dataset(id: string, name: string, validPois: number, sourceKind: 'geojson' | 'empty' | 'error', error: string | null = null) {
   return {
     id,
@@ -293,6 +305,30 @@ export async function handleMockApi(method: string, pathname: string, body: Json
     const features = matches.slice(offset, offset + limit);
     const hasMore = offset + limit < matches.length;
     return ok({ type: 'FeatureCollection', dataset_id: datasetId, features, returned: features.length, has_more: hasMore, next_cursor: hasMore ? String(offset + limit) : null });
+  }
+  if (method === 'POST' && pathname === '/api/pois/diagnostics/nearby') {
+    const datasetId = typeof body.dataset_id === 'string' ? body.dataset_id : '';
+    const selected = DATASETS.find((item) => item.id === datasetId);
+    if (!datasetId) return ok({ detail: 'dataset_id is required' }, 400);
+    if (!selected) return ok({ detail: `Dataset not found: ${datasetId}` }, 404);
+    if (datasetId === 'mock-error') return ok({ detail: 'Synthetic POI index error' }, 503);
+    const points = body.points as LngLat[];
+    const radiusM = Number(body.radius_m);
+    if (!Array.isArray(points) || points.length === 0 || points.some((point) =>
+      !Array.isArray(point) || point.length !== 2 || point.some((value) => !Number.isFinite(value)))) {
+      return ok({ detail: 'points must be a non-empty coordinate array' }, 400);
+    }
+    if (!Number.isFinite(radiusM) || radiusM <= 0 || radiusM > 2000) {
+      return ok({ detail: 'radius_m must be greater than 0 and at most 2000' }, 400);
+    }
+    const features = (datasetId === 'mock-demo' ? DEMO_POIS.features : [])
+      .filter((feature) => points.some((point) => haversineMeters(point, feature.geometry.coordinates as LngLat) <= radiusM));
+    return ok({
+      type: 'FeatureCollection', dataset_id: datasetId, features,
+      returned: features.length, complete: true, incomplete_reason: null,
+      matched_total: features.length, candidate_count: features.length,
+      point_count: points.length, processed_points: points.length, radius_m: radiusM,
+    });
   }
   if (method === 'POST' && pathname === '/api/pois/query') {
     const datasetId = typeof body.dataset_id === 'string' ? body.dataset_id : '';

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { buildPoiQueryBody, buildPoiSearchUrl, mergePoiPages, queryPois, searchPois, serializePoiBounds } from './poiSearchApi';
+import { buildPoiQueryBody, buildPoiSearchUrl, fetchDiagnosticPois, mergePoiPages, queryPois, searchPois, serializePoiBounds } from './poiSearchApi';
 
 const feature = (id: string) => ({
   type: 'Feature' as const,
@@ -69,6 +69,20 @@ describe('POI search client', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ features: [] }) }));
     await queryPois({ datasetId: 'demo', mode: 'and', conditions: [{ id: '1', field: 'visible', operator: 'is_visible' }] }, controller.signal);
     expect(fetch).toHaveBeenCalledWith('/api/pois/query', expect.objectContaining({ method: 'POST', signal: controller.signal }));
+    vi.unstubAllGlobals();
+  });
+
+  it('posts targeted diagnostic points and preserves explicit completeness', async () => {
+    const controller = new AbortController();
+    const diagnostic = { type: 'FeatureCollection', features: [], complete: false, incomplete_reason: 'candidate_limit' };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => diagnostic }));
+    await expect(fetchDiagnosticPois('demo', [[77, 28], [77.1, 28.1]], 500, controller.signal))
+      .resolves.toBe(diagnostic);
+    expect(fetch).toHaveBeenCalledWith('/api/pois/diagnostics/nearby', expect.objectContaining({
+      method: 'POST',
+      signal: controller.signal,
+      body: JSON.stringify({ dataset_id: 'demo', points: [[77, 28], [77.1, 28.1]], radius_m: 500 }),
+    }));
     vi.unstubAllGlobals();
   });
 

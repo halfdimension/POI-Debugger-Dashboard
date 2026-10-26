@@ -50,6 +50,14 @@ backend:
   # Persistent, rebuildable SQLite POI indexes. Relative paths use the repo root.
   poi_index_dir: "./.cache/poi-search"
 
+diagnostics:
+  # Targeted source-POI proximity processing. Limits are explicit so a dense
+  # route reports incomplete results instead of silently truncating them.
+  max_points: 1000
+  max_radius_m: 2000
+  max_results: 10000
+  max_candidates: 100000
+
 
 # Phase 2A dataset registry example. The old `data:` block still works as a fallback.
 active_dataset: "example"

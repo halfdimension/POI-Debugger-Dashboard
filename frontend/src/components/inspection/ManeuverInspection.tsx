@@ -16,6 +16,8 @@ export interface ManeuverInspectionProps {
   primaryNarrationEvidence: NarrationPoiEvidence | null;
   selectedNarrationEvidence: NarrationPoiEvidence[];
   nearbyPois: NearbyPoi[];
+  diagnosticStatus: 'idle' | 'loading' | 'complete' | 'incomplete' | 'unavailable';
+  diagnosticMessage: string;
   getOsrmInstruction: (step: OsrmStep) => string;
   onFocusManeuver: (item: ManeuverView) => void;
   onFocusOsrmStep: (item: OsrmStepView) => void;
@@ -28,6 +30,7 @@ export function ManeuverInspection({
   selectedManeuverIndex, selectedOsrmStepIndex, selectedManeuver,
   narrationEvidenceByManeuver, osrmPoiNamesByStep,
   primaryNarrationEvidence, selectedNarrationEvidence, nearbyPois,
+  diagnosticStatus, diagnosticMessage,
   getOsrmInstruction: osrmInstructionText,
   onFocusManeuver: focusManeuver,
   onFocusOsrmStep: focusOsrmStep,
@@ -156,18 +159,32 @@ export function ManeuverInspection({
                   : 'No begin_shape_index coordinate available'}
               </span>
             </div>
+            {diagnosticStatus === 'loading' && (
+              <div className="empty-state" role="status">Loading nearby source POIs…</div>
+            )}
+            {(diagnosticStatus === 'incomplete' || diagnosticStatus === 'unavailable') && (
+              <div className="dataset-warning" role="alert">
+                {diagnosticMessage || (diagnosticStatus === 'incomplete'
+                  ? 'Nearby source-POI retrieval is incomplete. Missing POIs must not be interpreted as absent.'
+                  : 'Nearby source-POI data is unavailable.')}
+              </div>
+            )}
             <div className="narration-verification">
               <div className="narration-verification-heading">
                 <strong>POI in Odin Instruction</strong>
                 {!primaryNarrationEvidence ? (
-                  <span className="narration-status none">NO POI FOUND</span>
+                  <span className="narration-status none">
+                    {diagnosticStatus === 'complete' ? 'NO SOURCE MATCH' : diagnosticStatus === 'loading' ? 'LOADING' : 'SOURCE DATA INCOMPLETE'}
+                  </span>
                 ) : (
                   <span className="narration-status strong">POI FOUND</span>
                 )}
               </div>
   
               {!primaryNarrationEvidence ? (
-                <p>No landmark POI was identified in this maneuver's Odin instruction.</p>
+                <p>{diagnosticStatus === 'complete'
+                  ? "No source POI name was identified in this maneuver's Odin instruction."
+                  : 'A source-POI narration match cannot be ruled out until nearby retrieval is complete.'}</p>
               ) : (
                 <>
                   <button className="narration-primary-match" onClick={() => focusNarrationEvidence(primaryNarrationEvidence)}>
@@ -198,9 +215,9 @@ export function ManeuverInspection({
                 </>
               )}
             </div>
-            {nearbyPois.length === 0 ? (
+            {nearbyPois.length === 0 && diagnosticStatus === 'complete' ? (
               <div className="empty-state">No source POIs within {NEARBY_POI_RADIUS_M} m.</div>
-            ) : (
+            ) : nearbyPois.length > 0 ? (
               <div className="nearby-list">
                 {nearbyPois.map((item, index) => (
                   <button key={`${item.feature.id ?? item.name}-${index}`} className="nearby-poi" onClick={() => focusPoi(item)}>
@@ -216,7 +233,11 @@ export function ManeuverInspection({
                   </button>
                 ))}
               </div>
-            )}
+            ) : diagnosticStatus === 'incomplete' ? (
+              <div className="empty-state">No nearby POI appears in the returned subset; retrieval is incomplete.</div>
+            ) : diagnosticStatus === 'unavailable' ? (
+              <div className="empty-state">Nearby source-POI inspection is unavailable.</div>
+            ) : null}
           </>
         )}
       </section>

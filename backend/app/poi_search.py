@@ -32,6 +32,7 @@ MAX_CONDITIONS = 10
 MAX_TEXT_LENGTH = 200
 PRIORITY_ASCENDING = "ascending"
 PRIORITY_DESCENDING = "descending"
+EARTH_RADIUS_M = 6_371_008.8
 
 STRUCTURED_OPERATORS = {
     "name": {"contains", "eq"},
@@ -61,6 +62,51 @@ class PoiSearchValidationError(PoiSearchError):
 
 class PoiSearchNotFoundError(PoiSearchError):
     pass
+
+
+def _haversine_meters(
+    first: tuple[float, float], second: tuple[float, float]
+) -> float:
+    lon1, lat1 = first
+    lon2, lat2 = second
+    lat1_rad = math.radians(lat1)
+    lat2_rad = math.radians(lat2)
+    delta_lat = lat2_rad - lat1_rad
+    delta_lon = math.radians(lon2 - lon1)
+    sin_lat = math.sin(delta_lat / 2)
+    sin_lon = math.sin(delta_lon / 2)
+    value = (
+        sin_lat * sin_lat
+        + math.cos(lat1_rad) * math.cos(lat2_rad) * sin_lon * sin_lon
+    )
+    return 2 * EARTH_RADIUS_M * math.asin(min(1.0, math.sqrt(value)))
+
+
+def _radius_bounds(
+    lon: float, lat: float, radius_m: float
+) -> tuple[list[tuple[float, float]], float, float]:
+    latitude_padding = math.degrees(radius_m / EARTH_RADIUS_M)
+    south = max(-90.0, lat - latitude_padding)
+    north = min(90.0, lat + latitude_padding)
+    cosine = min(
+        abs(math.cos(math.radians(south))),
+        abs(math.cos(math.radians(north))),
+    )
+    longitude_padding = 180.0 if cosine < 1e-12 else min(
+        180.0, math.degrees(radius_m / (EARTH_RADIUS_M * cosine))
+    )
+    if longitude_padding >= 180.0:
+        intervals = [(-180.0, 180.0)]
+    else:
+        west = lon - longitude_padding
+        east = lon + longitude_padding
+        if west < -180.0:
+            intervals = [(west + 360.0, 180.0), (-180.0, east)]
+        elif east > 180.0:
+            intervals = [(west, 180.0), (-180.0, east - 360.0)]
+        else:
+            intervals = [(west, east)]
+    return intervals, south, north
 
 
 def priority_policy(cfg: dict[str, Any]) -> dict[str, Any]:
@@ -422,6 +468,136 @@ class PoiSearchIndex:
         with self._lock_for(dataset_id):
             path, _ = self._current_database(dataset_id)
             return path
+
+    def nearby(
+        self,
+        dataset_id: str,
+        *,
+        points: Any,
+        radius_m: float,
+        max_results: int = 10_000,
+        max_candidates: int = 100_000,
+        max_points: int = 1_000,
+        max_radius_m: float = 2_000,
+    ) -> dict[str, Any]:
+        """Return source POIs within radius of any point using R-tree candidates."""
+        if not isinstance(dataset_id, str) or not dataset_id.strip():
+            raise PoiSearchValidationError("dataset_id is required")
+        if dataset_id not in self._datasets:
+            raise PoiSearchNotFoundError("Unknown dataset")
+        if not isinstance(points, list) or not points:
+            raise PoiSearchValidationError("points must be a non-empty array")
+        if (
+            isinstance(radius_m, bool)
+            or not isinstance(radius_m, (int, float))
+            or not math.isfinite(radius_m)
+            or radius_m <= 0
+            or radius_m > max_radius_m
+        ):
+            raise PoiSearchValidationError(
+                f"radius_m must be greater than 0 and at most {max_radius_m:g}"
+            )
+        if max_results < 1 or max_candidates < 1 or max_points < 1 or max_radius_m <= 0:
+            raise PoiSearchError("Diagnostic POI limits must be positive")
+
+        normalized_points: list[tuple[float, float]] = []
+        seen_points: set[tuple[float, float]] = set()
+        for raw in points:
+            if not isinstance(raw, (list, tuple)) or len(raw) != 2:
+                raise PoiSearchValidationError("Each point must be [longitude, latitude]")
+            try:
+                lon, lat = float(raw[0]), float(raw[1])
+            except (TypeError, ValueError) as exc:
+                raise PoiSearchValidationError(
+                    "Each point must contain finite numeric coordinates"
+                ) from exc
+            if not math.isfinite(lon) or not math.isfinite(lat) or not (-180 <= lon <= 180) or not (-90 <= lat <= 90):
+                raise PoiSearchValidationError(
+                    "Diagnostic point coordinates are outside valid longitude/latitude ranges"
+                )
+            point = (lon, lat)
+            if point not in seen_points:
+                seen_points.add(point)
+                normalized_points.append(point)
+
+        candidate_sql = """
+            SELECT p.id, p.feature_json, p.lon, p.lat
+            FROM poi_geo g JOIN pois p ON p.id = g.id
+            WHERE g.max_lon >= ? AND g.min_lon <= ?
+              AND g.max_lat >= ? AND g.min_lat <= ?
+              AND p.lon >= ? AND p.lon <= ?
+              AND p.lat >= ? AND p.lat <= ?
+            ORDER BY p.id ASC
+        """
+        requested_point_count = len(normalized_points)
+        incomplete_reason: str | None = None
+        if requested_point_count > max_points:
+            normalized_points = normalized_points[:max_points]
+            incomplete_reason = "point_limit"
+
+        candidate_ids: set[int] = set()
+        matches: dict[int, tuple[float, str]] = {}
+        processed_points = 0
+
+        with self._lock_for(dataset_id):
+            db_path, _ = self._current_database(dataset_id)
+            uri = db_path.resolve().as_uri() + "?mode=ro"
+            with closing(sqlite3.connect(uri, uri=True)) as connection:
+                connection.row_factory = sqlite3.Row
+                for point in normalized_points:
+                    intervals, south, north = _radius_bounds(
+                        point[0], point[1], float(radius_m)
+                    )
+                    point_complete = True
+                    for west, east in intervals:
+                        rows = connection.execute(
+                            candidate_sql,
+                            (west, east, south, north, west, east, south, north),
+                        )
+                        for row in rows:
+                            row_id = int(row["id"])
+                            if row_id not in candidate_ids:
+                                if len(candidate_ids) >= max_candidates:
+                                    incomplete_reason = "candidate_limit"
+                                    point_complete = False
+                                    break
+                                candidate_ids.add(row_id)
+                            distance_m = _haversine_meters(
+                                point, (float(row["lon"]), float(row["lat"]))
+                            )
+                            if distance_m <= radius_m:
+                                existing = matches.get(row_id)
+                                if existing is None or distance_m < existing[0]:
+                                    matches[row_id] = (distance_m, str(row["feature_json"]))
+                        if not point_complete:
+                            break
+                    if not point_complete:
+                        break
+                    processed_points += 1
+
+        ordered = sorted(
+            ((distance, row_id, feature_json) for row_id, (distance, feature_json) in matches.items()),
+            key=lambda item: (item[0], item[1]),
+        )
+        matched_total: int | None = len(ordered) if incomplete_reason is None else None
+        if len(ordered) > max_results:
+            ordered = ordered[:max_results]
+            if incomplete_reason is None:
+                incomplete_reason = "result_limit"
+
+        return {
+            "type": "FeatureCollection",
+            "dataset_id": dataset_id,
+            "features": [json.loads(item[2]) for item in ordered],
+            "returned": len(ordered),
+            "complete": incomplete_reason is None,
+            "incomplete_reason": incomplete_reason,
+            "matched_total": matched_total,
+            "candidate_count": len(candidate_ids),
+            "point_count": requested_point_count,
+            "processed_points": processed_points,
+            "radius_m": float(radius_m),
+        }
 
     @staticmethod
     def _has_many_candidates(

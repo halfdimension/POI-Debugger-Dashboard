@@ -4,7 +4,7 @@ import { activateDataset, createScenario, deleteScenario, getDatasets, getOsrmSt
 import { updateCoordinateValue } from './coordinates';
 import { decodePolyline6 } from './polyline';
 import { pointFeature, propNumber, propText } from './poi';
-import { mergePoiPages, queryPois, searchPois, type PoiBounds, type PoiSearchCondition, type PoiSearchResponse } from './poiSearchApi';
+import { fetchDiagnosticPois, mergePoiPages, queryPois, searchPois, type PoiBounds, type PoiSearchCondition, type PoiSearchResponse } from './poiSearchApi';
 import { evaluateScenario, type ScenarioRunResult } from './scenarioAssertions';
 import { loadInitialDashboard } from './initialization';
 import { AnalysisWorkspace, Sidebar } from './components/DashboardLayout';
@@ -18,6 +18,18 @@ import type { ManeuverView, NarrationPoiEvidence, NearbyPoi, OsrmRouteNarrationP
 import { ManeuverInspection } from './components/inspection/ManeuverInspection';
 import { SelectedPoiDetails } from './components/inspection/SelectedPoiDetails';
 import { MapContextMenu, type MapContextMenuLocation } from './components/map/MapContextMenu';
+import {
+  bindDebouncedViewportListener,
+  expandPoiCluster,
+  explorerPoiSource,
+  incompleteViewportMessage,
+  INDIVIDUAL_POI_LAYER_ID,
+  POI_CLUSTER_COUNT_LAYER_ID,
+  POI_CLUSTER_LAYER_ID,
+  ViewportRequestCoordinator,
+  viewportPoiLabel,
+  viewportRequestKey,
+} from './components/map/poiMap';
 import { RouteSetupControls } from './components/route/RouteSetupControls';
 import { RouteComparisonSummary } from './components/route/RouteComparisonSummary';
 import { SavedScenarioControls } from './components/scenarios/SavedScenarioControls';
@@ -39,21 +51,6 @@ const NEARBY_POI_LIMIT = 12;
 const NARRATION_POI_MAX_DISTANCE_M = 500;
 const VIEWPORT_POI_LIMIT = 500;
 const SEARCH_POI_LIMIT = 50;
-
-function boundsAround(coordinates: LngLat[], radiusM: number): PoiBounds | null {
-  if (coordinates.length === 0) return null;
-  const lons = coordinates.map(([lon]) => lon);
-  const lats = coordinates.map(([, lat]) => lat);
-  const middleLat = (Math.min(...lats) + Math.max(...lats)) / 2;
-  const latPadding = radiusM / 111_320;
-  const lonPadding = radiusM / (111_320 * Math.max(0.01, Math.cos(middleLat * Math.PI / 180)));
-  return [
-    Math.max(-180, Math.min(...lons) - lonPadding),
-    Math.max(-90, Math.min(...lats) - latPadding),
-    Math.min(180, Math.max(...lons) + lonPadding),
-    Math.min(90, Math.max(...lats) + latPadding),
-  ];
-}
 
 function visibleMapBounds(map: MapLibreMap): PoiBounds | null {
   const bounds = map.getBounds();
@@ -358,8 +355,9 @@ export default function App() {
   const [end, setEnd] = useState<LngLat | null>(null);
   const [mapContextMenu, setMapContextMenu] = useState<MapContextMenuLocation | null>(null);
   const [pois, setPois] = useState<GeoJSON.FeatureCollection>(EMPTY_FC);
-  const [viewportMeta, setViewportMeta] = useState({ loading: false, error: '', capped: false });
+  const [viewportMeta, setViewportMeta] = useState({ loading: false, error: '', incomplete: false });
   const [viewportRevision, setViewportRevision] = useState(0);
+  const viewportRequestsRef = useRef(new ViewportRequestCoordinator());
   const [searchResponse, setSearchResponse] = useState<PoiSearchResponse | null>(null);
   const [searchFeatures, setSearchFeatures] = useState<GeoJSON.Feature<GeoJSON.Point>[]>([]);
   const [searchState, setSearchState] = useState({ loading: false, loadingMore: false, error: '' });
@@ -367,6 +365,9 @@ export default function App() {
   const loadMoreControllerRef = useRef<AbortController | null>(null);
   const [diagnosticPois, setDiagnosticPois] = useState<GeoJSON.FeatureCollection>(EMPTY_FC);
   const [diagnosticWarning, setDiagnosticWarning] = useState('');
+  const [diagnosticStatus, setDiagnosticStatus] = useState<'idle' | 'loading' | 'complete' | 'incomplete' | 'unavailable'>('idle');
+  const diagnosticRequestRef = useRef<{ key: string; controller: AbortController } | null>(null);
+  const completedDiagnosticKeyRef = useRef('');
   const [route, setRoute] = useState<ValhallaRouteResponse | null>(null);
   const [routeGeoJson, setRouteGeoJson] = useState<GeoJSON.FeatureCollection>(EMPTY_FC);
   const [osrmRoute, setOsrmRoute] = useState<OsrmRouteResponse | null>(null);
@@ -1352,16 +1353,49 @@ export default function App() {
         },
       });
 
-      map.addSource('pois', { type: 'geojson', data: showPois ? filteredPois : EMPTY_FC });
+      map.addSource('pois', explorerPoiSource(showPois ? filteredPois : EMPTY_FC));
+      map.addLayer({
+        id: POI_CLUSTER_LAYER_ID,
+        type: 'circle',
+        source: 'pois',
+        filter: ['has', 'point_count'],
+        paint: {
+          'circle-radius': ['step', ['get', 'point_count'], 15, 25, 18, 100, 22, 250, 26],
+          'circle-color': ['step', ['get', 'point_count'], '#6d5bd0', 100, '#5746b8', 250, '#43338f'],
+          'circle-stroke-width': 2,
+          'circle-stroke-color': 'rgba(255,255,255,.9)',
+          'circle-opacity': 0.94,
+        },
+      });
+      map.addLayer({
+        id: POI_CLUSTER_COUNT_LAYER_ID,
+        type: 'symbol',
+        source: 'pois',
+        filter: ['has', 'point_count'],
+        layout: {
+          'text-field': ['get', 'point_count_abbreviated'],
+          'text-size': 11,
+          'text-font': ['Noto Sans Regular'],
+          'text-allow-overlap': true,
+          'text-ignore-placement': true,
+        },
+        paint: {
+          'text-color': '#ffffff',
+          'text-halo-color': 'rgba(31,23,76,.35)',
+          'text-halo-width': 1,
+        },
+      });
       map.addLayer({
         id: 'pois',
         type: 'circle',
         source: 'pois',
+        filter: ['!', ['has', 'point_count']],
         paint: {
-          'circle-radius': 4,
-          'circle-stroke-width': 1,
+          'circle-radius': 5,
+          'circle-stroke-width': 1.5,
           'circle-stroke-color': '#ffffff',
           'circle-color': '#8b5cf6',
+          'circle-opacity': 0.92,
         },
       });
 
@@ -1638,7 +1672,13 @@ export default function App() {
         );
       };
 
-      map.on('click', 'pois', showPoiPopup);
+      map.on('click', POI_CLUSTER_LAYER_ID, (event) => {
+        event.originalEvent.stopPropagation();
+        const feature = event.features?.[0] as GeoJSON.Feature | undefined;
+        if (feature) void expandPoiCluster(map, feature);
+      });
+
+      map.on('click', INDIVIDUAL_POI_LAYER_ID, showPoiPopup);
       map.on('click', 'selected-poi', showPoiPopup);
       map.on('click', 'nearby-pois', showPoiPopup);
       map.on('click', 'narration-poi', showPoiPopup);
@@ -1755,7 +1795,7 @@ export default function App() {
         map.flyTo({ center: coordinates, zoom: Math.max(map.getZoom(), 17), essential: true });
       });
 
-      for (const layerId of ['pois', 'selected-poi', 'nearby-pois', 'route-narration-pois', 'narration-poi', 'maneuver-points', 'candidate-analysis-pois']) {
+      for (const layerId of [POI_CLUSTER_LAYER_ID, INDIVIDUAL_POI_LAYER_ID, 'selected-poi', 'nearby-pois', 'route-narration-pois', 'narration-poi', 'maneuver-points', 'candidate-analysis-pois']) {
         map.on('mouseenter', layerId, () => { map.getCanvas().style.cursor = 'pointer'; });
         map.on('mouseleave', layerId, () => { map.getCanvas().style.cursor = ''; });
       }
@@ -1807,39 +1847,46 @@ export default function App() {
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
-    const settled = () => setViewportRevision((revision) => revision + 1);
-    map.on('moveend', settled);
-    if (map.loaded()) settled();
-    else map.once('load', settled);
-    return () => { map.off('moveend', settled); map.off('load', settled); };
+    return bindDebouncedViewportListener(
+      map,
+      () => setViewportRevision((revision) => revision + 1),
+    );
   }, [config]);
+
+  useEffect(() => () => {
+    viewportRequestsRef.current.cancel();
+    diagnosticRequestRef.current?.controller.abort();
+  }, []);
 
   useEffect(() => {
     const datasetId = datasetRegistry?.active_dataset;
     const map = mapRef.current;
-    if (!datasetId || !map) return;
-    const bbox = visibleMapBounds(map);
-    if (!bbox) {
-      setPois(EMPTY_FC);
-      setViewportMeta({ loading: false, capped: false, error: 'POIs are unavailable for a viewport crossing the antimeridian.' });
+    if (!datasetId || !map) {
+      viewportRequestsRef.current.cancel();
       return;
     }
-    const controller = new AbortController();
-    let current = true;
+    const bbox = visibleMapBounds(map);
+    if (!bbox) {
+      viewportRequestsRef.current.cancel();
+      setPois(EMPTY_FC);
+      setViewportMeta({ loading: false, incomplete: false, error: 'POIs are unavailable for a viewport crossing the antimeridian.' });
+      return;
+    }
+    const ticket = viewportRequestsRef.current.begin(viewportRequestKey(datasetId, bbox));
+    if (!ticket) return;
     setViewportMeta((state) => ({ ...state, loading: true, error: '' }));
     searchPois({
       datasetId,
       bbox,
       limit: VIEWPORT_POI_LIMIT,
-    }, controller.signal).then((response) => {
-      if (!current) return;
+    }, ticket.controller.signal).then((response) => {
+      if (!viewportRequestsRef.current.complete(ticket)) return;
       setPois(response);
-      setViewportMeta({ loading: false, error: '', capped: response.has_more });
+      setViewportMeta({ loading: false, error: '', incomplete: response.has_more });
     }).catch((err) => {
-      if (!current || err instanceof DOMException && err.name === 'AbortError') return;
-      setViewportMeta({ loading: false, capped: false, error: err instanceof Error ? err.message : String(err) });
+      if (ticket.controller.signal.aborted || !viewportRequestsRef.current.fail(ticket)) return;
+      setViewportMeta({ loading: false, incomplete: false, error: err instanceof Error ? err.message : String(err) });
     });
-    return () => { current = false; controller.abort(); };
   }, [datasetRegistry?.active_dataset, viewportRevision]);
 
   useEffect(() => {
@@ -1879,26 +1926,42 @@ export default function App() {
       ...maneuverViews.map((item) => item.coordinate),
       ...osrmStepViews.map((item) => item.coordinate),
     ].filter((coordinate): coordinate is LngLat => coordinate !== null);
-    const bbox = boundsAround(coordinates, NARRATION_POI_MAX_DISTANCE_M);
-    if (!datasetId || !bbox) {
+    if (!datasetId || coordinates.length === 0) {
+      diagnosticRequestRef.current?.controller.abort();
+      diagnosticRequestRef.current = null;
+      completedDiagnosticKeyRef.current = '';
       setDiagnosticPois(EMPTY_FC);
       setDiagnosticWarning('');
+      setDiagnosticStatus('idle');
       return;
     }
+    const requestKey = JSON.stringify([
+      datasetId,
+      NARRATION_POI_MAX_DISTANCE_M,
+      coordinates.map(([lon, lat]) => [Number(lon.toFixed(7)), Number(lat.toFixed(7))]),
+    ]);
+    if (diagnosticRequestRef.current?.key === requestKey || completedDiagnosticKeyRef.current === requestKey) return;
     const controller = new AbortController();
-    let current = true;
-    searchPois({ datasetId, bbox, limit: VIEWPORT_POI_LIMIT }, controller.signal).then((response) => {
-      if (!current) return;
+    diagnosticRequestRef.current?.controller.abort();
+    diagnosticRequestRef.current = { key: requestKey, controller };
+    setDiagnosticPois(EMPTY_FC);
+    setDiagnosticWarning('');
+    setDiagnosticStatus('loading');
+    fetchDiagnosticPois(datasetId, coordinates, NARRATION_POI_MAX_DISTANCE_M, controller.signal).then((response) => {
+      if (diagnosticRequestRef.current?.controller !== controller || controller.signal.aborted) return;
+      diagnosticRequestRef.current = null;
+      completedDiagnosticKeyRef.current = requestKey;
       setDiagnosticPois(response);
-      setDiagnosticWarning(response.has_more
-        ? 'Route diagnostic POIs are capped at 500; nearby and narration matches may be incomplete in this dense route area.'
-        : '');
+      setDiagnosticStatus(response.complete ? 'complete' : 'incomplete');
+      setDiagnosticWarning(response.complete ? '' :
+        'Nearby source-POI retrieval is incomplete because a configured diagnostic processing limit was reached. Missing POIs must not be interpreted as absent.');
     }).catch((err) => {
-      if (!current || err instanceof DOMException && err.name === 'AbortError') return;
+      if (diagnosticRequestRef.current?.controller !== controller || controller.signal.aborted) return;
+      diagnosticRequestRef.current = null;
       setDiagnosticPois(EMPTY_FC);
+      setDiagnosticStatus('unavailable');
       setDiagnosticWarning(`Route diagnostic POIs could not be loaded: ${err instanceof Error ? err.message : String(err)}`);
     });
-    return () => { current = false; controller.abort(); };
   }, [datasetRegistry?.active_dataset, maneuverViews, osrmStepViews]);
 
   useEffect(() => {
@@ -1914,7 +1977,7 @@ export default function App() {
       if (event.originalEvent.button !== 0) return;
 
       if (map.isStyleLoaded()) {
-        const candidateLayers = ['pois', 'selected-poi', 'nearby-pois', 'route-narration-pois', 'narration-poi', 'maneuver-points', 'osrm-selected-maneuver', 'poi-turn-inspection-turn', 'candidate-analysis-pois', 'candidate-analysis-origin', 'route-points']
+        const candidateLayers = [POI_CLUSTER_LAYER_ID, INDIVIDUAL_POI_LAYER_ID, 'selected-poi', 'nearby-pois', 'route-narration-pois', 'narration-poi', 'maneuver-points', 'osrm-selected-maneuver', 'poi-turn-inspection-turn', 'candidate-analysis-pois', 'candidate-analysis-origin', 'route-points']
           .filter((layerId) => Boolean(map.getLayer(layerId)));
         if (candidateLayers.length > 0) {
           const hitFeatures = map.queryRenderedFeatures(event.point, { layers: candidateLayers });
@@ -1950,9 +2013,15 @@ export default function App() {
 
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !map.isStyleLoaded()) return;
-    const source = map.getSource('pois') as maplibregl.GeoJSONSource | undefined;
-    source?.setData(showPois ? filteredPois : EMPTY_FC);
+    if (!map) return;
+    const data = showPois ? filteredPois : EMPTY_FC;
+    const apply = () => {
+      const source = map.getSource('pois') as maplibregl.GeoJSONSource | undefined;
+      source?.setData(data);
+    };
+    if (map.isStyleLoaded() && map.getSource('pois')) apply();
+    else map.once('idle', apply);
+    return () => { map.off('idle', apply); };
   }, [filteredPois, showPois, config]);
 
   useEffect(() => {
@@ -1978,12 +2047,18 @@ export default function App() {
 
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !map.isStyleLoaded()) return;
-    const source = map.getSource('selected-poi') as maplibregl.GeoJSONSource | undefined;
-    source?.setData(selectedPoi
+    if (!map) return;
+    const data = selectedPoi
       ? { type: 'FeatureCollection', features: [selectedPoi] }
-      : EMPTY_FC);
-  }, [selectedPoi]);
+      : EMPTY_FC;
+    const apply = () => {
+      const source = map.getSource('selected-poi') as maplibregl.GeoJSONSource | undefined;
+      source?.setData(data as GeoJSON.FeatureCollection);
+    };
+    if (map.isStyleLoaded() && map.getSource('selected-poi')) apply();
+    else map.once('idle', apply);
+    return () => { map.off('idle', apply); };
+  }, [selectedPoi, config]);
 
   useEffect(() => {
     syncGeoJsonSource('route', routeGeoJson);
@@ -2120,12 +2195,18 @@ export default function App() {
     });
   }, [primaryNarrationEvidence]);
 
-  async function refreshActiveDataset(message = '') {
+  async function refreshActiveDataset(message = '', preserveSelectedPoi = true) {
     const registry = await getDatasets();
     setDatasetRegistry(registry);
     setPois(EMPTY_FC);
     setDiagnosticPois(EMPTY_FC);
-    setSelectedPoi(null);
+    setDiagnosticStatus('idle');
+    setDiagnosticWarning('');
+    diagnosticRequestRef.current?.controller.abort();
+    diagnosticRequestRef.current = null;
+    completedDiagnosticKeyRef.current = '';
+    if (!preserveSelectedPoi) setSelectedPoi(null);
+    viewportRequestsRef.current.invalidate();
     setViewportRevision((revision) => revision + 1);
     if (message) setDatasetMessage(message);
   }
@@ -2164,7 +2245,7 @@ export default function App() {
     setError('');
     try {
       await activateDataset(datasetId);
-      await refreshActiveDataset(`Activated ${datasetId}.`);
+      await refreshActiveDataset(`Activated ${datasetId}.`, false);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -2987,15 +3068,20 @@ export default function App() {
             </div>
 
             <span>
-              {viewportMeta.loading ? 'Loading POIs…' : `${filteredPoiFeatures.length}${viewportMeta.capped ? '+' : ''} viewport POIs`} ·
+              {viewportMeta.loading ? 'Loading POIs…' : viewportPoiLabel(filteredPoiFeatures.length, viewportMeta.incomplete)} ·
               {' '}{maneuverViews.length} Odin maneuvers · {osrmStepViews.length} OSRM steps
             </span>
           </div>
           <div className="map-surface">
             <div ref={mapContainer} className="map" />
-            {(viewportMeta.error || viewportMeta.capped || diagnosticWarning) && (
+            {viewportMeta.incomplete && (
+              <div className="map-data-notice" role="status">
+                {incompleteViewportMessage(filteredPoiFeatures.length, viewportMeta.incomplete)}
+              </div>
+            )}
+            {(viewportMeta.error || diagnosticWarning) && (
               <div className="map-data-warning" role="status">
-                {[viewportMeta.error, viewportMeta.capped ? 'Viewport POIs are capped at 500; zoom in to inspect dense areas.' : '', diagnosticWarning].filter(Boolean).join(' ')}
+                {[viewportMeta.error, diagnosticWarning].filter(Boolean).join(' ')}
               </div>
             )}
             {mapContextMenu && (
@@ -3171,7 +3257,9 @@ export default function App() {
 
                 {routeNarrationPois.length === 0 ? (
                   <div className="route-narration-empty compact">
-                    No landmark POI found in Odin instructions.
+                    {diagnosticStatus === 'complete'
+                      ? 'No source POI name matched the Odin instructions.'
+                      : 'Source-POI correlation is incomplete; Odin instructions remain authoritative.'}
                   </div>
                 ) : (
                   <div className="route-narration-overlay-list engine-list">
@@ -3223,7 +3311,9 @@ export default function App() {
 
                 {osrmRouteNarrationPois.length === 0 ? (
                   <div className="route-narration-empty compact">
-                    No landmark POI found in OSRM maneuver instructions.
+                    {diagnosticStatus === 'complete'
+                      ? 'No source POI name matched the OSRM maneuver instructions.'
+                      : 'Source-POI correlation is incomplete; OSRM instructions remain authoritative.'}
                   </div>
                 ) : (
                   <div className="route-narration-overlay-list engine-list">
@@ -3399,6 +3489,8 @@ export default function App() {
             primaryNarrationEvidence={primaryNarrationEvidence}
             selectedNarrationEvidence={selectedNarrationEvidence}
             nearbyPois={nearbyPois}
+            diagnosticStatus={diagnosticStatus}
+            diagnosticMessage={diagnosticWarning}
             getOsrmInstruction={osrmInstructionText}
             onFocusManeuver={focusManeuver}
             onFocusOsrmStep={focusOsrmStep}

@@ -65,6 +65,11 @@ def load_settings() -> dict[str, Any]:
     cfg.setdefault("scenarios", {})
     cfg.setdefault("frontend", {})
     cfg.setdefault("backend", {})
+    cfg.setdefault("diagnostics", {})
+    cfg["diagnostics"].setdefault("max_points", 1000)
+    cfg["diagnostics"].setdefault("max_radius_m", 2000)
+    cfg["diagnostics"].setdefault("max_results", 10000)
+    cfg["diagnostics"].setdefault("max_candidates", 100000)
 
     # Environment variables override YAML. String values are listed here;
     # typed/list values are handled below.
@@ -98,6 +103,10 @@ def load_settings() -> dict[str, Any]:
         ("osrm", "timeout_seconds"): ("VPD_OSRM_TIMEOUT_SECONDS", float),
         ("frontend", "default_zoom"): ("VPD_DEFAULT_ZOOM", float),
         ("backend", "port"): ("VPD_BACKEND_PORT", int),
+        ("diagnostics", "max_points"): ("VPD_DIAGNOSTIC_MAX_POINTS", int),
+        ("diagnostics", "max_radius_m"): ("VPD_DIAGNOSTIC_MAX_RADIUS_M", float),
+        ("diagnostics", "max_results"): ("VPD_DIAGNOSTIC_MAX_RESULTS", int),
+        ("diagnostics", "max_candidates"): ("VPD_DIAGNOSTIC_MAX_CANDIDATES", int),
     }
     for (section, key), (env_name, converter) in numeric_overrides.items():
         value = os.getenv(env_name)

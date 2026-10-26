@@ -42,6 +42,19 @@ export interface PoiSearchResponse extends FeatureCollection<Point> {
   next_cursor: string | null;
 }
 
+export interface DiagnosticPoiResponse extends FeatureCollection<Point> {
+  dataset_id: string;
+  features: Feature<Point>[];
+  returned: number;
+  complete: boolean;
+  incomplete_reason: 'point_limit' | 'candidate_limit' | 'result_limit' | null;
+  matched_total: number | null;
+  candidate_count: number;
+  point_count: number;
+  processed_points: number;
+  radius_m: number;
+}
+
 export class PoiSearchRequestError extends Error {
   constructor(message: string, public readonly status: number) {
     super(message);
@@ -118,6 +131,29 @@ export async function queryPois(params: PoiQueryParams, signal?: AbortSignal): P
     throw new PoiSearchRequestError(detail, response.status);
   }
   return body as PoiSearchResponse;
+}
+
+export async function fetchDiagnosticPois(
+  datasetId: string,
+  points: Array<[number, number]>,
+  radiusM: number,
+  signal?: AbortSignal,
+): Promise<DiagnosticPoiResponse> {
+  const response = await fetch('/api/pois/diagnostics/nearby', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ dataset_id: datasetId, points, radius_m: radiusM }),
+    signal,
+  });
+  let body: unknown;
+  try { body = await response.json(); } catch { body = null; }
+  if (!response.ok) {
+    const detail = typeof (body as { detail?: unknown } | null)?.detail === 'string'
+      ? (body as { detail: string }).detail
+      : `Diagnostic POI request failed: ${response.status}`;
+    throw new PoiSearchRequestError(detail, response.status);
+  }
+  return body as DiagnosticPoiResponse;
 }
 
 export function poiFeatureKey(feature: Feature<Point>): string {

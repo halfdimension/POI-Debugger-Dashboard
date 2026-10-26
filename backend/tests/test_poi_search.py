@@ -224,6 +224,63 @@ class PoiSearchTest(unittest.TestCase):
             with self.subTest(invalid=invalid), self.assertRaises(PoiSearchValidationError):
                 parse_bbox(invalid)
 
+    def test_targeted_nearby_retrieval_exceeds_search_cap_and_filters_exact_radius(self) -> None:
+        dense_csv = self.root / "dense.csv"
+        rows = [
+            row(f"Dense {index}", f"dense-{index}", lat=28.0, lon=77.0)
+            for index in range(650)
+        ]
+        # Inside the radius bounding box, but outside the 500 m circle.
+        rows.append(row("Bounding-box corner", "corner", lat=28.004, lon=77.004))
+        write_csv(dense_csv, rows)
+        index = PoiSearchIndex(
+            {"dense": {"poi_csv_path": str(dense_csv)}},
+            self.root / "dense-index",
+        )
+
+        complete = index.nearby(
+            "dense", points=[[77.0, 28.0]], radius_m=500, max_results=1_000
+        )
+        self.assertTrue(complete["complete"])
+        self.assertEqual(complete["returned"], 650)
+        self.assertEqual(complete["matched_total"], 650)
+        self.assertNotIn(
+            "corner",
+            {feature["properties"]["new_node_id"] for feature in complete["features"]},
+        )
+        self.assertEqual(
+            complete["features"][0]["properties"]["extra"], "metadata-dense-0"
+        )
+
+        limited = index.nearby(
+            "dense", points=[[77.0, 28.0]], radius_m=500, max_results=500
+        )
+        self.assertFalse(limited["complete"])
+        self.assertEqual(limited["incomplete_reason"], "result_limit")
+        self.assertEqual(limited["returned"], 500)
+        self.assertEqual(limited["matched_total"], 650)
+
+    def test_targeted_nearby_candidate_limit_is_explicit(self) -> None:
+        dense_csv = self.root / "candidate-limited.csv"
+        write_csv(
+            dense_csv,
+            [row(f"Candidate {index}", f"candidate-{index}") for index in range(25)],
+        )
+        index = PoiSearchIndex(
+            {"dense": {"poi_csv_path": str(dense_csv)}},
+            self.root / "candidate-limited-index",
+        )
+        result = index.nearby(
+            "dense",
+            points=[[77.0, 28.0]],
+            radius_m=100,
+            max_candidates=10,
+        )
+        self.assertFalse(result["complete"])
+        self.assertEqual(result["incomplete_reason"], "candidate_limit")
+        self.assertIsNone(result["matched_total"])
+        self.assertEqual(result["candidate_count"], 10)
+
     def test_broad_ranked_path_matches_selective_path_and_paginates(self) -> None:
         def collect(threshold: int, **kwargs: object) -> list[str]:
             found: list[str] = []

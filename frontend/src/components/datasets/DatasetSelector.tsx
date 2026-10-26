@@ -6,6 +6,7 @@ export interface CompactDatasetSelectorProps {
   datasetRegistry: DatasetRegistryResponse | null;
   datasetBusy: boolean;
   datasetMessage: string;
+  canPrepareDataset: boolean;
   config: DebuggerConfig;
   onChangeDataset: (datasetId: string) => void;
   onReloadDataset: () => void;
@@ -22,6 +23,7 @@ export function CompactDatasetSelector({
   datasetRegistry,
   datasetBusy,
   datasetMessage,
+  canPrepareDataset,
   config,
   onChangeDataset: changeDataset,
   onReloadDataset: reloadActiveDataset,
@@ -37,11 +39,11 @@ export function CompactDatasetSelector({
         >
           {(datasetRegistry?.datasets ?? []).map((dataset) => <option key={dataset.id} value={dataset.id}>{dataset.name}</option>)}
         </select>
-        <button onClick={reloadActiveDataset} disabled={datasetBusy || !activeDataset}>{datasetBusy ? 'Working…' : 'Reload'}</button>
+        {canPrepareDataset && <button onClick={reloadActiveDataset} disabled={datasetBusy || !activeDataset}>{datasetBusy ? 'Preparing…' : 'Prepare POIs'}</button>}
       </div>
       {datasetMessage && <div className="dataset-message" role="status">{datasetMessage}</div>}
       {activeDataset?.error && <div className="dataset-warning">{activeDataset.error}</div>}
-      {activeDataset?.preparation_state === 'pending' && <div className="dataset-message" role="status">Statistics pending; reload to prepare.</div>}
+      {activeDataset?.preparation_state === 'pending' && <div className="dataset-message" role="status">{activeDataset.index_state === 'ready' ? 'Search index ready; statistics are pending.' : 'Statistics and search index are not prepared.'}</div>}
       {activeDataset?.preparation_state === 'preparing' && <div className="dataset-message" role="status">Statistics are being prepared.</div>}
       <details className="panel-disclosure">
         <summary>Dataset details</summary>

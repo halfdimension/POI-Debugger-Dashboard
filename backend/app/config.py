@@ -94,6 +94,7 @@ def load_settings() -> dict[str, Any]:
         ("frontend", "dist_path"): "VPD_FRONTEND_DIST_PATH",
         ("scenarios", "directory"): "VPD_SCENARIO_DIR",
         ("backend", "poi_index_dir"): "VPD_POI_INDEX_DIR",
+        ("backend", "preparation_job_dir"): "VPD_PREPARATION_JOB_DIR",
         ("backend", "preference_db_path"): "VPD_PREFERENCE_DB_PATH",
         ("backend", "testcase_db_path"): "VPD_TESTCASE_DB_PATH",
         ("auth", "users_db_path"): "VPD_USERS_DB_PATH",
@@ -117,6 +118,11 @@ def load_settings() -> dict[str, Any]:
         ("osrm", "timeout_seconds"): ("VPD_OSRM_TIMEOUT_SECONDS", float),
         ("frontend", "default_zoom"): ("VPD_DEFAULT_ZOOM", float),
         ("backend", "port"): ("VPD_BACKEND_PORT", int),
+        ("backend", "preparation_job_history_limit"): ("VPD_PREPARATION_JOB_HISTORY_LIMIT", int),
+        ("backend", "preparation_worker_nice"): ("VPD_PREPARATION_WORKER_NICE", int),
+        ("backend", "preparation_worker_memory_bytes"): ("VPD_PREPARATION_WORKER_MEMORY_BYTES", int),
+        ("backend", "preparation_worker_cpu_seconds"): ("VPD_PREPARATION_WORKER_CPU_SECONDS", int),
+        ("backend", "preparation_worker_file_bytes"): ("VPD_PREPARATION_WORKER_FILE_BYTES", int),
         ("diagnostics", "max_points"): ("VPD_DIAGNOSTIC_MAX_POINTS", int),
         ("diagnostics", "max_radius_m"): ("VPD_DIAGNOSTIC_MAX_RADIUS_M", float),
         ("diagnostics", "max_results"): ("VPD_DIAGNOSTIC_MAX_RESULTS", int),
@@ -211,6 +217,10 @@ def load_settings() -> dict[str, Any]:
     if cfg["backend"].get("poi_index_dir"):
         cfg["backend"]["poi_index_dir"] = _expand_path(
             str(cfg["backend"]["poi_index_dir"])
+        )
+    if cfg["backend"].get("preparation_job_dir"):
+        cfg["backend"]["preparation_job_dir"] = _expand_path(
+            str(cfg["backend"]["preparation_job_dir"])
         )
     if not cfg["backend"].get("preference_db_path"):
         cfg["backend"]["preference_db_path"] = "./data/user-preferences.sqlite3"

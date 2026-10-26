@@ -64,6 +64,10 @@ class PoiSearchNotFoundError(PoiSearchError):
     pass
 
 
+class PoiSearchNotReadyError(PoiSearchError):
+    """The persistent index must be prepared by an authorized job."""
+
+
 def _haversine_meters(
     first: tuple[float, float], second: tuple[float, float]
 ) -> float:
@@ -281,9 +285,16 @@ def parse_bbox(raw: str | None) -> tuple[float, float, float, float] | None:
 class PoiSearchIndex:
     """Lazy persistent SQLite indexes for explicitly selected POI datasets."""
 
-    def __init__(self, datasets: dict[str, dict[str, Any]], index_dir: Path):
+    def __init__(
+        self,
+        datasets: dict[str, dict[str, Any]],
+        index_dir: Path,
+        *,
+        allow_implicit_build: bool = True,
+    ):
         self._datasets = datasets
         self._index_dir = index_dir
+        self._allow_implicit_build = allow_implicit_build
         self._locks_guard = threading.Lock()
         self._locks: dict[str, threading.RLock] = {}
 
@@ -332,8 +343,21 @@ class PoiSearchIndex:
         db_path = self._db_path(dataset_id)
         if self._valid_database(db_path, fingerprint):
             return db_path, fingerprint
+        if not self._allow_implicit_build:
+            raise PoiSearchNotReadyError("The POI search index is not prepared")
         self._build(db_path, fingerprint, source_kind, source_path, cfg)
         return db_path, fingerprint
+
+    def is_ready(self, dataset_id: str) -> bool:
+        """Check index freshness without constructing or mutating an index."""
+        if dataset_id not in self._datasets:
+            return False
+        try:
+            source_kind, source_path = _source(self._datasets[dataset_id])
+            fingerprint = _fingerprint(source_kind, source_path)
+        except (OSError, PoiSearchError):
+            return False
+        return self._valid_database(self._db_path(dataset_id), fingerprint)
 
     @staticmethod
     def _valid_database(path: Path, fingerprint: str) -> bool:
@@ -481,7 +505,14 @@ class PoiSearchIndex:
     def prepare(self, dataset_id: str) -> Path:
         """Build or validate a dataset index without including a search in its timing."""
         with self._lock_for(dataset_id):
-            path, _ = self._current_database(dataset_id)
+            if dataset_id not in self._datasets:
+                raise PoiSearchNotFoundError("Unknown dataset")
+            cfg = self._datasets[dataset_id]
+            source_kind, source_path = _source(cfg)
+            fingerprint = _fingerprint(source_kind, source_path)
+            path = self._db_path(dataset_id)
+            if not self._valid_database(path, fingerprint):
+                self._build(path, fingerprint, source_kind, source_path, cfg)
             return path
 
     def nearby(

@@ -74,6 +74,15 @@ backend:
   legacy_poi_feature_limit: 50000
   legacy_poi_geojson_byte_limit: 67108864
 
+  # Super Admin preparation runs in one lower-priority child process. Zero
+  # leaves a hard resource limit disabled; set host-appropriate values when needed.
+  preparation_job_dir: "./.cache/poi-search/jobs"
+  preparation_job_history_limit: 100
+  preparation_worker_nice: 10
+  preparation_worker_memory_bytes: 0
+  preparation_worker_cpu_seconds: 0
+  preparation_worker_file_bytes: 0
+
   # Durable authenticated-user settings. Keep this separate from POI indexes.
   preference_db_path: "./data/user-preferences.sqlite3"
 

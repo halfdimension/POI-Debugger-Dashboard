@@ -66,7 +66,9 @@ class DatasetManager:
                 or Path(__file__).resolve().parents[2] / ".cache" / "poi-search"
             )
         )
-        self.search_index = PoiSearchIndex(self._datasets, index_dir)
+        self.search_index = PoiSearchIndex(
+            self._datasets, index_dir, allow_implicit_build=False
+        )
 
     @staticmethod
     def _build_registry(settings: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -197,6 +199,7 @@ class DatasetManager:
             "stats": deepcopy(cached.get("stats")) if cached else None,
             "error": cached.get("error") if cached else None,
             "preparation_state": cached.get("preparation_state") if cached else "pending",
+            "index_state": "ready" if self.search_index.is_ready(dataset_id) else "not_ready",
         }
         return summary
 

@@ -7,6 +7,7 @@ export interface DatasetPoiExplorerPanelProps {
   datasetRegistry: DatasetRegistryResponse | null;
   datasetBusy: boolean;
   datasetMessage: string;
+  canPrepareDataset: boolean;
   config: DebuggerConfig;
   filteredPoiFeatures: GeoJSON.Feature<GeoJSON.Point>[];
   searchResults: GeoJSON.Feature<GeoJSON.Point>[];
@@ -36,7 +37,7 @@ function basename(path?: string): string {
 }
 
 export function DatasetPoiExplorerPanel({
-  activeDataset, datasetRegistry, datasetBusy, datasetMessage, config,
+  activeDataset, datasetRegistry, datasetBusy, datasetMessage, canPrepareDataset, config,
   filteredPoiFeatures, searchResults, availablePoiTypes, fullTypeStats,
   poiSearch, advancedFilters, showPois,
   searchLoading, searchLoadingMore, searchError, searchHasMore,
@@ -64,13 +65,13 @@ export function DatasetPoiExplorerPanel({
               <option key={dataset.id} value={dataset.id}>{dataset.name}</option>
             ))}
           </select>
-          <button onClick={reloadActiveDataset} disabled={datasetBusy || !activeDataset}>
-            {datasetBusy ? 'Working…' : 'Reload POIs'}
-          </button>
+          {canPrepareDataset && <button onClick={reloadActiveDataset} disabled={datasetBusy || !activeDataset}>
+            {datasetBusy ? 'Preparing…' : 'Prepare POIs'}
+          </button>}
         </div>
         {datasetMessage && <div className="dataset-message">{datasetMessage}</div>}
         {activeDataset?.error && <div className="dataset-warning">{activeDataset.error}</div>}
-        {activeDataset?.preparation_state === 'pending' && <div className="dataset-message" role="status">Statistics are pending. Reload POIs to prepare them.</div>}
+        {activeDataset?.preparation_state === 'pending' && <div className="dataset-message" role="status">{activeDataset.index_state === 'ready' ? 'Search index ready; statistics are pending.' : 'Statistics and search index are not prepared.'}</div>}
         {activeDataset?.preparation_state === 'preparing' && <div className="dataset-message" role="status">Statistics are being prepared.</div>}
         <div className="kv"><span>Source</span><code title={activeDataset?.source_path ?? ''}>{activeDataset?.source_kind ?? '—'} · {basename(activeDataset?.source_path ?? undefined)}</code></div>
         <div className="kv"><span>PBF</span><code title={activeDataset?.pbf_path ?? config.data.pbf_path}>{basename(activeDataset?.pbf_path ?? config.data.pbf_path)}</code></div>

@@ -177,6 +177,8 @@ class PoiSearchTest(unittest.TestCase):
                 "datasets": self.datasets,
             }
         )
+        manager.search_index.prepare("a")
+        manager.search_index.prepare("b")
         page = manager.search_index.search("a", limit=1)
         manager.search_index.search("b")
         self.assertEqual(manager.active_id, "a")

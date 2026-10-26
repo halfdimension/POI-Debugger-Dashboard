@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import maplibregl, { LngLatBounds, Map as MapLibreMap } from 'maplibre-gl';
-import { getDatasets, getOsrmStatus, getValhallaStatus, reloadDatasetPois, requestCompareRoute, updatePreferences } from './api';
+import { getDatasetPreparationJob, getDatasets, getOsrmStatus, getValhallaStatus, reloadDatasetPois, requestCompareRoute, updatePreferences } from './api';
 import { haversineMeters, updateCoordinateValue } from './coordinates';
 import { decodePolyline6 } from './polyline';
 import { pointFeature, propNumber, propText } from './poi';
@@ -1637,8 +1637,20 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
     setDatasetMessage('');
     setError('');
     try {
-      await reloadDatasetPois(datasetId);
-      await refreshActiveDataset(`Reloaded POIs directly from the configured source.`);
+      const accepted = await reloadDatasetPois(datasetId);
+      const jobId = accepted?.job?.id;
+      if (!jobId) throw new Error('Preparation request did not return a job identifier');
+      setDatasetMessage(accepted.accepted === false ? 'Dataset preparation is already running.' : 'Dataset preparation accepted.');
+      for (;;) {
+        await new Promise((resolve) => window.setTimeout(resolve, 1000));
+        const job = await getDatasetPreparationJob(jobId);
+        if (job.status === 'completed') {
+          await refreshActiveDataset('POI preparation completed.');
+          break;
+        }
+        if (job.status === 'failed') throw new Error(job.error ?? 'POI preparation failed');
+        setDatasetMessage(job.status === 'running' ? 'Preparing POIs in the maintenance worker…' : 'POI preparation is pending…');
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -2204,6 +2216,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
             datasetRegistry={datasetRegistry}
             datasetBusy={datasetBusy}
             datasetMessage={datasetMessage}
+            canPrepareDataset={session.user.role === 'super_admin'}
             config={config}
             onChangeDataset={changeDataset}
             onReloadDataset={reloadActiveDataset}

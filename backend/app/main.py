@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -17,8 +17,15 @@ from .datasets import DatasetError, DatasetManager, DatasetTooLargeError
 from .poi_search import (
     PoiSearchError,
     PoiSearchNotFoundError,
+    PoiSearchNotReadyError,
     PoiSearchValidationError,
     parse_bbox,
+)
+from .preparation_jobs import (
+    PreparationCapacityError,
+    PreparationJobError,
+    PreparationJobManager,
+    PreparationJobNotFoundError,
 )
 from .landmark_debug import OsrmLandmarkDebugManager
 from .valhalla_landmark_debug import ValhallaLandmarkDebugManager
@@ -29,6 +36,7 @@ from .testcases import TestcaseConflictError, TestcaseError, TestcaseNotFoundErr
 settings = load_settings()
 auth = AuthManager(settings)
 datasets = DatasetManager(settings)
+preparation_jobs = PreparationJobManager(settings, datasets.ids)
 preferences = UserPreferenceStore(
     settings["backend"]["preference_db_path"], datasets.ids, datasets.default_id
 )
@@ -154,7 +162,9 @@ def patch_preferences(request: Request, payload: dict[str, Any]) -> dict[str, An
 
 @protected.get("/api/datasets")
 def get_datasets(request: Request) -> dict[str, Any]:
-    return datasets.describe(_effective_dataset_id(request))
+    return preparation_jobs.decorate_registry(
+        datasets.describe(_effective_dataset_id(request))
+    )
 
 
 @protected.post("/api/datasets/{dataset_id}/activate")
@@ -167,15 +177,41 @@ def activate_dataset(dataset_id: str, request: Request) -> dict[str, Any]:
     return {"ok": True, "active_dataset": updated["selected_dataset_id"], "dataset": dataset}
 
 
-@protected.post("/api/datasets/{dataset_id}/reload-pois")
+@protected.post(
+    "/api/datasets/{dataset_id}/reload-pois",
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(auth.require_super_admin)],
+)
 def reload_dataset_pois(dataset_id: str, request: Request) -> dict[str, Any]:
     try:
-        dataset = datasets.reload(dataset_id)
-    except DatasetError as exc:
+        job, accepted = preparation_jobs.submit(dataset_id, _user_id(request))
+    except PreparationJobNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except PoiSearchError as exc:
+    except PreparationCapacityError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except PreparationJobError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    return {"ok": True, "active_dataset": _effective_dataset_id(request), "dataset": dataset}
+    return {"ok": True, "accepted": accepted, "job": job}
+
+
+@protected.get("/api/datasets/preparation-jobs/{job_id}")
+def get_preparation_job(job_id: str) -> dict[str, Any]:
+    try:
+        return preparation_jobs.get(job_id)
+    except PreparationJobNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+def _index_not_ready(dataset_id: str) -> HTTPException:
+    return HTTPException(
+        status_code=503,
+        detail={
+            "code": "poi_index_not_ready",
+            "message": "The POI index is not ready. A Super Admin must prepare this dataset.",
+            "dataset_id": dataset_id,
+            "preparation_state": preparation_jobs.state_for_dataset(dataset_id),
+        },
+    )
 
 
 @protected.get("/api/pois")
@@ -200,9 +236,10 @@ def search_pois(
     limit: int = 100,
     cursor: str | None = None,
 ) -> dict[str, Any]:
+    selected_dataset_id = _effective_dataset_id(request, dataset_id)
     try:
         return datasets.search_index.search(
-            _effective_dataset_id(request, dataset_id),
+            selected_dataset_id,
             q=q,
             landmark_type=type,
             min_priority=min_priority,
@@ -211,6 +248,8 @@ def search_pois(
             limit=limit,
             cursor=cursor,
         )
+    except PoiSearchNotReadyError as exc:
+        raise _index_not_ready(selected_dataset_id) from exc
     except PoiSearchNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except PoiSearchValidationError as exc:
@@ -222,6 +261,7 @@ def search_pois(
 @protected.post("/api/pois/query")
 def query_pois(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     """Field-specific search. Quick text is ANDed with the condition group."""
+    selected_dataset_id = _effective_dataset_id(request, payload.get("dataset_id"))
     try:
         raw_bbox = payload.get("bbox")
         if raw_bbox is None:
@@ -235,7 +275,7 @@ def query_pois(payload: dict[str, Any], request: Request) -> dict[str, Any]:
                 "bbox must be [west,south,east,north]"
             )
         return datasets.search_index.query(
-            _effective_dataset_id(request, payload.get("dataset_id")),
+            selected_dataset_id,
             q=payload.get("q"),
             mode=payload.get("mode", "and"),
             conditions=payload.get("conditions", []),
@@ -243,6 +283,8 @@ def query_pois(payload: dict[str, Any], request: Request) -> dict[str, Any]:
             limit=payload.get("limit", 100),
             cursor=payload.get("cursor"),
         )
+    except PoiSearchNotReadyError as exc:
+        raise _index_not_ready(selected_dataset_id) from exc
     except PoiSearchNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except PoiSearchValidationError as exc:
@@ -255,9 +297,10 @@ def query_pois(payload: dict[str, Any], request: Request) -> dict[str, Any]:
 def nearby_diagnostic_pois(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     """Retrieve source POIs truly within radius of route/maneuver points."""
     limits = settings.get("diagnostics", {})
+    selected_dataset_id = _effective_dataset_id(request, payload.get("dataset_id"))
     try:
         return datasets.search_index.nearby(
-            _effective_dataset_id(request, payload.get("dataset_id")),
+            selected_dataset_id,
             points=payload.get("points"),
             radius_m=payload.get("radius_m"),
             max_results=int(limits.get("max_results", 10_000)),
@@ -265,6 +308,8 @@ def nearby_diagnostic_pois(payload: dict[str, Any], request: Request) -> dict[st
             max_points=int(limits.get("max_points", 1_000)),
             max_radius_m=float(limits.get("max_radius_m", 2_000)),
         )
+    except PoiSearchNotReadyError as exc:
+        raise _index_not_ready(selected_dataset_id) from exc
     except PoiSearchNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except PoiSearchValidationError as exc:

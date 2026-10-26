@@ -6,10 +6,11 @@ import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 
 from backend.app.auth import AuthManager
 from backend.app.preferences import UserPreferenceStore
@@ -70,6 +71,31 @@ def test_development_login_rejects_non_loopback_origin() -> None:
                 "/api/auth/dev-login", headers={"Origin": "http://192.0.2.10:5173"}
             )
             assert response.status_code == 403
+
+    asyncio.run(scenario())
+
+
+def test_super_admin_dependency_rejects_ordinary_users() -> None:
+    async def scenario() -> None:
+        manager = AuthManager({
+            "auth": {
+                "mode": "development", "environment": "development",
+                "session_secret": "test-secret-that-is-long-enough-for-sessions",
+            }
+        })
+        with patch.object(
+            manager, "require_authenticated_request",
+            AsyncMock(return_value={"id": "ordinary", "role": "user"}),
+        ):
+            with pytest.raises(HTTPException) as denied:
+                await manager.require_super_admin(object())
+            assert denied.value.status_code == 403
+        with patch.object(
+            manager, "require_authenticated_request",
+            AsyncMock(return_value={"id": "admin", "role": "super_admin"}),
+        ):
+            allowed = await manager.require_super_admin(object())
+            assert allowed["id"] == "admin"
 
     asyncio.run(scenario())
 

@@ -44,6 +44,13 @@ export async function reloadDatasetPois(datasetId: string): Promise<any> {
   return body;
 }
 
+export async function getDatasetPreparationJob(jobId: string): Promise<any> {
+  const response = await apiFetch(`/api/datasets/preparation-jobs/${encodeURIComponent(jobId)}`);
+  const body = await response.json();
+  if (!response.ok) throw new Error(typeof body?.detail === 'string' ? body.detail : 'Preparation status request failed');
+  return body;
+}
+
 export async function getValhallaStatus(): Promise<any> {
   const response = await apiFetch('/api/valhalla/status');
   if (!response.ok) throw new Error(`Valhalla status request failed: ${response.status}`);

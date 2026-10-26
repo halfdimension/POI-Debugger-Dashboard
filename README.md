@@ -411,6 +411,18 @@ legacy `/api/pois` remains available for small datasets but returns HTTP 413
 above `backend.legacy_poi_feature_limit` (50,000 by default). Activation is
 metadata-only; reload prepares statistics and atomically rebuilds one index.
 
+Dataset preparation is a Super Admin maintenance operation. The reload endpoint
+returns HTTP 202 with a bounded `pending`, `running`, `completed`, or `failed`
+job record. Work runs in a separate, lower-priority Python process; the request
+process never performs the CSV scan or FTS/R-tree build. Only one preparation
+job may be active across backend workers sharing the job directory. Duplicate
+requests for the same dataset return the existing job.
+
+`GET /api/datasets/preparation-jobs/{job_id}` reports sanitized job state to an
+authenticated user. Search, structured query, and nearby-diagnostics endpoints
+never implicitly build a missing or stale index. They return HTTP 503 with
+`poi_index_not_ready` until a Super Admin preparation job publishes an index.
+
 | Parameter | Meaning |
 | --- | --- |
 | `dataset_id` | Required configured dataset ID; never a filesystem path. |
@@ -538,6 +550,12 @@ so a shared index directory is not yet a coordinated multi-worker build cache.
 SQLite FTS5 trigram and R-tree support must be present in the deployment
 Python's standard-library SQLite build; the backend test suite validates this
 requirement in the supported Linux environment.
+
+Preparation workers default to niceness 10. Optional address-space, CPU-time,
+and per-file limits can be configured with `preparation_worker_memory_bytes`,
+`preparation_worker_cpu_seconds`, and `preparation_worker_file_bytes`. These
+limits are disabled by default because safe values depend on dataset size and
+host capacity.
 
 Run the dependency-free search tests from the repository root:
 

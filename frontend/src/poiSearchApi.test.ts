@@ -51,6 +51,15 @@ describe('POI search client', () => {
     vi.unstubAllGlobals();
   });
 
+  it('reports a structured index preparation message', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false, status: 503,
+      json: async () => ({ detail: { code: 'poi_index_not_ready', message: 'A Super Admin must prepare this dataset.' } }),
+    }));
+    await expect(searchPois({ datasetId: 'demo' })).rejects.toThrow('A Super Admin must prepare this dataset.');
+    vi.unstubAllGlobals();
+  });
+
   it('serializes structured fields, numeric ranges, mode, scope bounds and cursor', () => {
     expect(buildPoiQueryBody({
       datasetId: 'weekly', q: 'Delhi', mode: 'or', bbox: [76, 27, 78, 29], limit: 50, cursor: 'next',

@@ -85,14 +85,21 @@ export function buildPoiSearchUrl(params: PoiSearchParams): string {
   return `/api/pois/search?${query.toString()}`;
 }
 
+function responseDetail(body: unknown, fallback: string): string {
+  const detail = (body as { detail?: unknown } | null)?.detail;
+  if (typeof detail === 'string') return detail;
+  if (detail && typeof detail === 'object' && typeof (detail as { message?: unknown }).message === 'string') {
+    return (detail as { message: string }).message;
+  }
+  return fallback;
+}
+
 export async function searchPois(params: PoiSearchParams, signal?: AbortSignal): Promise<PoiSearchResponse> {
   const response = await apiFetch(buildPoiSearchUrl(params), { signal });
   let body: unknown;
   try { body = await response.json(); } catch { body = null; }
   if (!response.ok) {
-    const detail = typeof (body as { detail?: unknown } | null)?.detail === 'string'
-      ? (body as { detail: string }).detail
-      : `POI search request failed: ${response.status}`;
+    const detail = responseDetail(body, `POI search request failed: ${response.status}`);
     throw new PoiSearchRequestError(detail, response.status);
   }
   return body as PoiSearchResponse;
@@ -126,9 +133,7 @@ export async function queryPois(params: PoiQueryParams, signal?: AbortSignal): P
   let body: unknown;
   try { body = await response.json(); } catch { body = null; }
   if (!response.ok) {
-    const detail = typeof (body as { detail?: unknown } | null)?.detail === 'string'
-      ? (body as { detail: string }).detail
-      : `POI query request failed: ${response.status}`;
+    const detail = responseDetail(body, `POI query request failed: ${response.status}`);
     throw new PoiSearchRequestError(detail, response.status);
   }
   return body as PoiSearchResponse;
@@ -149,9 +154,7 @@ export async function fetchDiagnosticPois(
   let body: unknown;
   try { body = await response.json(); } catch { body = null; }
   if (!response.ok) {
-    const detail = typeof (body as { detail?: unknown } | null)?.detail === 'string'
-      ? (body as { detail: string }).detail
-      : `Diagnostic POI request failed: ${response.status}`;
+    const detail = responseDetail(body, `Diagnostic POI request failed: ${response.status}`);
     throw new PoiSearchRequestError(detail, response.status);
   }
   return body as DiagnosticPoiResponse;

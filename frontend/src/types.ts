@@ -36,6 +36,7 @@ export interface DatasetSummary {
   stats?: DatasetStats | null;
   error?: string | null;
   preparation_state?: 'pending' | 'preparing' | 'ready' | 'error';
+  index_state?: 'ready' | 'not_ready';
 }
 
 export interface DatasetRegistryResponse {

@@ -2161,7 +2161,9 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
       id: String(feature.id ?? ''),
       source_record_count: Number(properties.source_record_count),
       coordinates: feature.geometry.coordinates.slice() as [number, number],
-      coordinate_kind: 'represented_bounds_center',
+      coordinate_kind: properties.coordinate_kind === 'density_weighted_centroid'
+        ? 'density_weighted_centroid'
+        : 'represented_bounds_center',
       bounds,
       aggregation_level: Number(properties.aggregation_level),
       cluster_ref: clusterRef,

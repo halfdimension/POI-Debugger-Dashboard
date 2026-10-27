@@ -4,6 +4,7 @@ import type { LngLat } from '../../types';
 import {
   expandServerAggregate,
   INDIVIDUAL_POI_LAYER_ID,
+  POI_AGGREGATE_SOURCE_ID,
   POI_CLUSTER_LAYER_ID,
 } from './poiMap';
 
@@ -45,6 +46,7 @@ export function bindDashboardMapEvents(
     layerId: string;
     handler: DashboardLayerEventHandler;
   }> = [];
+  let hoveredAggregateId: string | number | null = null;
 
   const bind = (
     type: DashboardLayerEventType,
@@ -154,11 +156,22 @@ export function bindDashboardMapEvents(
   bind('click', 'maneuver-points', selectManeuver);
 
   for (const layerId of INTERACTIVE_LAYER_IDS) {
-    bind('mouseenter', layerId, () => {
+    bind('mouseenter', layerId, (event) => {
       map.getCanvas().style.cursor = 'pointer';
+      if (layerId !== POI_CLUSTER_LAYER_ID) return;
+      const id = event.features?.[0]?.id;
+      if (id === undefined) return;
+      if (hoveredAggregateId !== null && hoveredAggregateId !== id) {
+        map.setFeatureState({ source: POI_AGGREGATE_SOURCE_ID, id: hoveredAggregateId }, { hover: false });
+      }
+      hoveredAggregateId = id;
+      map.setFeatureState({ source: POI_AGGREGATE_SOURCE_ID, id }, { hover: true });
     });
     bind('mouseleave', layerId, () => {
       map.getCanvas().style.cursor = '';
+      if (layerId !== POI_CLUSTER_LAYER_ID || hoveredAggregateId === null) return;
+      map.setFeatureState({ source: POI_AGGREGATE_SOURCE_ID, id: hoveredAggregateId }, { hover: false });
+      hoveredAggregateId = null;
     });
   }
 
@@ -167,6 +180,10 @@ export function bindDashboardMapEvents(
     disposed = true;
     for (const timer of pendingTimers) clearTimeout(timer);
     pendingTimers.clear();
+    if (hoveredAggregateId !== null && map.getSource(POI_AGGREGATE_SOURCE_ID)) {
+      map.setFeatureState({ source: POI_AGGREGATE_SOURCE_ID, id: hoveredAggregateId }, { hover: false });
+      hoveredAggregateId = null;
+    }
     for (const { type, layerId, handler } of listeners) {
       map.off(type, layerId, handler);
     }

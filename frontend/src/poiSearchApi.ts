@@ -60,7 +60,7 @@ export interface ViewportAggregate {
   id: string;
   source_record_count: number;
   coordinates: [number, number];
-  coordinate_kind: 'represented_bounds_center';
+  coordinate_kind: 'density_weighted_centroid' | 'represented_bounds_center';
   bounds: PoiBounds;
   aggregation_level: number;
   cluster_ref: string;

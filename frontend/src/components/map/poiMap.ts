@@ -22,6 +22,7 @@ export function aggregateFeature(aggregate: ViewportAggregate, context: Pick<Poi
       dataset_id: context.dataset_id,
       generation: context.generation,
       aggregation_level: aggregate.aggregation_level,
+      coordinate_kind: aggregate.coordinate_kind,
       bounds: JSON.stringify(aggregate.bounds),
     },
   };

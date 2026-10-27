@@ -63,11 +63,26 @@ export function registerDashboardMapLayers(
     type: 'circle',
     source: POI_AGGREGATE_SOURCE_ID,
     paint: {
-      'circle-radius': ['step', ['get', 'source_record_count'], 15, 25, 18, 100, 22, 250, 26],
-      'circle-color': ['step', ['get', 'source_record_count'], '#6d5bd0', 100, '#5746b8', 250, '#43338f'],
-      'circle-stroke-width': 2,
-      'circle-stroke-color': 'rgba(255,255,255,.9)',
-      'circle-opacity': 0.94,
+      'circle-radius': [
+        'interpolate', ['linear'], ['ln', ['max', 1, ['get', 'source_record_count']]],
+        0, 12,
+        2.302585, 14,
+        4.60517, 17,
+        6.907755, 21,
+        9.21034, 25,
+        11.512925, 29,
+        13.815511, 32,
+      ],
+      'circle-color': [
+        'interpolate', ['linear'], ['ln', ['max', 1, ['get', 'source_record_count']]],
+        0, '#8b7ee8',
+        4.60517, '#6d5bd0',
+        9.21034, '#4f3ca7',
+        13.815511, '#352473',
+      ],
+      'circle-stroke-width': ['case', ['boolean', ['feature-state', 'hover'], false], 3, 1.5],
+      'circle-stroke-color': ['case', ['boolean', ['feature-state', 'hover'], false], '#ffffff', 'rgba(255,255,255,.82)'],
+      'circle-opacity': 0.88,
     },
   });
   map.addLayer({
@@ -75,16 +90,24 @@ export function registerDashboardMapLayers(
     type: 'symbol',
     source: POI_AGGREGATE_SOURCE_ID,
     layout: {
-      'text-field': ['number-format', ['get', 'source_record_count'], {}],
-      'text-size': 11,
+      'text-field': [
+        'case',
+        ['>=', ['get', 'source_record_count'], 1000000],
+        ['concat', ['number-format', ['/', ['get', 'source_record_count'], 1000000], { 'max-fraction-digits': 1 }], 'm'],
+        ['>=', ['get', 'source_record_count'], 1000],
+        ['concat', ['number-format', ['/', ['get', 'source_record_count'], 1000], { 'max-fraction-digits': 1 }], 'k'],
+        ['number-format', ['get', 'source_record_count'], { 'max-fraction-digits': 0 }],
+      ],
+      'text-size': ['interpolate', ['linear'], ['ln', ['max', 1, ['get', 'source_record_count']]], 0, 10, 9.21034, 11.5, 13.815511, 12],
       'text-font': ['Noto Sans Regular'],
-      'text-allow-overlap': true,
-      'text-ignore-placement': true,
+      'text-allow-overlap': false,
+      'text-ignore-placement': false,
+      'text-padding': 3,
     },
     paint: {
       'text-color': '#ffffff',
-      'text-halo-color': 'rgba(31,23,76,.35)',
-      'text-halo-width': 1,
+      'text-halo-color': 'rgba(31,23,76,.55)',
+      'text-halo-width': 1.25,
     },
   });
   map.addSource(EXPLORER_POI_SOURCE_ID, authoritativePoiSource(initialPois));

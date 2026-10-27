@@ -24,7 +24,7 @@ SEARCH_FIELDS = (
 FALSE_VISIBLE_VALUES = {"0", "false", "no", "n"}
 LAT_CANDIDATES = ("lat", "latitude", "y")
 LON_CANDIDATES = ("lon", "lng", "longitude", "x")
-SCHEMA_VERSION = "6"
+SCHEMA_VERSION = "7"
 DEFAULT_LIMIT = 100
 MAX_LIMIT = 500
 BROAD_QUERY_THRESHOLD = 1_000
@@ -42,11 +42,16 @@ VIEWPORT_MAX_FEATURES = 1_000
 VIEWPORT_MAX_ZOOM = 22.0
 VIEWPORT_INDIVIDUAL_MIN_ZOOM = 15.0
 VIEWPORT_MAX_PAYLOAD_BYTES = 2 * 1024 * 1024
-VIEWPORT_AGGREGATION_LEVEL_OFFSET = 3
+# A Web Mercator level four steps above the map zoom is approximately a
+# 32-pixel square. This retains useful local structure while leaving enough
+# room for restrained aggregate symbols; the response budget can still
+# coarsen the level for unusually dispersed datasets.
+VIEWPORT_AGGREGATION_LEVEL_OFFSET = 4
 SPATIAL_MAX_LEVEL = 16
 CLUSTER_MEMBER_DEFAULT_LIMIT = 100
 CLUSTER_MEMBER_MAX_LIMIT = 500
-SPATIAL_STRATEGY = "equirectangular_grid_v1"
+SPATIAL_STRATEGY = "web_mercator_grid_centroid_v2"
+WEB_MERCATOR_MAX_LAT = 85.0511287798066
 
 STRUCTURED_OPERATORS = {
     "name": {"contains", "eq"},
@@ -98,9 +103,13 @@ def _spatial_cell_index(value: float, *, minimum: float, span: float, level: int
 
 
 def _spatial_cell(lon: float, lat: float, level: int) -> tuple[int, int]:
+    clamped_lat = min(WEB_MERCATOR_MAX_LAT, max(-WEB_MERCATOR_MAX_LAT, lat))
+    mercator_y = 0.5 + math.asinh(math.tan(math.radians(clamped_lat))) / (
+        2 * math.pi
+    )
     return (
         _spatial_cell_index(lon, minimum=-180.0, span=360.0, level=level),
-        _spatial_cell_index(lat, minimum=-90.0, span=180.0, level=level),
+        min((1 << level) - 1, max(0, math.floor(mercator_y * (1 << level)))),
     )
 
 
@@ -109,10 +118,16 @@ def _spatial_cell_bounds(
 ) -> tuple[float, float, float, float]:
     cell_count = 1 << level
     width = 360.0 / cell_count
-    height = 180.0 / cell_count
     west = -180.0 + cell_x * width
-    south = -90.0 + cell_y * height
-    return west, south, west + width, south + height
+    south_fraction = cell_y / cell_count
+    north_fraction = (cell_y + 1) / cell_count
+
+    def latitude(fraction: float) -> float:
+        return math.degrees(math.atan(math.sinh(2 * math.pi * (fraction - 0.5))))
+
+    south = -90.0 if cell_y == 0 else latitude(south_fraction)
+    north = 90.0 if cell_y == cell_count - 1 else latitude(north_fraction)
+    return west, south, west + width, north
 
 
 def _haversine_meters(
@@ -414,6 +429,10 @@ class PoiSearchIndex:
             uri = path.resolve().as_uri() + "?mode=ro"
             with closing(sqlite3.connect(uri, uri=True)) as connection:
                 values = dict(connection.execute("SELECT key, value FROM metadata"))
+                spatial_cell_columns = {
+                    str(row[1])
+                    for row in connection.execute("PRAGMA table_info(spatial_cells)")
+                }
                 required_objects = {
                     str(row[0])
                     for row in connection.execute(
@@ -430,6 +449,8 @@ class PoiSearchIndex:
                 and bool(values.get("generation"))
                 and values.get("spatial_strategy") == SPATIAL_STRATEGY
                 and values.get("spatial_max_level") == str(SPATIAL_MAX_LEVEL)
+                and {"level", "cell_x", "cell_y", "poi_count", "lon_sum", "lat_sum"}
+                <= spatial_cell_columns
                 and required_objects
                 == {
                     "pois",
@@ -492,6 +513,8 @@ class PoiSearchIndex:
                         cell_x INTEGER NOT NULL,
                         cell_y INTEGER NOT NULL,
                         poi_count INTEGER NOT NULL,
+                        lon_sum REAL NOT NULL,
+                        lat_sum REAL NOT NULL,
                         PRIMARY KEY (level, cell_x, cell_y)
                     ) WITHOUT ROWID;
                     """
@@ -569,15 +592,15 @@ class PoiSearchIndex:
                     """
                 )
                 connection.execute(
-                    "INSERT INTO spatial_cells(level, cell_x, cell_y, poi_count) "
-                    "SELECT ?, spatial_x, spatial_y, COUNT(*) FROM pois "
+                    "INSERT INTO spatial_cells(level, cell_x, cell_y, poi_count, lon_sum, lat_sum) "
+                    "SELECT ?, spatial_x, spatial_y, COUNT(*), SUM(lon), SUM(lat) FROM pois "
                     "GROUP BY spatial_x, spatial_y",
                     (SPATIAL_MAX_LEVEL,),
                 )
                 for level in range(SPATIAL_MAX_LEVEL - 1, -1, -1):
                     connection.execute(
-                        "INSERT INTO spatial_cells(level, cell_x, cell_y, poi_count) "
-                        "SELECT ?, cell_x / 2, cell_y / 2, SUM(poi_count) "
+                        "INSERT INTO spatial_cells(level, cell_x, cell_y, poi_count, lon_sum, lat_sum) "
+                        "SELECT ?, cell_x / 2, cell_y / 2, SUM(poi_count), SUM(lon_sum), SUM(lat_sum) "
                         "FROM spatial_cells WHERE level = ? "
                         "GROUP BY cell_x / 2, cell_y / 2",
                         (level, level + 1),
@@ -755,14 +778,14 @@ class PoiSearchIndex:
             index_hint = " INDEXED BY spatial_cells_yx"
             order_by = "cell_y ASC, cell_x ASC"
         return connection.execute(
-            f"SELECT cell_x, cell_y, poi_count FROM spatial_cells{index_hint} "
+            f"SELECT cell_x, cell_y, poi_count, lon_sum, lat_sum FROM spatial_cells{index_hint} "
             "WHERE level = ? AND cell_x BETWEEN ? AND ? "
             "AND cell_y BETWEEN ? AND ? "
             f"ORDER BY {order_by} LIMIT ?",
             (level, min_x, max_x, min_y, max_y, limit),
         ).fetchall()
 
-    def _partial_cell_count(
+    def _partial_cell_statistics(
         self,
         connection: sqlite3.Connection,
         *,
@@ -770,14 +793,15 @@ class PoiSearchIndex:
         cell_x: int,
         cell_y: int,
         bounds: tuple[float, float, float, float],
-    ) -> int:
+    ) -> tuple[int, float, float]:
         scale = 1 << (SPATIAL_MAX_LEVEL - level)
         min_spatial_x = cell_x * scale
         max_spatial_x = (cell_x + 1) * scale - 1
         min_spatial_y = cell_y * scale
         max_spatial_y = (cell_y + 1) * scale - 1
         row = connection.execute(
-            "SELECT COUNT(*) FROM poi_geo g JOIN pois p ON p.id = g.id "
+            "SELECT COUNT(*), COALESCE(SUM(p.lon), 0), COALESCE(SUM(p.lat), 0) "
+            "FROM poi_geo g JOIN pois p ON p.id = g.id "
             f"WHERE {self._viewport_bbox_sql()} "
             "AND p.spatial_x BETWEEN ? AND ? "
             "AND p.spatial_y BETWEEN ? AND ?",
@@ -789,7 +813,7 @@ class PoiSearchIndex:
                 max_spatial_y,
             ),
         ).fetchone()
-        return int(row[0])
+        return int(row[0]), float(row[1]), float(row[2])
 
     def _cluster_reference(
         self,
@@ -862,17 +886,18 @@ class PoiSearchIndex:
                     and cell_bounds[2] <= east
                     and cell_bounds[3] <= north
                 )
-                count = (
-                    int(row["poi_count"])
-                    if fully_contained
-                    else self._partial_cell_count(
+                if fully_contained:
+                    count = int(row["poi_count"])
+                    lon_sum = float(row["lon_sum"])
+                    lat_sum = float(row["lat_sum"])
+                else:
+                    count, lon_sum, lat_sum = self._partial_cell_statistics(
                         connection,
                         level=level,
                         cell_x=cell_x,
                         cell_y=cell_y,
                         bounds=represented_bounds,
                     )
-                )
                 if count == 0:
                     continue
                 identifier, reference = self._cluster_reference(
@@ -888,10 +913,10 @@ class PoiSearchIndex:
                         "id": identifier,
                         "source_record_count": count,
                         "coordinates": [
-                            (represented_bounds[0] + represented_bounds[2]) / 2,
-                            (represented_bounds[1] + represented_bounds[3]) / 2,
+                            lon_sum / count,
+                            lat_sum / count,
                         ],
-                        "coordinate_kind": "represented_bounds_center",
+                        "coordinate_kind": "density_weighted_centroid",
                         "bounds": list(represented_bounds),
                         "aggregation_level": level,
                         "cluster_ref": reference,

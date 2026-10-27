@@ -62,26 +62,30 @@ export function registerDashboardMapLayers(
   { initialPois, initialPoiAggregates = EMPTY_FEATURE_COLLECTION, initialPoiDensity = EMPTY_FEATURE_COLLECTION }: DashboardMapLayerOptions,
 ): void {
   map.addSource(POI_DENSITY_SOURCE_ID, authoritativePoiSource(initialPoiDensity));
-  map.addLayer({
-    id: POI_DENSITY_LAYER_ID,
-    type: 'heatmap',
-    source: POI_DENSITY_SOURCE_ID,
-    maxzoom: 20,
-    paint: {
-      'heatmap-weight': ['interpolate', ['linear'], ['get', 'normalized_render_weight'], 0, 0, 1, 1],
-      'heatmap-intensity': ['interpolate', ['linear'], ['zoom'], 0, 0.55, 10, 0.8, 17, 1.05],
-      'heatmap-radius': ['interpolate', ['linear'], ['zoom'], 0, 12, 8, 20, 15, 28, 20, 34],
-      'heatmap-opacity': ['interpolate', ['linear'], ['zoom'], 0, 0.58, 15, 0.68, 20, 0.42],
-      'heatmap-color': [
-        'interpolate', ['linear'], ['heatmap-density'],
-        0, 'rgba(79,70,229,0)',
-        0.18, 'rgba(96,165,250,0.28)',
-        0.42, 'rgba(99,102,241,0.48)',
-        0.7, 'rgba(109,40,217,0.68)',
-        1, 'rgba(236,72,153,0.82)',
-      ],
+  const firstBasemapLabel = map.getStyle().layers?.find((layer) => layer.type === 'symbol')?.id;
+  map.addLayer(
+    {
+      id: POI_DENSITY_LAYER_ID,
+      type: 'heatmap',
+      source: POI_DENSITY_SOURCE_ID,
+      maxzoom: 20,
+      paint: {
+        'heatmap-weight': ['interpolate', ['linear'], ['get', 'normalized_render_weight'], 0, 0, 1, 1],
+        'heatmap-intensity': ['interpolate', ['linear'], ['zoom'], 0, 0.55, 10, 0.8, 17, 1.05],
+        'heatmap-radius': ['interpolate', ['linear'], ['zoom'], 0, 12, 8, 20, 15, 28, 20, 34],
+        'heatmap-opacity': ['interpolate', ['linear'], ['zoom'], 0, 0.58, 15, 0.68, 20, 0.42],
+        'heatmap-color': [
+          'interpolate', ['linear'], ['heatmap-density'],
+          0, 'rgba(79,70,229,0)',
+          0.18, 'rgba(96,165,250,0.28)',
+          0.42, 'rgba(99,102,241,0.48)',
+          0.7, 'rgba(109,40,217,0.68)',
+          1, 'rgba(236,72,153,0.82)',
+        ],
+      },
     },
-  });
+    firstBasemapLabel,
+  );
   // OSRM goes underneath as a thick red line. Valhalla is registered next so
   // overlapping routes retain the existing red casing around the blue line.
   map.addSource('osrm-route', { type: 'geojson', data: EMPTY_FEATURE_COLLECTION });

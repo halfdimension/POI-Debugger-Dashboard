@@ -19,7 +19,7 @@ import { SelectedPoiDetails } from './components/inspection/SelectedPoiDetails';
 import { ClusterMemberDetails } from './components/inspection/ClusterMemberDetails';
 import { MapContextMenu, type MapContextMenuLocation } from './components/map/MapContextMenu';
 import { bindDashboardMapEvents } from './components/map/dashboardMapEvents';
-import { registerDashboardMapLayers, syncPoiLayerVisibility } from './components/map/dashboardMapLayers';
+import { POI_DENSITY_LAYER_ID, registerDashboardMapLayers, syncPoiLayerVisibility } from './components/map/dashboardMapLayers';
 import {
   createDashboardMapSourceManager,
   type DashboardGeoJsonSourceId,
@@ -443,7 +443,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
             visibility: basemapRef.current === 'mapmyindia' ? 'visible' : 'none',
           },
         },
-        'osrm-route',
+        map.getLayer(POI_DENSITY_LAYER_ID) ? POI_DENSITY_LAYER_ID : 'osrm-route',
       );
     } catch (error) {
       console.error('MapmyIndia basemap failed:', error);
@@ -1491,7 +1491,9 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
     syncGeoJsonSource('poi-density', poiDensity);
   }, [filteredPois, poiAggregates, poiDensity, config]);
 
-  const renderedPoiVisualization: PoiRenderedVisualization = activePoiVisualization === 'points' &&
+  // The selected/requested mode remains Points, while an authoritative dense
+  // response can make Clusters the effective rendering mode for this viewport.
+  const effectivePoiVisualization: PoiRenderedVisualization = activePoiVisualization === 'points' &&
       viewportResponse?.mode === 'aggregated' && viewportResponse.meta.requested_representation === 'points'
     ? 'clusters'
     : activePoiVisualization;
@@ -1500,15 +1502,13 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
     const map = mapRef.current;
     if (!map) return;
     const syncVisibility = () => {
-      if (map.isStyleLoaded()) {
-        syncPoiLayerVisibility(map, showPois, renderedPoiVisualization, showCandidateMap);
-      }
+      syncPoiLayerVisibility(map, showPois, effectivePoiVisualization, showCandidateMap);
     };
     syncVisibility();
     map.on('style.load', syncVisibility);
     if (!showPois) closeActivePoiPopup();
     return () => { map.off('style.load', syncVisibility); };
-  }, [showPois, renderedPoiVisualization, showCandidateMap, config, workspaceView]);
+  }, [showPois, effectivePoiVisualization, showCandidateMap, config, workspaceView]);
 
   useEffect(() => {
     if (!selectedAggregate) return;
@@ -2317,7 +2317,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
         : viewportResponse
           ? activePoiVisualization === 'points' && viewportResponse.mode === 'aggregated' && viewportResponse.meta.requested_representation === 'points'
             ? `${viewportResponse.total_matching_pois.toLocaleString()} POIs represented · authoritative cluster fallback (zoom closer for complete points)`
-            : `${viewportPoiLabel(viewportResponse)} · ${poiVisualizationLabel(renderedPoiVisualization)}`
+            : `${viewportPoiLabel(viewportResponse)} · ${poiVisualizationLabel(effectivePoiVisualization)}`
           : `No ${poiVisualizationLabel(activePoiVisualization).toLowerCase()} data loaded`;
 
   if (!config) {
@@ -2408,7 +2408,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
           />
 
           <CompactPoiExplorer
-            viewportSummary={poiVisualizationMode === 'auto' && showPois ? `Auto · ${poiVisualizationLabel(renderedPoiVisualization)}` : showPois ? poiVisualizationLabel(renderedPoiVisualization) : 'POIs off'}
+            viewportSummary={poiVisualizationMode === 'auto' && showPois ? `Auto · ${poiVisualizationLabel(effectivePoiVisualization)}` : showPois ? poiVisualizationLabel(effectivePoiVisualization) : 'POIs off'}
             searchResults={searchResults}
             availablePoiTypes={availablePoiTypes}
             poiSearch={poiSearch}
@@ -2416,7 +2416,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
             showPois={showPois}
             visualizationMode={poiVisualizationMode}
             visualizationStatus={poiVisualizationStatus}
-            densityLegend={renderedPoiVisualization === 'density'}
+            densityLegend={effectivePoiVisualization === 'density'}
             searchLoading={searchState.loading}
             searchLoadingMore={searchState.loadingMore}
             searchError={searchState.error}

@@ -2,6 +2,8 @@ import type { Feature, FeatureCollection, Point } from 'geojson';
 import { apiFetch } from './auth';
 
 export type PoiBounds = [west: number, south: number, east: number, north: number];
+export type PoiVisualizationMode = 'auto' | 'density' | 'clusters' | 'points';
+export type PoiRenderedVisualization = Exclude<PoiVisualizationMode, 'auto'>;
 
 export interface PoiSearchParams {
   datasetId: string;
@@ -86,6 +88,8 @@ export interface ViewportResponseMeta {
   server_max_features: number;
   max_payload_bytes: number;
   serialized_bytes: number;
+  requested_representation?: 'auto' | 'clusters' | 'points';
+  fallback_reason?: 'viewport_too_dense_for_complete_points' | null;
 }
 
 export interface PoiViewportResponse {
@@ -126,6 +130,46 @@ export interface PoiViewportParams {
   bbox: PoiBounds;
   zoom: number;
   maxFeatures?: number;
+  representation?: 'auto' | 'clusters' | 'points';
+}
+
+export interface DensitySample {
+  id: string;
+  coordinates: [number, number];
+  source_record_count: number;
+  render_weight: number;
+  bounds: PoiBounds;
+  aggregation_level: number;
+}
+
+export interface PoiDensityResponse {
+  dataset_id: string;
+  generation: string;
+  bbox: PoiBounds;
+  zoom: number;
+  complete: boolean;
+  total_matching_pois: number;
+  samples: DensitySample[];
+  meta: {
+    spatial_strategy: string;
+    requested_aggregation_level: number;
+    aggregation_level: number;
+    adaptive_coarsening: boolean;
+    sample_count: number;
+    represented_poi_count: number;
+    max_samples: number;
+    server_max_samples: number;
+    max_render_weight: number;
+    max_payload_bytes: number;
+    serialized_bytes: number;
+  };
+}
+
+export interface PoiDensityParams {
+  datasetId: string;
+  bbox: PoiBounds;
+  zoom: number;
+  maxSamples?: number;
 }
 
 export interface ClusterMemberParams {
@@ -212,6 +256,15 @@ function parseViewportResponse(value: unknown): PoiViewportResponse {
   return value as unknown as PoiViewportResponse;
 }
 
+function parseDensityResponse(value: unknown): PoiDensityResponse {
+  if (!isRecord(value) || typeof value.dataset_id !== 'string' || typeof value.generation !== 'string' ||
+      typeof value.complete !== 'boolean' || typeof value.total_matching_pois !== 'number' ||
+      !Array.isArray(value.bbox) || !Array.isArray(value.samples) || !isRecord(value.meta)) {
+    throw new PoiSearchRequestError('The POI density service returned an invalid response.', 503);
+  }
+  return value as unknown as PoiDensityResponse;
+}
+
 function parseClusterMemberResponse(value: unknown): ClusterMemberResponse {
   if (!isRecord(value) || typeof value.dataset_id !== 'string' || typeof value.generation !== 'string' ||
       typeof value.cluster_ref !== 'string' || typeof value.total_matching_pois !== 'number' ||
@@ -236,7 +289,25 @@ export function buildPoiViewportUrl(params: PoiViewportParams): string {
     zoom: String(params.zoom),
   });
   if (params.maxFeatures !== undefined) query.set('max_features', String(params.maxFeatures));
+  if (params.representation) query.set('representation', params.representation);
   return `/api/pois/viewport?${query.toString()}`;
+}
+
+export function buildPoiDensityUrl(params: PoiDensityParams): string {
+  if (!params.datasetId.trim()) throw new Error('dataset_id is required');
+  if (!Number.isFinite(params.zoom)) throw new Error('zoom must be finite');
+  const query = new URLSearchParams({
+    dataset_id: params.datasetId,
+    bbox: serializePoiBounds(params.bbox),
+    zoom: String(params.zoom),
+  });
+  if (params.maxSamples !== undefined) query.set('max_samples', String(params.maxSamples));
+  return `/api/pois/viewport/density?${query.toString()}`;
+}
+
+export async function fetchPoiDensity(params: PoiDensityParams, signal?: AbortSignal): Promise<PoiDensityResponse> {
+  const response = await apiFetch(buildPoiDensityUrl(params), { signal });
+  return parseDensityResponse(await jsonResponse(response, `POI density request failed: ${response.status}`));
 }
 
 export async function fetchPoiViewport(params: PoiViewportParams, signal?: AbortSignal): Promise<PoiViewportResponse> {

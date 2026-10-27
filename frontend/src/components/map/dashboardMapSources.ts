@@ -4,6 +4,7 @@ import type maplibregl from 'maplibre-gl';
 export const DASHBOARD_GEOJSON_SOURCE_IDS = [
   'route',
   'osrm-route',
+  'poi-density',
   'poi-aggregates',
   'pois',
   'selected-poi',
@@ -22,6 +23,7 @@ export type DashboardGeoJsonSourceId = typeof DASHBOARD_GEOJSON_SOURCE_IDS[numbe
 export interface DashboardMapSourceManager {
   update(sourceId: DashboardGeoJsonSourceId, data: FeatureCollection): void;
   flush(): void;
+  replay(): void;
   dispose(): void;
 }
 
@@ -29,6 +31,7 @@ export function createDashboardMapSourceManager(
   map: maplibregl.Map,
 ): DashboardMapSourceManager {
   const pending = new Map<DashboardGeoJsonSourceId, FeatureCollection>();
+  const latest = new Map<DashboardGeoJsonSourceId, FeatureCollection>();
   let disposed = false;
   let listeningForIdle = false;
 
@@ -61,16 +64,24 @@ export function createDashboardMapSourceManager(
   return {
     update(sourceId, data) {
       if (disposed) return;
+      latest.set(sourceId, data);
       pending.set(sourceId, data);
       flush();
       ensureListening();
     },
     flush,
+    replay() {
+      if (disposed) return;
+      for (const [sourceId, data] of latest) pending.set(sourceId, data);
+      flush();
+      ensureListening();
+    },
     dispose() {
       if (disposed) return;
       disposed = true;
       stopListening();
       pending.clear();
+      latest.clear();
     },
   };
 }

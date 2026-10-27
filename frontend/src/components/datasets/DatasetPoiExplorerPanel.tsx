@@ -1,6 +1,7 @@
 import { propText } from '../../poi';
 import type { DatasetRegistryResponse, DatasetSummary, DebuggerConfig } from '../../types';
 import { AdvancedPoiFilters, type AdvancedPoiFiltersProps } from './PoiExplorer';
+import type { PoiVisualizationMode } from '../../poiSearchApi';
 
 export interface DatasetPoiExplorerPanelProps {
   activeDataset: DatasetSummary | null;
@@ -16,6 +17,7 @@ export interface DatasetPoiExplorerPanelProps {
   poiSearch: string;
   advancedFilters: AdvancedPoiFiltersProps;
   showPois: boolean;
+  visualizationMode: PoiVisualizationMode;
   searchLoading: boolean;
   searchLoadingMore: boolean;
   searchError: string;
@@ -24,6 +26,7 @@ export interface DatasetPoiExplorerPanelProps {
   onReloadDataset: () => void;
   onSearchChange: (value: string) => void;
   onShowPoisChange: (value: boolean) => void;
+  onVisualizationModeChange: (value: PoiVisualizationMode) => void;
   onResetFilters: () => void;
   onFocusPoi: (feature: GeoJSON.Feature<GeoJSON.Point>) => void;
   onLoadMore: () => void;
@@ -39,11 +42,11 @@ function basename(path?: string): string {
 export function DatasetPoiExplorerPanel({
   activeDataset, datasetRegistry, datasetBusy, datasetMessage, canPrepareDataset, config,
   filteredPoiFeatures, searchResults, availablePoiTypes, fullTypeStats,
-  poiSearch, advancedFilters, showPois,
+  poiSearch, advancedFilters, showPois, visualizationMode,
   searchLoading, searchLoadingMore, searchError, searchHasMore,
   onChangeDataset: changeDataset, onReloadDataset: reloadActiveDataset,
   onSearchChange: setPoiSearch,
-  onShowPoisChange: setShowPois, onResetFilters: resetPoiFilters,
+  onShowPoisChange: setShowPois, onVisualizationModeChange: setVisualizationMode, onResetFilters: resetPoiFilters,
   onFocusPoi: focusPoiFeature,
   onLoadMore, onRetrySearch,
 }: DatasetPoiExplorerPanelProps) {
@@ -104,8 +107,13 @@ export function DatasetPoiExplorerPanel({
   
         <AdvancedPoiFilters {...advancedFilters} availablePoiTypes={availablePoiTypes} />
   
-        <div className="poi-checkboxes">
-          <label><input type="checkbox" checked={showPois} onChange={(event) => setShowPois(event.target.checked)} /> Show POIs on map</label>
+        <div className="poi-visualization-controls">
+          <button type="button" className={`poi-master-toggle ${showPois ? 'is-on' : 'is-off'}`} aria-pressed={showPois} onClick={() => setShowPois(!showPois)}>
+            <span>POIs on map</span><strong>{showPois ? 'ON' : 'OFF'}</strong>
+          </button>
+          {showPois && <div className="poi-mode-selector" role="group" aria-label="POI visualization mode">
+            {(['auto', 'density', 'clusters', 'points'] as PoiVisualizationMode[]).map((mode) => <button type="button" key={mode} className={visualizationMode === mode ? 'is-active' : ''} aria-pressed={visualizationMode === mode} onClick={() => setVisualizationMode(mode)}>{mode[0].toUpperCase() + mode.slice(1)}</button>)}
+          </div>}
         </div>
   
         <div className="poi-filter-summary">

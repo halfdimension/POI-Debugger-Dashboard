@@ -16,6 +16,7 @@ from .admin import admin_router
 from .datasets import DatasetError, DatasetManager, DatasetTooLargeError
 from .poi_search import (
     CLUSTER_MEMBER_DEFAULT_LIMIT,
+    DENSITY_DEFAULT_MAX_SAMPLES,
     PoiSearchError,
     PoiSearchNotFoundError,
     PoiSearchNotReadyError,
@@ -269,6 +270,7 @@ def viewport_pois(
     bbox: str | None = None,
     zoom: float | None = None,
     max_features: int = VIEWPORT_DEFAULT_MAX_FEATURES,
+    representation: str = "auto",
 ) -> dict[str, Any]:
     """Return exact, bounded map coverage; this is not a ranked search API."""
     if not isinstance(dataset_id, str) or not dataset_id.strip():
@@ -282,6 +284,7 @@ def viewport_pois(
             bbox=parse_bbox(bbox),
             zoom=zoom,
             max_features=max_features,
+            representation=representation,
         )
     except PoiSearchNotReadyError as exc:
         raise _index_not_ready(selected_dataset_id) from exc
@@ -292,6 +295,38 @@ def viewport_pois(
             status_code=413,
             detail={"code": "poi_payload_too_large", "message": str(exc)},
         ) from exc
+    except PoiSearchValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except PoiSearchError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@protected.get("/api/pois/viewport/density")
+def viewport_poi_density(
+    request: Request,
+    dataset_id: str | None = None,
+    bbox: str | None = None,
+    zoom: float | None = None,
+    max_samples: int = DENSITY_DEFAULT_MAX_SAMPLES,
+) -> dict[str, Any]:
+    if not isinstance(dataset_id, str) or not dataset_id.strip():
+        raise HTTPException(status_code=400, detail="dataset_id is required")
+    if zoom is None:
+        raise HTTPException(status_code=400, detail="zoom is required")
+    selected_dataset_id = _effective_dataset_id(request, dataset_id)
+    try:
+        return datasets.search_index.viewport_density(
+            selected_dataset_id,
+            bbox=parse_bbox(bbox),
+            zoom=zoom,
+            max_samples=max_samples,
+        )
+    except PoiSearchNotReadyError as exc:
+        raise _index_not_ready(selected_dataset_id) from exc
+    except PoiSearchNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except PoiSearchPayloadTooLargeError as exc:
+        raise HTTPException(status_code=413, detail={"code": "poi_payload_too_large", "message": str(exc)}) from exc
     except PoiSearchValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except PoiSearchError as exc:

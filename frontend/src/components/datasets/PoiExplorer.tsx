@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { propText } from '../../poi';
-import type { PoiConditionField, PoiConditionOperator, PoiSearchCondition } from '../../poiSearchApi';
+import type { PoiConditionField, PoiConditionOperator, PoiSearchCondition, PoiVisualizationMode } from '../../poiSearchApi';
 import type { PriorityPolicy } from '../../types';
 import { PanelSection } from '../DashboardLayout';
 
@@ -123,12 +123,16 @@ export interface CompactPoiExplorerProps {
   poiSearch: string;
   advancedFilters: AdvancedPoiFiltersProps;
   showPois: boolean;
+  visualizationMode: PoiVisualizationMode;
+  visualizationStatus: string;
+  densityLegend: boolean;
   searchLoading: boolean;
   searchLoadingMore: boolean;
   searchError: string;
   searchHasMore: boolean;
   onSearchChange: (value: string) => void;
   onShowPoisChange: (value: boolean) => void;
+  onVisualizationModeChange: (value: PoiVisualizationMode) => void;
   onResetFilters: () => void;
   onFocusPoi: (feature: GeoJSON.Feature<GeoJSON.Point>) => void;
   onLoadMore: () => void;
@@ -138,9 +142,11 @@ export interface CompactPoiExplorerProps {
 export function CompactPoiExplorer({
   viewportSummary, searchResults, availablePoiTypes,
   poiSearch, advancedFilters, showPois,
+  visualizationMode, visualizationStatus, densityLegend,
   searchLoading, searchLoadingMore, searchError, searchHasMore,
   onSearchChange: setPoiSearch,
   onShowPoisChange: setShowPois,
+  onVisualizationModeChange: setVisualizationMode,
   onResetFilters: resetPoiFilters,
   onFocusPoi: focusPoiFeature,
   onLoadMore, onRetrySearch,
@@ -153,8 +159,35 @@ export function CompactPoiExplorer({
         <button type="button" onClick={resetPoiFilters}>Reset filters</button>
       </div>
       <AdvancedPoiFilters {...advancedFilters} availablePoiTypes={availablePoiTypes} />
-      <div className="poi-checkboxes">
-        <label><input type="checkbox" checked={showPois} onChange={(event) => setShowPois(event.target.checked)} /> Show on map</label>
+      <div className="poi-visualization-controls">
+        <button
+          type="button"
+          className={`poi-master-toggle ${showPois ? 'is-on' : 'is-off'}`}
+          aria-pressed={showPois}
+          onClick={() => setShowPois(!showPois)}
+        >
+          <span>POIs on map</span><strong>{showPois ? 'ON' : 'OFF'}</strong>
+        </button>
+        {showPois && <>
+          <div className="poi-visualization-label">Visualization</div>
+          <div className="poi-mode-selector" role="group" aria-label="POI visualization mode">
+            {(['auto', 'density', 'clusters', 'points'] as PoiVisualizationMode[]).map((mode) => (
+              <button
+                type="button"
+                key={mode}
+                className={visualizationMode === mode ? 'is-active' : ''}
+                aria-pressed={visualizationMode === mode}
+                title={mode === 'auto' ? 'Adapt to zoom and viewport POI density' : mode === 'density' ? 'Show relative geographical concentration' : mode === 'clusters' ? 'Show exact server-generated aggregate counts' : 'Show complete individual source records when feasible'}
+                onClick={() => setVisualizationMode(mode)}
+              >{mode[0].toUpperCase() + mode.slice(1)}</button>
+            ))}
+          </div>
+        </>}
+        <div className="poi-visualization-status" role="status">{visualizationStatus}</div>
+        {showPois && densityLegend && <div className="poi-density-legend" aria-label="Relative POI density from low to high">
+          <span>Low</span><i /><span>High</span>
+          <small>Relative concentration</small>
+        </div>}
       </div>
       {(poiSearch.trim() || advancedFilters.conditions.length > 0) && <div className="poi-search-results">
         {searchLoading && <div className="empty-state" role="status">Searching POIs…</div>}

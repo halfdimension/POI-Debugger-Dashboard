@@ -123,6 +123,7 @@ export function createMockApiState(): MockApiState {
     scenarios: structuredClone(INITIAL_SCENARIOS),
     preferences: {
       selected_dataset_id: 'mock-demo', preferred_basemap: 'mapmyindia',
+      show_pois_on_map: true, poi_visualization_mode: 'auto',
       map_display_mode: '2d', route_view: 'both',
       layout: { leftCollapsed: false, rightCollapsed: false, analysisCollapsed: true, activeAnalysisTab: 'comparison' },
       dataset_selection_fallback: false, unavailable_dataset_id: null,
@@ -297,11 +298,17 @@ export async function handleMockApi(method: string, pathname: string, body: Json
   if (method === 'POST' && pathname === '/api/auth/logout') return ok({ ok: true });
   if (method === 'GET' && pathname === '/api/users/me/preferences') return ok(state.preferences);
   if (method === 'PATCH' && pathname === '/api/users/me/preferences') {
-    const allowed = new Set(['selected_dataset_id', 'preferred_basemap', 'map_display_mode', 'route_view', 'layout']);
+    const allowed = new Set(['selected_dataset_id', 'preferred_basemap', 'map_display_mode', 'route_view', 'layout', 'show_pois_on_map', 'poi_visualization_mode']);
     const unknown = Object.keys(body).filter((key) => !allowed.has(key));
     if (unknown.length) return ok({ detail: `Unknown preference fields: ${unknown.join(', ')}` }, 400);
     if (typeof body.selected_dataset_id === 'string' && !DATASETS.some((item) => item.id === body.selected_dataset_id)) {
       return ok({ detail: `Unknown dataset: ${body.selected_dataset_id}` }, 400);
+    }
+    if ('show_pois_on_map' in body && typeof body.show_pois_on_map !== 'boolean') {
+      return ok({ detail: 'show_pois_on_map must be a boolean' }, 400);
+    }
+    if ('poi_visualization_mode' in body && !['auto', 'density', 'clusters', 'points'].includes(String(body.poi_visualization_mode))) {
+      return ok({ detail: 'poi_visualization_mode is invalid' }, 400);
     }
     state.preferences = { ...state.preferences, ...body, dataset_selection_fallback: false, unavailable_dataset_id: null };
     state.activeDataset = String(state.preferences.selected_dataset_id);

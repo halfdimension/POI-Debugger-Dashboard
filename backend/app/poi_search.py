@@ -42,6 +42,9 @@ VIEWPORT_MAX_FEATURES = 1_000
 VIEWPORT_MAX_ZOOM = 22.0
 VIEWPORT_INDIVIDUAL_MIN_ZOOM = 15.0
 VIEWPORT_MAX_PAYLOAD_BYTES = 2 * 1024 * 1024
+DENSITY_DEFAULT_MAX_SAMPLES = 800
+DENSITY_MAX_SAMPLES = 1_500
+DENSITY_AGGREGATION_LEVEL_OFFSET = 6
 # A Web Mercator level four steps above the map zoom is approximately a
 # 32-pixel square. This retains useful local structure while leaving enough
 # room for restrained aggregate symbols; the response budget can still
@@ -964,6 +967,7 @@ class PoiSearchIndex:
         bbox: tuple[float, float, float, float] | None,
         zoom: float,
         max_features: int = VIEWPORT_DEFAULT_MAX_FEATURES,
+        representation: str = "auto",
     ) -> dict[str, Any]:
         """Return exact, bounded geographical coverage for map visualization."""
         if not isinstance(dataset_id, str) or not dataset_id.strip():
@@ -989,6 +993,8 @@ class PoiSearchIndex:
             raise PoiSearchValidationError(
                 f"max_features must be between 1 and {VIEWPORT_MAX_FEATURES}"
             )
+        if representation not in {"auto", "clusters", "points"}:
+            raise PoiSearchValidationError("representation must be auto, clusters, or points")
         requested_level = min(
             SPATIAL_MAX_LEVEL,
             max(0, math.floor(float(zoom)) + VIEWPORT_AGGREGATION_LEVEL_OFFSET),
@@ -1000,7 +1006,9 @@ class PoiSearchIndex:
             with closing(sqlite3.connect(uri, uri=True)) as connection:
                 connection.row_factory = sqlite3.Row
                 generation = self._generation(connection)
-                if zoom >= VIEWPORT_INDIVIDUAL_MIN_ZOOM:
+                if representation == "points" or (
+                    representation == "auto" and zoom >= VIEWPORT_INDIVIDUAL_MIN_ZOOM
+                ):
                     individual = self._individual_viewport_response(
                         connection,
                         dataset_id=dataset_id,
@@ -1010,8 +1018,10 @@ class PoiSearchIndex:
                         max_features=max_features,
                     )
                     if individual is not None:
-                        return individual
-                return self._aggregated_viewport_response(
+                        individual["meta"]["requested_representation"] = representation
+                        individual["meta"]["fallback_reason"] = None
+                        return self._finalize_viewport_response(individual)
+                response = self._aggregated_viewport_response(
                     connection,
                     dataset_id=dataset_id,
                     generation=generation,
@@ -1020,6 +1030,95 @@ class PoiSearchIndex:
                     max_features=max_features,
                     requested_level=requested_level,
                 )
+                response["meta"]["requested_representation"] = representation
+                response["meta"]["fallback_reason"] = (
+                    "viewport_too_dense_for_complete_points"
+                    if representation == "points" else None
+                )
+                return self._finalize_viewport_response(response)
+
+    def viewport_density(
+        self,
+        dataset_id: str,
+        *,
+        bbox: tuple[float, float, float, float] | None,
+        zoom: float,
+        max_samples: int = DENSITY_DEFAULT_MAX_SAMPLES,
+    ) -> dict[str, Any]:
+        """Return bounded, exact weighted samples from the prepared spatial hierarchy."""
+        if not isinstance(dataset_id, str) or not dataset_id.strip():
+            raise PoiSearchValidationError("dataset_id is required")
+        if dataset_id not in self._datasets:
+            raise PoiSearchNotFoundError("Unknown dataset")
+        if bbox is None:
+            raise PoiSearchValidationError("bbox is required")
+        if isinstance(zoom, bool) or not isinstance(zoom, (int, float)) or not math.isfinite(zoom) or not 0 <= zoom <= VIEWPORT_MAX_ZOOM:
+            raise PoiSearchValidationError(
+                f"zoom must be a finite number between 0 and {VIEWPORT_MAX_ZOOM:g}"
+            )
+        if isinstance(max_samples, bool) or not isinstance(max_samples, int) or not 1 <= max_samples <= DENSITY_MAX_SAMPLES:
+            raise PoiSearchValidationError(
+                f"max_samples must be between 1 and {DENSITY_MAX_SAMPLES}"
+            )
+        requested_level = min(
+            SPATIAL_MAX_LEVEL,
+            max(0, math.floor(float(zoom)) + DENSITY_AGGREGATION_LEVEL_OFFSET),
+        )
+        with self._lock_for(dataset_id):
+            db_path, _ = self._current_database(dataset_id)
+            uri = db_path.resolve().as_uri() + "?mode=ro"
+            with closing(sqlite3.connect(uri, uri=True)) as connection:
+                connection.row_factory = sqlite3.Row
+                generation = self._generation(connection)
+                aggregated = self._aggregated_viewport_response(
+                    connection,
+                    dataset_id=dataset_id,
+                    generation=generation,
+                    bbox=bbox,
+                    zoom=float(zoom),
+                    max_features=max_samples,
+                    requested_level=requested_level,
+                )
+        samples = []
+        max_render_weight = 0.0
+        for aggregate in aggregated["aggregates"]:
+            render_weight = math.log1p(aggregate["source_record_count"])
+            max_render_weight = max(max_render_weight, render_weight)
+            samples.append({
+                "id": aggregate["id"],
+                "coordinates": aggregate["coordinates"],
+                "source_record_count": aggregate["source_record_count"],
+                "render_weight": render_weight,
+                "bounds": aggregate["bounds"],
+                "aggregation_level": aggregate["aggregation_level"],
+            })
+        response = {
+            "dataset_id": dataset_id,
+            "generation": generation,
+            "bbox": list(bbox),
+            "zoom": float(zoom),
+            "complete": True,
+            "total_matching_pois": aggregated["total_matching_pois"],
+            "samples": samples,
+            "meta": {
+                "spatial_strategy": SPATIAL_STRATEGY,
+                "requested_aggregation_level": requested_level,
+                "aggregation_level": aggregated["meta"]["aggregation_level"],
+                "adaptive_coarsening": aggregated["meta"]["adaptive_coarsening"],
+                "sample_count": len(samples),
+                "represented_poi_count": aggregated["total_matching_pois"],
+                "max_samples": max_samples,
+                "server_max_samples": DENSITY_MAX_SAMPLES,
+                "max_render_weight": max_render_weight,
+                "max_payload_bytes": VIEWPORT_MAX_PAYLOAD_BYTES,
+            },
+        }
+        self._finalize_viewport_response(response)
+        if response["meta"]["serialized_bytes"] > VIEWPORT_MAX_PAYLOAD_BYTES:
+            raise PoiSearchPayloadTooLargeError(
+                "The density result cannot fit the maximum response payload"
+            )
+        return response
 
     def _validated_cluster_reference(
         self,

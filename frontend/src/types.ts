@@ -49,13 +49,16 @@ export interface UserPreferences {
   preferred_basemap: 'mapmyindia' | 'openfreemap';
   map_display_mode: '2d' | '3d';
   route_view: 'both' | 'valhalla' | 'osrm';
+  show_pois_on_map?: boolean;
+  poi_visualization_mode?: 'auto' | 'density' | 'clusters' | 'points';
   layout: import('./layoutState').DashboardLayoutState;
   dataset_selection_fallback: boolean;
   unavailable_dataset_id: string | null;
 }
 
 export type UserPreferencesPatch = Partial<Pick<UserPreferences,
-  'selected_dataset_id' | 'preferred_basemap' | 'map_display_mode' | 'route_view' | 'layout'
+  'selected_dataset_id' | 'preferred_basemap' | 'map_display_mode' | 'route_view' | 'layout' |
+  'show_pois_on_map' | 'poi_visualization_mode'
 >>;
 
 export interface DebuggerConfig {

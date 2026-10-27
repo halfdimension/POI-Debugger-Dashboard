@@ -1,14 +1,17 @@
 import type { Feature, FeatureCollection, Point } from 'geojson';
 import type maplibregl from 'maplibre-gl';
-import type { PoiBounds, PoiViewportResponse, ViewportAggregate } from '../../poiSearchApi';
+import type { PoiBounds, PoiDensityResponse, PoiRenderedVisualization, PoiViewportResponse, ViewportAggregate } from '../../poiSearchApi';
 
 export const POI_AGGREGATE_SOURCE_ID = 'poi-aggregates';
+export const POI_DENSITY_SOURCE_ID = 'poi-density';
 export const EXPLORER_POI_SOURCE_ID = 'pois';
 export const POI_CLUSTER_LAYER_ID = 'poi-clusters';
 export const POI_CLUSTER_COUNT_LAYER_ID = 'poi-cluster-count';
 export const INDIVIDUAL_POI_LAYER_ID = 'pois';
 export const VIEWPORT_MOVE_DEBOUNCE_MS = 180;
 export const VIEWPORT_MAX_FEATURES = 500;
+export const CLUSTER_MAX_FEATURES = 250;
+export const DENSITY_MAX_SAMPLES = 800;
 
 const EMPTY: FeatureCollection = { type: 'FeatureCollection', features: [] };
 
@@ -32,6 +35,25 @@ export function viewportFeatureCollections(response: PoiViewportResponse): { agg
   return {
     aggregates: { type: 'FeatureCollection', features: response.aggregates.map((item) => aggregateFeature(item, response)) },
     individuals: { type: 'FeatureCollection', features: response.individual_pois.map((item) => item.feature) },
+  };
+}
+
+export function densityFeatureCollection(response: PoiDensityResponse): FeatureCollection<Point> {
+  const denominator = Math.max(1, response.meta.max_render_weight);
+  return {
+    type: 'FeatureCollection',
+    features: response.samples.map((sample) => ({
+      type: 'Feature',
+      id: sample.id,
+      geometry: { type: 'Point', coordinates: sample.coordinates },
+      properties: {
+        source_record_count: sample.source_record_count,
+        render_weight: sample.render_weight,
+        normalized_render_weight: sample.render_weight / denominator,
+        bounds: JSON.stringify(sample.bounds),
+        aggregation_level: sample.aggregation_level,
+      },
+    })),
   };
 }
 
@@ -69,8 +91,31 @@ export function expandServerAggregate(map: AggregateExpansionMap, feature: Featu
   return true;
 }
 
-export function viewportRequestKey(datasetId: string, bounds: PoiBounds, zoom: number, visible: boolean, generation = ''): string {
-  return `${datasetId}|${bounds.map((value) => value.toFixed(5)).join(',')}|${zoom.toFixed(2)}|${generation}|${visible ? 'visible' : 'hidden'}`;
+export function viewportRequestKey(datasetId: string, bounds: PoiBounds, zoom: number, visible: boolean, generation = '', visualization = 'auto'): string {
+  return `${datasetId}|${bounds.map((value) => value.toFixed(5)).join(',')}|${zoom.toFixed(2)}|${generation}|${visualization}|${visible ? 'visible' : 'hidden'}`;
+}
+
+export function selectAutoPoiVisualization(
+  zoom: number,
+  representedCount: number | null,
+  current: PoiRenderedVisualization,
+): PoiRenderedVisualization {
+  const count = representedCount ?? Number.POSITIVE_INFINITY;
+  if (current === 'density') {
+    if (zoom < 10.5 || count > 12_000) return 'density';
+    return zoom >= 15.5 && count <= 350 ? 'points' : 'clusters';
+  }
+  if (current === 'points') {
+    if (zoom >= 14.5 && count <= 650) return 'points';
+    return zoom < 9.5 || count > 20_000 ? 'density' : 'clusters';
+  }
+  if (zoom < 9.5 || count > 20_000) return 'density';
+  if (zoom >= 15.5 && count <= 350) return 'points';
+  return 'clusters';
+}
+
+export function poiVisualizationLabel(mode: PoiRenderedVisualization): string {
+  return mode === 'density' ? 'Density' : mode === 'clusters' ? 'Clusters' : 'Points';
 }
 
 export function viewportPoiLabel(response: PoiViewportResponse | null): string {

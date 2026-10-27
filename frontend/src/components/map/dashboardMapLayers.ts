@@ -7,7 +7,9 @@ import {
   POI_CLUSTER_COUNT_LAYER_ID,
   POI_CLUSTER_LAYER_ID,
   POI_AGGREGATE_SOURCE_ID,
+  POI_DENSITY_SOURCE_ID,
 } from './poiMap';
+import type { PoiRenderedVisualization } from '../../poiSearchApi';
 
 const EMPTY_FEATURE_COLLECTION: FeatureCollection = {
   type: 'FeatureCollection',
@@ -17,12 +19,69 @@ const EMPTY_FEATURE_COLLECTION: FeatureCollection = {
 export interface DashboardMapLayerOptions {
   initialPois: FeatureCollection;
   initialPoiAggregates?: FeatureCollection;
+  initialPoiDensity?: FeatureCollection;
+}
+
+export const POI_DENSITY_LAYER_ID = 'poi-density-heatmap';
+
+const POI_OVERLAY_LAYER_IDS = [
+  'selected-poi',
+  'nearby-pois',
+  'route-narration-pois-halo',
+  'route-narration-pois',
+  'narration-poi',
+] as const;
+
+export function syncPoiLayerVisibility(
+  map: maplibregl.Map,
+  showPois: boolean,
+  visualization: PoiRenderedVisualization,
+  showCandidateMap = false,
+): void {
+  const visibility: Record<string, boolean> = {
+    [POI_DENSITY_LAYER_ID]: showPois && visualization === 'density',
+    [POI_CLUSTER_LAYER_ID]: showPois && visualization === 'clusters',
+    [POI_CLUSTER_COUNT_LAYER_ID]: showPois && visualization === 'clusters',
+    [INDIVIDUAL_POI_LAYER_ID]: showPois && visualization === 'points',
+    'poi-turn-inspection-line': showPois && !showCandidateMap,
+    'candidate-analysis-lines': showPois && showCandidateMap,
+    'candidate-analysis-pois': showPois && showCandidateMap,
+    'candidate-analysis-selected-ring': showPois && showCandidateMap,
+    'candidate-analysis-origin': showCandidateMap,
+  };
+  for (const layerId of POI_OVERLAY_LAYER_IDS) visibility[layerId] = showPois;
+  for (const [layerId, isVisible] of Object.entries(visibility)) {
+    if (map.getLayer(layerId)) {
+      map.setLayoutProperty(layerId, 'visibility', isVisible ? 'visible' : 'none');
+    }
+  }
 }
 
 export function registerDashboardMapLayers(
   map: maplibregl.Map,
-  { initialPois, initialPoiAggregates = EMPTY_FEATURE_COLLECTION }: DashboardMapLayerOptions,
+  { initialPois, initialPoiAggregates = EMPTY_FEATURE_COLLECTION, initialPoiDensity = EMPTY_FEATURE_COLLECTION }: DashboardMapLayerOptions,
 ): void {
+  map.addSource(POI_DENSITY_SOURCE_ID, authoritativePoiSource(initialPoiDensity));
+  map.addLayer({
+    id: POI_DENSITY_LAYER_ID,
+    type: 'heatmap',
+    source: POI_DENSITY_SOURCE_ID,
+    maxzoom: 20,
+    paint: {
+      'heatmap-weight': ['interpolate', ['linear'], ['get', 'normalized_render_weight'], 0, 0, 1, 1],
+      'heatmap-intensity': ['interpolate', ['linear'], ['zoom'], 0, 0.55, 10, 0.8, 17, 1.05],
+      'heatmap-radius': ['interpolate', ['linear'], ['zoom'], 0, 12, 8, 20, 15, 28, 20, 34],
+      'heatmap-opacity': ['interpolate', ['linear'], ['zoom'], 0, 0.58, 15, 0.68, 20, 0.42],
+      'heatmap-color': [
+        'interpolate', ['linear'], ['heatmap-density'],
+        0, 'rgba(79,70,229,0)',
+        0.18, 'rgba(96,165,250,0.28)',
+        0.42, 'rgba(99,102,241,0.48)',
+        0.7, 'rgba(109,40,217,0.68)',
+        1, 'rgba(236,72,153,0.82)',
+      ],
+    },
+  });
   // OSRM goes underneath as a thick red line. Valhalla is registered next so
   // overlapping routes retain the existing red casing around the blue line.
   map.addSource('osrm-route', { type: 'geojson', data: EMPTY_FEATURE_COLLECTION });

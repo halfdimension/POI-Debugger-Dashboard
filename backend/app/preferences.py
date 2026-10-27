@@ -24,11 +24,14 @@ ALLOWED_FIELDS = {
     "map_display_mode",
     "route_view",
     "layout",
+    "show_pois_on_map",
+    "poi_visualization_mode",
 }
 BASEMAPS = {"mapmyindia", "openfreemap"}
 MAP_DISPLAY_MODES = {"2d", "3d"}
 ROUTE_VIEWS = {"both", "valhalla", "osrm"}
 ANALYSIS_TABS = {"comparison", "maneuvers", "candidates", "scenarios", "raw"}
+POI_VISUALIZATION_MODES = {"auto", "density", "clusters", "points"}
 
 
 class UserPreferenceStore:
@@ -53,7 +56,7 @@ class UserPreferenceStore:
     def _initialize(self) -> None:
         with self._schema_lock, self._connect() as connection:
             version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-            if version > 1:
+            if version > 2:
                 raise RuntimeError(f"Preference database schema {version} is newer than this application supports")
             connection.execute(
                 """
@@ -70,6 +73,20 @@ class UserPreferenceStore:
             )
             if version < 1:
                 connection.execute("PRAGMA user_version = 1")
+            if version < 2:
+                columns = {
+                    str(row[1])
+                    for row in connection.execute("PRAGMA table_info(user_preferences)")
+                }
+                if "show_pois_on_map" not in columns:
+                    connection.execute(
+                        "ALTER TABLE user_preferences ADD COLUMN show_pois_on_map INTEGER NOT NULL DEFAULT 1"
+                    )
+                if "poi_visualization_mode" not in columns:
+                    connection.execute(
+                        "ALTER TABLE user_preferences ADD COLUMN poi_visualization_mode TEXT NOT NULL DEFAULT 'auto'"
+                    )
+                connection.execute("PRAGMA user_version = 2")
 
     def _defaults(self) -> dict[str, Any]:
         return {
@@ -78,6 +95,8 @@ class UserPreferenceStore:
             "map_display_mode": "2d",
             "route_view": "both",
             "layout": dict(DEFAULT_LAYOUT),
+            "show_pois_on_map": True,
+            "poi_visualization_mode": "auto",
         }
 
     @staticmethod
@@ -105,6 +124,10 @@ class UserPreferenceStore:
             raise PreferenceValidationError("map_display_mode is invalid")
         if "route_view" in result and result["route_view"] not in ROUTE_VIEWS:
             raise PreferenceValidationError("route_view is invalid")
+        if "show_pois_on_map" in result and not isinstance(result["show_pois_on_map"], bool):
+            raise PreferenceValidationError("show_pois_on_map must be a boolean")
+        if "poi_visualization_mode" in result and result["poi_visualization_mode"] not in POI_VISUALIZATION_MODES:
+            raise PreferenceValidationError("poi_visualization_mode is invalid")
         if "layout" in result:
             result["layout"] = self._validate_layout(result["layout"])
         return result
@@ -123,6 +146,8 @@ class UserPreferenceStore:
                 "map_display_mode": row["map_display_mode"],
                 "route_view": row["route_view"],
                 "layout": json.loads(row["layout_json"]),
+                "show_pois_on_map": bool(row["show_pois_on_map"]),
+                "poi_visualization_mode": row["poi_visualization_mode"],
             })
         if values["selected_dataset_id"] not in self._dataset_ids:
             fallback_from = values["selected_dataset_id"]
@@ -151,6 +176,8 @@ class UserPreferenceStore:
                     "map_display_mode": row["map_display_mode"],
                     "route_view": row["route_view"],
                     "layout": json.loads(row["layout_json"]),
+                    "show_pois_on_map": bool(row["show_pois_on_map"]),
+                    "poi_visualization_mode": row["poi_visualization_mode"],
                 })
             if values["selected_dataset_id"] not in self._dataset_ids:
                 values["selected_dataset_id"] = self._default_dataset_id
@@ -170,14 +197,17 @@ class UserPreferenceStore:
             """
                 INSERT INTO user_preferences (
                     user_id, selected_dataset_id, preferred_basemap,
-                    map_display_mode, route_view, layout_json, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    map_display_mode, route_view, layout_json,
+                    show_pois_on_map, poi_visualization_mode, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(user_id) DO UPDATE SET
                     selected_dataset_id = excluded.selected_dataset_id,
                     preferred_basemap = excluded.preferred_basemap,
                     map_display_mode = excluded.map_display_mode,
                     route_view = excluded.route_view,
                     layout_json = excluded.layout_json,
+                    show_pois_on_map = excluded.show_pois_on_map,
+                    poi_visualization_mode = excluded.poi_visualization_mode,
                     updated_at = excluded.updated_at
             """,
             (
@@ -187,6 +217,8 @@ class UserPreferenceStore:
                 values["map_display_mode"],
                 values["route_view"],
                 json.dumps(values["layout"], separators=(",", ":"), sort_keys=True),
+                int(values["show_pois_on_map"]),
+                values["poi_visualization_mode"],
                 datetime.now(timezone.utc).isoformat(),
             ),
         )

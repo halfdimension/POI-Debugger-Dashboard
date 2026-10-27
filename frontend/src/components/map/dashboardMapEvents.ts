@@ -11,6 +11,7 @@ import {
 export interface DashboardMapEventCallbacks {
   onAggregateSelected: (feature: Feature<Point>) => void;
   onPoiSelected: (feature: Feature<Point>) => void;
+  onRoutePoiSelected?: (feature: Feature<Point>) => void;
   onRouteNarrationManeuverSelected: (maneuverIndex: number) => void;
   onManeuverScrollRequested: (maneuverIndex: number) => void;
   onManeuverSelected: (maneuverIndex: number) => void;
@@ -84,8 +85,10 @@ export function bindDashboardMapEvents(
 
     const feature = rawFeature as Feature<Point>;
     const coordinates = feature.geometry.coordinates.slice() as LngLat;
+    callbacks.onRoutePoiSelected?.(feature);
+    const primaryEngine = String(feature.properties?._primary_engine ?? 'valhalla');
     const maneuverIndex = Number(feature.properties?._primary_maneuver_index);
-    if (Number.isFinite(maneuverIndex)) {
+    if (primaryEngine === 'valhalla' && Number.isFinite(maneuverIndex)) {
       callbacks.onRouteNarrationManeuverSelected(maneuverIndex);
       const timer = setTimeout(() => {
         pendingTimers.delete(timer);
@@ -150,7 +153,7 @@ export function bindDashboardMapEvents(
   bind('click', INDIVIDUAL_POI_LAYER_ID, showPoiPopup);
   bind('click', 'selected-poi', showPoiPopup);
   bind('click', 'nearby-pois', showPoiPopup);
-  bind('click', 'narration-poi', showPoiPopup);
+  bind('click', 'narration-poi', showRouteNarrationPoi);
   bind('click', 'route-narration-pois', showRouteNarrationPoi);
   bind('click', 'candidate-analysis-pois', showCandidatePopup);
   bind('click', 'maneuver-points', selectManeuver);

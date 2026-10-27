@@ -14,16 +14,30 @@ function escapeHtml(value: unknown): string {
 export function poiPopupHtml(properties: GeoJSON.GeoJsonProperties): string {
   const preferred = [
     'name', 'mappls_poi_id', 'new_node_id', 'landmark_type', 'priority', 'visible',
+    '_association_label', '_associated_engines', '_association_details',
+    '_related_route_position', '_instruction_text', '_candidate_status', '_candidate_reason',
     'osm_source_type', 'osm_source_id', 'osm_amenity', 'osm_tourism', 'osm_shop',
     'osm_historic', 'osm_leisure', 'osm_railway', 'lat', 'lon', '_debug_distance_m',
   ];
   const keys = [
     ...preferred.filter((key) => properties?.[key] !== undefined && properties?.[key] !== ''),
-    ...Object.keys(properties ?? {}).filter((key) => !preferred.includes(key) && properties?.[key] !== ''),
+    ...Object.keys(properties ?? {}).filter((key) => !key.startsWith('_') && !preferred.includes(key) && properties?.[key] !== ''),
   ];
+  const labels: Record<string, string> = {
+    mappls_poi_id: 'Source POI ID',
+    new_node_id: 'Source node ID',
+    _association_label: 'Classification',
+    _associated_engines: 'Routing engine',
+    _association_details: 'Engine evidence',
+    _related_route_position: 'Related guidance',
+    _instruction_text: 'Instruction',
+    _candidate_status: 'Candidate status',
+    _candidate_reason: 'Candidate evidence',
+    _debug_distance_m: 'Distance (m)',
+  };
   const title = propText(properties, 'name', 'POI');
   const rows = keys
-    .map((key) => `<div class="poi-popup-row"><strong>${escapeHtml(key)}</strong><span>${escapeHtml(properties?.[key])}</span></div>`)
+    .map((key) => `<div class="poi-popup-row"><strong>${escapeHtml(labels[key] ?? key)}</strong><span>${escapeHtml(properties?.[key])}</span></div>`)
     .join('');
   return `<div class="poi-popup"><div class="poi-popup-title">${escapeHtml(title)}</div>${rows}</div>`;
 }

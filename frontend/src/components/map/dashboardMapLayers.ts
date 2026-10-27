@@ -26,9 +26,13 @@ export const POI_DENSITY_LAYER_ID = 'poi-density-heatmap';
 
 const POI_OVERLAY_LAYER_IDS = [
   'selected-poi',
-  'nearby-pois',
+] as const;
+
+const ROUTE_GUIDANCE_LAYER_IDS = [
   'route-narration-pois-halo',
   'route-narration-pois',
+  'narration-poi-pulse',
+  'narration-poi-halo',
   'narration-poi',
 ] as const;
 
@@ -37,19 +41,25 @@ export function syncPoiLayerVisibility(
   showPois: boolean,
   visualization: PoiRenderedVisualization,
   showCandidateMap = false,
+  showGuidancePois = true,
+  showNearbyDiagnosticPois = true,
 ): void {
   const visibility: Record<string, boolean> = {
     [POI_DENSITY_LAYER_ID]: showPois && visualization === 'density',
     [POI_CLUSTER_LAYER_ID]: showPois && visualization === 'clusters',
     [POI_CLUSTER_COUNT_LAYER_ID]: showPois && visualization === 'clusters',
     [INDIVIDUAL_POI_LAYER_ID]: showPois && visualization === 'points',
-    'poi-turn-inspection-line': showPois && !showCandidateMap,
+    'poi-turn-inspection-line': showPois && showGuidancePois && !showCandidateMap,
     'candidate-analysis-lines': showPois && showCandidateMap,
     'candidate-analysis-pois': showPois && showCandidateMap,
     'candidate-analysis-selected-ring': showPois && showCandidateMap,
     'candidate-analysis-origin': showCandidateMap,
   };
   for (const layerId of POI_OVERLAY_LAYER_IDS) visibility[layerId] = showPois;
+  visibility['nearby-pois'] = showPois && showNearbyDiagnosticPois;
+  for (const layerId of ROUTE_GUIDANCE_LAYER_IDS) {
+    visibility[layerId] = showPois && showGuidancePois;
+  }
   for (const [layerId, isVisible] of Object.entries(visibility)) {
     if (map.getLayer(layerId)) {
       map.setLayoutProperty(layerId, 'visibility', isVisible ? 'visible' : 'none');
@@ -192,6 +202,7 @@ export function registerDashboardMapLayers(
     id: 'selected-poi',
     type: 'circle',
     source: 'selected-poi',
+    filter: ['!=', ['get', '_route_poi'], true],
     paint: {
       'circle-radius': 10,
       'circle-stroke-width': 3,
@@ -342,11 +353,11 @@ export function registerDashboardMapLayers(
     type: 'circle',
     source: 'nearby-pois',
     paint: {
-      'circle-radius': 8,
-      'circle-stroke-width': 2,
-      'circle-stroke-color': '#ffffff',
-      'circle-color': '#f59e0b',
-      'circle-opacity': 0.9,
+      'circle-radius': 5.5,
+      'circle-stroke-width': 1.5,
+      'circle-stroke-color': '#f8fafc',
+      'circle-color': '#64748b',
+      'circle-opacity': 0.78,
     },
   });
 
@@ -356,9 +367,14 @@ export function registerDashboardMapLayers(
     type: 'circle',
     source: 'route-narration-pois',
     paint: {
-      'circle-radius': ['case', ['==', ['get', '_route_evidence'], 'strong'], 16, 13],
-      'circle-color': ['case', ['==', ['get', '_route_evidence'], 'strong'], '#22c55e', '#f59e0b'],
-      'circle-opacity': 0.22,
+      'circle-radius': ['case', ['==', ['get', '_association_classification'], 'confirmed'], 15, 13],
+      'circle-color': [
+        'case',
+        ['==', ['get', '_association_classification'], 'confirmed'], '#22c55e',
+        ['==', ['get', '_engine_scope'], 'osrm'], '#f59e0b',
+        '#0d9488',
+      ],
+      'circle-opacity': 0.2,
       'circle-stroke-width': 0,
     },
   });
@@ -367,25 +383,69 @@ export function registerDashboardMapLayers(
     type: 'circle',
     source: 'route-narration-pois',
     paint: {
-      'circle-radius': ['case', ['==', ['get', '_route_evidence'], 'strong'], 10, 8],
-      'circle-stroke-width': 3,
+      'circle-radius': ['case', ['==', ['get', '_association_classification'], 'confirmed'], 9, 8],
+      'circle-stroke-width': ['case', ['==', ['get', '_engine_scope'], 'both'], 3, 2.5],
       'circle-stroke-color': '#ffffff',
-      'circle-color': ['case', ['==', ['get', '_route_evidence'], 'strong'], '#16a34a', '#f59e0b'],
+      'circle-color': [
+        'case',
+        ['==', ['get', '_association_classification'], 'confirmed'], '#16a34a',
+        ['==', ['get', '_engine_scope'], 'osrm'], '#f59e0b',
+        ['==', ['get', '_engine_scope'], 'both'], '#0f766e',
+        '#0d9488',
+      ],
       'circle-opacity': 0.98,
     },
   });
 
   map.addSource('narration-poi', { type: 'geojson', data: EMPTY_FEATURE_COLLECTION });
   map.addLayer({
+    id: 'narration-poi-pulse',
+    type: 'circle',
+    source: 'narration-poi',
+    paint: {
+      'circle-radius': 15,
+      'circle-color': [
+        'case',
+        ['==', ['get', '_association_classification'], 'confirmed'], '#22c55e',
+        ['==', ['get', '_engine_scope'], 'osrm'], '#f59e0b',
+        '#14b8a6',
+      ],
+      'circle-opacity': 0,
+      'circle-stroke-width': 0,
+    },
+  });
+  map.addLayer({
+    id: 'narration-poi-halo',
+    type: 'circle',
+    source: 'narration-poi',
+    paint: {
+      'circle-radius': 15,
+      'circle-color': [
+        'case',
+        ['==', ['get', '_association_classification'], 'confirmed'], '#22c55e',
+        ['==', ['get', '_engine_scope'], 'osrm'], '#f59e0b',
+        '#14b8a6',
+      ],
+      'circle-opacity': 0.22,
+      'circle-stroke-width': 2.5,
+      'circle-stroke-color': '#0f172a',
+    },
+  });
+  map.addLayer({
     id: 'narration-poi',
     type: 'circle',
     source: 'narration-poi',
     paint: {
-      'circle-radius': 14,
-      'circle-stroke-width': 4,
-      'circle-stroke-color': '#0f172a',
-      'circle-color': ['case', ['==', ['get', '_narration_evidence'], 'strong'], '#22c55e', '#f59e0b'],
-      'circle-opacity': 0.82,
+      'circle-radius': 10.5,
+      'circle-stroke-width': 3,
+      'circle-stroke-color': '#ffffff',
+      'circle-color': [
+        'case',
+        ['==', ['get', '_association_classification'], 'confirmed'], '#16a34a',
+        ['==', ['get', '_engine_scope'], 'osrm'], '#f59e0b',
+        '#0d9488',
+      ],
+      'circle-opacity': 1,
     },
   });
 

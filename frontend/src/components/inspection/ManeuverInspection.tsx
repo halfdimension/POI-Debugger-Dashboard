@@ -180,13 +180,13 @@ export function ManeuverInspection({
             )}
             <div className="narration-verification">
               <div className="narration-verification-heading">
-                <strong>POI in Odin Instruction</strong>
+                <strong>Odin narration match</strong>
                 {!primaryNarrationEvidence ? (
                   <span className="narration-status none">
                     {diagnosticStatus === 'complete' ? 'NO SOURCE MATCH' : diagnosticStatus === 'loading' ? 'LOADING' : 'SOURCE DATA INCOMPLETE'}
                   </span>
                 ) : (
-                  <span className="narration-status strong">POI FOUND</span>
+                  <span className="narration-status strong">INFERRED MATCH</span>
                 )}
               </div>
   
@@ -207,6 +207,7 @@ export function ManeuverInspection({
                     </span>
                   </button>
                   <code className="narration-matched-instruction">{primaryNarrationEvidence.matchedInstruction}</code>
+                  <p className="narration-caution">This source POI is inferred from instruction text. Narration matching alone does not prove that the engine selected this source record.</p>
                   {primaryNarrationEvidence.evidence === 'ambiguous' && (
                     <p className="narration-caution">The POI name appears in narration, but not in the strong “at &lt;POI&gt;” landmark pattern. It may be a road/place-name coincidence.</p>
                   )}
@@ -233,7 +234,10 @@ export function ManeuverInspection({
                     <span className="nearby-rank">{index + 1}</span>
                     <span className="nearby-main">
                       <strong>{item.name}</strong>
-                      <small>{item.landmarkType}</small>
+                      <small>{item.landmarkType} · {item.poiId || item.sourceNodeId || 'identifier unavailable'}</small>
+                      {item.candidateEvidence.map((evidence) => <small key={`${evidence.engine}-${evidence.status}`}>
+                        {evidence.engine === 'valhalla' ? 'Valhalla' : 'OSRM'} candidate: {evidence.status}{evidence.reason ? ` · ${evidence.reason}` : ''}
+                      </small>)}
                     </span>
                     <span className="nearby-metrics">
                       <strong>{item.distanceM.toFixed(1)} m</strong>

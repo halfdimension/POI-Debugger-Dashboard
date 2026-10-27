@@ -13,7 +13,7 @@ import { AnalysisTabContent } from './components/analysis/AnalysisTabContent';
 import { AuthenticationScreen } from './components/auth/AuthenticationScreen';
 import { CompactDatasetSelector } from './components/datasets/DatasetSelector';
 import { CompactPoiExplorer } from './components/datasets/PoiExplorer';
-import type { ManeuverView, NarrationPoiEvidence, NearbyPoi, OsrmRouteNarrationPoi, OsrmStepView, RouteNarrationPoi } from './components/inspection/viewModels';
+import type { ManeuverView, NarrationPoiEvidence, NearbyPoi, OsrmRouteNarrationPoi, OsrmStepView, RouteFocusedPoi, RouteNarrationPoi, RoutePoiAssociation, RoutePoiEngine } from './components/inspection/viewModels';
 import { ManeuverInspection } from './components/inspection/ManeuverInspection';
 import { SelectedPoiDetails } from './components/inspection/SelectedPoiDetails';
 import { ClusterMemberDetails } from './components/inspection/ClusterMemberDetails';
@@ -59,10 +59,10 @@ import {
   hasStrongLandmarkCue,
   instructionContainsName,
   maneuverInstructionTexts,
-  narrationPoiKey,
   normalizeNarrationText,
   osrmInstructionText,
 } from './narration';
+import { candidateEvidenceForSource, confirmedRoutePoiAssociations, sourcePoiKey } from './routePoiEvidence';
 import type { CandidateAnalysis, CandidateAnalysisManeuver, DatasetRegistryResponse, DatasetSummary, DebuggerConfig, LngLat, OsrmRouteResponse, RouteScenario, UserPreferencesPatch, ValhallaRouteResponse } from './types';
 import { useVerticalPanelResize } from './useVerticalPanelResize';
 
@@ -93,6 +93,57 @@ function fmtSigned(value: number | null, digits = 2): string {
   return `${value >= 0 ? '+' : ''}${value.toFixed(digits)}`;
 }
 
+function routePoiEngineLabel(engine: RoutePoiEngine): string {
+  return engine === 'valhalla' ? 'Valhalla' : 'OSRM';
+}
+
+function routeFocusedFeature(item: RouteFocusedPoi): GeoJSON.Feature<GeoJSON.Point> {
+  const confirmed = item.associations.some((association) => association.classification === 'confirmed');
+  const engines = Array.from(new Set(item.associations.map((association) => association.engine)));
+  const primary = [...item.associations].sort((a, b) => {
+    if (a.classification !== b.classification) return a.classification === 'confirmed' ? -1 : 1;
+    return a.primaryIndex - b.primaryIndex;
+  })[0];
+  const related = item.associations.map((association) => {
+    const position = association.engine === 'valhalla' ? 'maneuver' : 'step';
+    return `${routePoiEngineLabel(association.engine)} ${position} ${association.relatedIndexes.map((index) => index + 1).join(', ')}`;
+  }).join(' · ');
+  const details = item.associations.map((association) =>
+    `${routePoiEngineLabel(association.engine)}: ${association.classification === 'confirmed' ? 'confirmed engine association' : 'narration match'}`,
+  ).join(' · ');
+  const candidateStatuses = item.associations
+    .filter((association) => association.candidateStatus)
+    .map((association) => `${routePoiEngineLabel(association.engine)}: ${association.candidateStatus}`);
+  const candidateReasons = item.associations
+    .filter((association) => association.candidateReason)
+    .map((association) => `${routePoiEngineLabel(association.engine)}: ${association.candidateReason}`);
+  const distances = item.associations
+    .map((association) => association.distanceM)
+    .filter((distance): distance is number => distance !== null && Number.isFinite(distance));
+
+  return {
+    ...item.feature,
+    properties: {
+      ...(item.feature.properties ?? {}),
+      _route_poi: true,
+      _route_poi_key: item.key,
+      _association_classification: confirmed ? 'confirmed' : 'narration_matched',
+      _association_label: confirmed ? 'Confirmed engine association' : 'Narration-matched association',
+      _associated_engines: engines.map(routePoiEngineLabel).join(' + '),
+      _engine_scope: engines.length > 1 ? 'both' : engines[0],
+      _association_details: details,
+      _related_route_position: related,
+      _instruction_text: Array.from(new Set(item.associations.map((association) => association.instruction).filter(Boolean))).join(' · '),
+      _candidate_status: candidateStatuses.join(' · '),
+      _candidate_reason: candidateReasons.join(' · '),
+      _debug_distance_m: distances.length ? Math.min(...distances).toFixed(1) : '',
+      _primary_engine: primary?.engine ?? '',
+      _primary_maneuver_index: primary?.engine === 'valhalla' ? primary.primaryIndex : '',
+      _primary_step_index: primary?.engine === 'osrm' ? primary.primaryIndex : '',
+    },
+  };
+}
+
 
 
 type PolylineProjection = {
@@ -103,11 +154,21 @@ type PolylineProjection = {
 };
 
 type Basemap = 'openfreemap' | 'mapmyindia';
+type RoutePoiPulseRequest =
+  | { kind: 'key'; key: string; nonce: number }
+  | { kind: 'maneuver'; engine: RoutePoiEngine; index: number; nonce: number };
+type RoutePoiPulseTarget =
+  | { kind: 'key'; key: string }
+  | { kind: 'maneuver'; engine: RoutePoiEngine; index: number };
 
 function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () => Promise<void> }) {
   const mapContainer = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const mapSourceManagerRef = useRef<DashboardMapSourceManager | null>(null);
+  const routePoiPulseFrameRef = useRef<number | null>(null);
+  const routePoiPulseNonceRef = useRef(0);
+  const lastAnimatedRoutePoiPulseRef = useRef(0);
+  const highlightSelectedManeuverRef = useRef(true);
   const workspaceRef = useRef<HTMLElement | null>(null);
   const analysisWorkspaceRef = useRef<HTMLElement | null>(null);
 
@@ -226,6 +287,11 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
   const [searchScope, setSearchScope] = useState<'dataset' | 'viewport'>('dataset');
   const [appliedSearchScope, setAppliedSearchScope] = useState<'dataset' | 'viewport'>('dataset');
   const [showPois, setShowPois] = useState(true);
+  const [showGuidancePois, setShowGuidancePois] = useState(true);
+  const [showNearbyDiagnosticPois, setShowNearbyDiagnosticPois] = useState(true);
+  const [highlightSelectedManeuver, setHighlightSelectedManeuver] = useState(true);
+  const [routePoiPulseRequest, setRoutePoiPulseRequest] = useState<RoutePoiPulseRequest | null>(null);
+  highlightSelectedManeuverRef.current = highlightSelectedManeuver;
   const [poiVisualizationMode, setPoiVisualizationMode] = useState<PoiVisualizationMode>('auto');
   const [autoPoiVisualization, setAutoPoiVisualization] = useState<PoiRenderedVisualization>('density');
   const activePoiVisualization: PoiRenderedVisualization = poiVisualizationMode === 'auto'
@@ -245,6 +311,11 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
     setInspectorTab(tab);
     setLayout((current) => ({ ...current, rightCollapsed: false }));
   };
+
+  const requestRoutePoiPulse = useCallback((request: RoutePoiPulseTarget) => {
+    routePoiPulseNonceRef.current += 1;
+    setRoutePoiPulseRequest({ ...request, nonce: routePoiPulseNonceRef.current } as RoutePoiPulseRequest);
+  }, []);
 
   const openTestcases = (tab: TestcaseTab) => {
     testcases.setActiveTab(tab);
@@ -804,7 +875,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
       });
 
       const primary = matches[0];
-      const key = narrationPoiKey(primary);
+      const key = sourcePoiKey(primary.feature);
 
       const existing = grouped.get(key);
 
@@ -903,31 +974,6 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
     };
   }, [route, osrmRoute]);
 
-  const nearbyPois = useMemo<NearbyPoi[]>(() => {
-    if (!selectedManeuver?.coordinate) return [];
-    const result: NearbyPoi[] = [];
-
-    for (const rawFeature of diagnosticPois.features) {
-      const feature = pointFeature(rawFeature);
-      if (!feature) continue;
-      const coordinate = feature.geometry.coordinates as LngLat;
-      const distanceM = haversineMeters(selectedManeuver.coordinate, coordinate);
-      if (distanceM > NEARBY_POI_RADIUS_M) continue;
-      const properties = feature.properties ?? {};
-      result.push({
-        feature,
-        coordinate,
-        distanceM,
-        priority: propNumber(properties, 'priority'),
-        name: propText(properties, 'name', 'Unnamed POI'),
-        landmarkType: propText(properties, 'landmark_type', 'unknown'),
-      });
-    }
-
-    result.sort((a, b) => a.distanceM - b.distanceM || (b.priority ?? -1) - (a.priority ?? -1));
-    return result.slice(0, NEARBY_POI_LIMIT);
-  }, [diagnosticPois, selectedManeuver]);
-
   const narrationEvidenceByManeuver = useMemo(() => {
     const result = new Map<number, NarrationPoiEvidence[]>();
 
@@ -1005,7 +1051,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
         .find((match) => match.evidence === 'strong');
       if (!primary) continue;
 
-      const key = narrationPoiKey(primary);
+      const key = sourcePoiKey(primary.feature);
       const existing = grouped.get(key);
       if (!existing) {
         grouped.set(key, {
@@ -1038,20 +1084,164 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
     });
   }, [maneuverViews, narrationEvidenceByManeuver]);
 
-  const valhallaRoutePoiKeys = useMemo(
-    () => new Set(routeNarrationPois.map((item) => item.key)),
-    [routeNarrationPois],
+  const routeFocusedPois = useMemo<RouteFocusedPoi[]>(() => {
+    const sourceFeatures = diagnosticPois.features
+      .map(pointFeature)
+      .filter((feature): feature is GeoJSON.Feature<GeoJSON.Point> => feature !== null);
+    const grouped = new Map<string, RouteFocusedPoi>();
+
+    const analysisForIndex = (engine: RoutePoiEngine, index: number): CandidateAnalysisManeuver | null => {
+      const view = engine === 'valhalla'
+        ? maneuverViews.find((item) => item.index === index)
+        : osrmStepViews.find((item) => item.index === index);
+      const analysis = engine === 'valhalla' ? valhallaCandidateAnalysis : osrmCandidateAnalysis;
+      if (!view || !analysis) return null;
+      return analysis.maneuvers.find((item) => engine === 'valhalla'
+        ? item.leg_index === view.legIndex && item.maneuver_index === (view as ManeuverView).maneuverIndex
+        : item.leg_index === view.legIndex && item.step_index === (view as OsrmStepView).stepIndex) ?? null;
+    };
+
+    const addAssociation = (
+      feature: GeoJSON.Feature<GeoJSON.Point>,
+      association: RoutePoiAssociation,
+    ) => {
+      const key = sourcePoiKey(feature);
+      const properties = feature.properties ?? {};
+      const existing = grouped.get(key) ?? {
+        key,
+        feature,
+        coordinate: feature.geometry.coordinates as LngLat,
+        name: propText(properties, 'name', 'Unnamed POI'),
+        landmarkType: propText(properties, 'landmark_type', 'unknown'),
+        poiId: propText(properties, 'mappls_poi_id', ''),
+        sourceNodeId: propText(properties, 'new_node_id', ''),
+        priority: propNumber(properties, 'priority'),
+        associations: [],
+      };
+      const sameEvidence = existing.associations.find((item) =>
+        item.engine === association.engine && item.classification === association.classification);
+      if (sameEvidence) {
+        sameEvidence.relatedIndexes = Array.from(new Set([
+          ...sameEvidence.relatedIndexes,
+          ...association.relatedIndexes,
+        ])).sort((a, b) => a - b);
+        if ((association.distanceM ?? Number.POSITIVE_INFINITY) <
+            (sameEvidence.distanceM ?? Number.POSITIVE_INFINITY)) {
+          sameEvidence.primaryIndex = association.primaryIndex;
+          sameEvidence.distanceM = association.distanceM;
+          sameEvidence.instruction = association.instruction;
+          sameEvidence.candidateStatus = association.candidateStatus;
+          sameEvidence.candidateReason = association.candidateReason;
+        }
+      } else {
+        existing.associations.push({ ...association });
+      }
+      grouped.set(key, existing);
+    };
+
+    for (const item of confirmedRoutePoiAssociations(
+      'valhalla', valhallaCandidateAnalysis, sourceFeatures,
+      maneuverViews, osrmStepViews, osrmInstructionText,
+    )) addAssociation(item.feature, item.association);
+    for (const item of confirmedRoutePoiAssociations(
+      'osrm', osrmCandidateAnalysis, sourceFeatures,
+      maneuverViews, osrmStepViews, osrmInstructionText,
+    )) addAssociation(item.feature, item.association);
+
+    for (const item of routeNarrationPois) {
+      const candidateEvidence = candidateEvidenceForSource(item.evidence.feature, [
+        analysisForIndex('valhalla', item.primaryManeuverIndex),
+      ])[0];
+      addAssociation(item.evidence.feature, {
+        engine: 'valhalla',
+        classification: 'narration_matched',
+        relatedIndexes: item.maneuverIndexes,
+        primaryIndex: item.primaryManeuverIndex,
+        instruction: item.evidence.matchedInstruction,
+        distanceM: item.evidence.distanceM,
+        candidateStatus: candidateEvidence?.status ?? '',
+        candidateReason: candidateEvidence?.reason ?? '',
+      });
+    }
+    for (const item of osrmRouteNarrationPois) {
+      const candidateEvidence = candidateEvidenceForSource(item.evidence.feature, [
+        analysisForIndex('osrm', item.primaryStepIndex),
+      ])[0];
+      addAssociation(item.evidence.feature, {
+        engine: 'osrm',
+        classification: 'narration_matched',
+        relatedIndexes: item.stepIndexes,
+        primaryIndex: item.primaryStepIndex,
+        instruction: item.evidence.matchedInstruction,
+        distanceM: item.evidence.distanceM,
+        candidateStatus: candidateEvidence?.status ?? '',
+        candidateReason: candidateEvidence?.reason ?? '',
+      });
+    }
+
+    return Array.from(grouped.values()).sort((a, b) => {
+      const aConfirmed = a.associations.some((item) => item.classification === 'confirmed');
+      const bConfirmed = b.associations.some((item) => item.classification === 'confirmed');
+      if (aConfirmed !== bConfirmed) return aConfirmed ? -1 : 1;
+      return Math.min(...a.associations.map((item) => item.primaryIndex)) -
+        Math.min(...b.associations.map((item) => item.primaryIndex));
+    });
+  }, [diagnosticPois, maneuverViews, osrmStepViews, routeNarrationPois, osrmRouteNarrationPois, valhallaCandidateAnalysis, osrmCandidateAnalysis]);
+
+  const routeFocusedPoiKeys = useMemo(
+    () => new Set(routeFocusedPois.map((item) => item.key)),
+    [routeFocusedPois],
   );
 
-  const osrmRoutePoiKeys = useMemo(
-    () => new Set(osrmRouteNarrationPois.map((item) => item.key)),
-    [osrmRouteNarrationPois],
+  const visibleRouteFocusedPois = useMemo(
+    () => routeFocusedPois
+      .map((item) => ({
+        ...item,
+        associations: item.associations.filter((association) =>
+          routeView === 'both' || association.engine === routeView),
+      }))
+      .filter((item) => item.associations.length > 0),
+    [routeFocusedPois, routeView],
   );
 
-  const routeNarrationStrongCount = useMemo(
-    () => routeNarrationPois.filter((item) => item.evidence.evidence === 'strong').length,
-    [routeNarrationPois],
-  );
+  const routePoiCounts = useMemo(() => ({
+    confirmed: visibleRouteFocusedPois.filter((item) =>
+      item.associations.some((association) => association.classification === 'confirmed')).length,
+    inferred: visibleRouteFocusedPois.filter((item) =>
+      !item.associations.some((association) => association.classification === 'confirmed')).length,
+  }), [visibleRouteFocusedPois]);
+
+  const nearbyPois = useMemo<NearbyPoi[]>(() => {
+    const origin = selectedManeuver?.coordinate ?? selectedOsrmStepView?.coordinate;
+    if (!origin) return [];
+    const result: NearbyPoi[] = [];
+
+    for (const rawFeature of diagnosticPois.features) {
+      const feature = pointFeature(rawFeature);
+      if (!feature || routeFocusedPoiKeys.has(sourcePoiKey(feature))) continue;
+      const coordinate = feature.geometry.coordinates as LngLat;
+      const distanceM = haversineMeters(origin, coordinate);
+      if (distanceM > NEARBY_POI_RADIUS_M) continue;
+      const properties = feature.properties ?? {};
+      result.push({
+        feature,
+        coordinate,
+        distanceM,
+        priority: propNumber(properties, 'priority'),
+        name: propText(properties, 'name', 'Unnamed POI'),
+        landmarkType: propText(properties, 'landmark_type', 'unknown'),
+        poiId: propText(properties, 'mappls_poi_id', ''),
+        sourceNodeId: propText(properties, 'new_node_id', ''),
+        candidateEvidence: candidateEvidenceForSource(feature, [
+          selectedValhallaCandidateAnalysis,
+          selectedOsrmCandidateAnalysis,
+        ]),
+      });
+    }
+
+    result.sort((a, b) => a.distanceM - b.distanceM || (b.priority ?? -1) - (a.priority ?? -1));
+    return result.slice(0, NEARBY_POI_LIMIT);
+  }, [diagnosticPois, selectedManeuver, selectedOsrmStepView, selectedValhallaCandidateAnalysis, selectedOsrmCandidateAnalysis, routeFocusedPoiKeys]);
 
   const selectedNarrationEvidence = useMemo(
     () => selectedManeuverIndex === null
@@ -1159,17 +1349,42 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
           initialPoiAggregates: poiAggregates,
           initialPoiDensity: poiDensity,
         });
-        syncPoiLayerVisibility(map, showPois, activePoiVisualization, showCandidateMap);
+        syncPoiLayerVisibility(
+          map, showPois, activePoiVisualization, showCandidateMap,
+          showGuidancePois, showNearbyDiagnosticPois,
+        );
         sourceManager.replay();
       }
 
       if (!disposeDashboardMapEvents) disposeDashboardMapEvents = bindDashboardMapEvents(map, {
         onAggregateSelected: inspectAggregateFeature,
         onPoiSelected: (feature) => {
+          if (!feature.properties?._route_poi_key && !highlightSelectedManeuverRef.current) {
+            setRoutePoiPulseRequest(null);
+          }
           setSelectedAggregate(null);
           setSelectedPoi(feature);
           setInspectorTab('poi');
           setLayout((current) => ({ ...current, rightCollapsed: false }));
+        },
+        onRoutePoiSelected: (feature) => {
+          const properties = feature.properties ?? {};
+          const engine = String(properties._primary_engine ?? 'valhalla');
+          const key = String(properties._route_poi_key ?? '');
+          if (engine === 'osrm') {
+            const stepIndex = Number(properties._primary_step_index);
+            if (Number.isFinite(stepIndex)) {
+              setSelectedOsrmStepIndex(stepIndex);
+              setSelectedManeuverIndex(null);
+            }
+          } else {
+            const maneuverIndex = Number(properties._primary_maneuver_index);
+            if (Number.isFinite(maneuverIndex)) {
+              setSelectedManeuverIndex(maneuverIndex);
+              setSelectedOsrmStepIndex(null);
+            }
+          }
+          if (key) requestRoutePoiPulse({ kind: 'key', key });
         },
         onRouteNarrationManeuverSelected: (maneuverIndex) => {
           setSelectedManeuverIndex(maneuverIndex);
@@ -1183,6 +1398,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
         onManeuverSelected: (maneuverIndex) => {
           setSelectedManeuverIndex(maneuverIndex);
           setSelectedOsrmStepIndex(null);
+          requestRoutePoiPulse({ kind: 'maneuver', engine: 'valhalla', index: maneuverIndex });
           setInspectorTab('maneuver');
           setLayout((current) => ({ ...current, rightCollapsed: false }));
         },
@@ -1420,6 +1636,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
     diagnosticRequestRef.current = { key: requestKey, controller };
     setDiagnosticPois(EMPTY_FC);
     setDiagnosticWarning('');
+    setRoutePoiPulseRequest(null);
     setDiagnosticStatus('loading');
     fetchDiagnosticPois(datasetId, coordinates, NARRATION_POI_MAX_DISTANCE_M, controller.signal).then((response) => {
       if (diagnosticRequestRef.current?.controller !== controller || controller.signal.aborted) return;
@@ -1502,13 +1719,16 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
     const map = mapRef.current;
     if (!map) return;
     const syncVisibility = () => {
-      syncPoiLayerVisibility(map, showPois, effectivePoiVisualization, showCandidateMap);
+      syncPoiLayerVisibility(
+        map, showPois, effectivePoiVisualization, showCandidateMap,
+        showGuidancePois, showNearbyDiagnosticPois,
+      );
     };
     syncVisibility();
     map.on('style.load', syncVisibility);
     if (!showPois) closeActivePoiPopup();
     return () => { map.off('style.load', syncVisibility); };
-  }, [showPois, effectivePoiVisualization, showCandidateMap, config, workspaceView]);
+  }, [showPois, effectivePoiVisualization, showCandidateMap, showGuidancePois, showNearbyDiagnosticPois, config, workspaceView]);
 
   useEffect(() => {
     if (!selectedAggregate) return;
@@ -1620,6 +1840,13 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
       ...item.feature,
       properties: {
         ...(item.feature.properties ?? {}),
+        _route_poi: true,
+        _association_classification: 'nearby_diagnostic',
+        _association_label: 'Nearby diagnostic POI',
+        _source_identifier: item.poiId || item.sourceNodeId || 'Unavailable',
+        _candidate_status: item.candidateEvidence.map((evidence) =>
+          `${routePoiEngineLabel(evidence.engine)}: ${evidence.status}`).join(' · '),
+        _candidate_reason: item.candidateEvidence.map((evidence) => evidence.reason).filter(Boolean).join(' · '),
         _debug_distance_m: item.distanceM.toFixed(1),
       },
     }));
@@ -1627,41 +1854,94 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
   }, [nearbyPois]);
 
   useEffect(() => {
-    const features: GeoJSON.Feature<GeoJSON.Point>[] = routeNarrationPois.map((item) => ({
-      ...item.evidence.feature,
-      properties: {
-        ...(item.evidence.feature.properties ?? {}),
-        _route_evidence: item.evidence.evidence,
-        _primary_maneuver_index: item.primaryManeuverIndex,
-        _maneuver_indexes: item.maneuverIndexes.map((index) => index + 1).join(', '),
-        _matched_instruction: item.evidence.matchedInstruction,
-        _debug_distance_m: item.evidence.distanceM === null ? '' : item.evidence.distanceM.toFixed(1),
-      },
-    }));
+    const features = visibleRouteFocusedPois.map(routeFocusedFeature);
 
     syncGeoJsonSource('route-narration-pois', { type: 'FeatureCollection', features });
-  }, [routeNarrationPois]);
+  }, [visibleRouteFocusedPois]);
 
   useEffect(() => {
-    if (!primaryNarrationEvidence) {
+    if (!showPois || !showGuidancePois) {
       syncGeoJsonSource('narration-poi', EMPTY_FC);
       return;
     }
+    let selected: RouteFocusedPoi | undefined;
+    if (routePoiPulseRequest?.kind === 'key') {
+      selected = visibleRouteFocusedPois.find((item) => item.key === routePoiPulseRequest.key);
+    } else if (routePoiPulseRequest?.kind === 'maneuver' && highlightSelectedManeuver) {
+      selected = visibleRouteFocusedPois.find((item) => item.associations.some((association) =>
+        association.engine === routePoiPulseRequest.engine &&
+        association.relatedIndexes.includes(routePoiPulseRequest.index)));
+    }
+    if (!selected && highlightSelectedManeuver) {
+      const selection = selectedManeuverIndex !== null
+        ? { engine: 'valhalla' as const, index: selectedManeuverIndex }
+        : selectedOsrmStepIndex !== null
+          ? { engine: 'osrm' as const, index: selectedOsrmStepIndex }
+          : null;
+      if (selection) {
+        selected = visibleRouteFocusedPois.find((item) => item.associations.some((association) =>
+          association.engine === selection.engine && association.relatedIndexes.includes(selection.index)));
+      }
+    }
+    syncGeoJsonSource('narration-poi', selected
+      ? { type: 'FeatureCollection', features: [routeFocusedFeature(selected)] }
+      : EMPTY_FC);
+  }, [showPois, showGuidancePois, highlightSelectedManeuver, routePoiPulseRequest, selectedManeuverIndex, selectedOsrmStepIndex, visibleRouteFocusedPois]);
 
-    syncGeoJsonSource('narration-poi', {
-      type: 'FeatureCollection',
-      features: [{
-        ...primaryNarrationEvidence.feature,
-        properties: {
-          ...(primaryNarrationEvidence.feature.properties ?? {}),
-          _debug_distance_m: primaryNarrationEvidence.distanceM === null
-            ? ''
-            : primaryNarrationEvidence.distanceM.toFixed(1),
-          _narration_evidence: primaryNarrationEvidence.evidence,
-        },
-      }],
-    });
-  }, [primaryNarrationEvidence]);
+  useEffect(() => {
+    if (routePoiPulseFrameRef.current !== null) {
+      window.cancelAnimationFrame(routePoiPulseFrameRef.current);
+      routePoiPulseFrameRef.current = null;
+    }
+    const map = mapRef.current;
+    const pulseLayerId = 'narration-poi-pulse';
+    const matchesPulseTarget = (item: RouteFocusedPoi) => routePoiPulseRequest?.kind === 'key'
+      ? item.key === routePoiPulseRequest.key
+      : routePoiPulseRequest?.kind === 'maneuver'
+        ? item.associations.some((association) =>
+          association.engine === routePoiPulseRequest.engine && association.relatedIndexes.includes(routePoiPulseRequest.index))
+        : false;
+    const hasPulseTarget = visibleRouteFocusedPois.some(matchesPulseTarget);
+    const hasHiddenPulseTarget = !hasPulseTarget && routeFocusedPois.some(matchesPulseTarget);
+    const shouldPulse = showPois && showGuidancePois && routePoiPulseRequest &&
+      (routePoiPulseRequest.kind === 'key' || highlightSelectedManeuver);
+    if (!routePoiPulseRequest || routePoiPulseRequest.nonce === lastAnimatedRoutePoiPulseRef.current) return;
+    if (!hasPulseTarget) {
+      if (hasHiddenPulseTarget) lastAnimatedRoutePoiPulseRef.current = routePoiPulseRequest.nonce;
+      return;
+    }
+    lastAnimatedRoutePoiPulseRef.current = routePoiPulseRequest.nonce;
+    if (!map || !shouldPulse || !map.getLayer(pulseLayerId)) return;
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      map.setPaintProperty(pulseLayerId, 'circle-opacity', 0);
+      return;
+    }
+
+    const durationMs = 1250;
+    const startedAt = performance.now();
+    const animate = (now: number) => {
+      const progress = Math.min(1, (now - startedAt) / durationMs);
+      const eased = 1 - (1 - progress) ** 3;
+      if (!map.getLayer(pulseLayerId)) return;
+      map.setPaintProperty(pulseLayerId, 'circle-radius', 15 + eased * 13);
+      map.setPaintProperty(pulseLayerId, 'circle-opacity', 0.34 * (1 - progress));
+      if (progress < 1) {
+        routePoiPulseFrameRef.current = window.requestAnimationFrame(animate);
+      } else {
+        routePoiPulseFrameRef.current = null;
+        map.setPaintProperty(pulseLayerId, 'circle-opacity', 0);
+      }
+    };
+    routePoiPulseFrameRef.current = window.requestAnimationFrame(animate);
+
+    return () => {
+      if (routePoiPulseFrameRef.current !== null) {
+        window.cancelAnimationFrame(routePoiPulseFrameRef.current);
+        routePoiPulseFrameRef.current = null;
+      }
+      if (map.getLayer(pulseLayerId)) map.setPaintProperty(pulseLayerId, 'circle-opacity', 0);
+    };
+  }, [routePoiPulseRequest, showPois, showGuidancePois, highlightSelectedManeuver, visibleRouteFocusedPois, routeFocusedPois]);
 
   async function refreshActiveDataset(message = '', preserveSelectedPoi = true) {
     const registry = await getDatasets();
@@ -1774,6 +2054,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
     setSelectedManeuverIndex(null);
     setSelectedOsrmStepIndex(null);
     setSelectedPoi(null);
+    setRoutePoiPulseRequest(null);
     setValhallaCandidateAnalysis(null);
     setOsrmCandidateAnalysis(null);
     setShowCandidateMap(false);
@@ -1963,6 +2244,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
     setSelectedManeuverIndex(null);
     setSelectedOsrmStepIndex(null);
     setSelectedPoi(null);
+    setRoutePoiPulseRequest(null);
 
     syncGeoJsonSource(
       'poi-turn-inspection',
@@ -2095,6 +2377,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
   function focusManeuver(item: ManeuverView) {
     setSelectedManeuverIndex(item.index);
     setSelectedOsrmStepIndex(null);
+    requestRoutePoiPulse({ kind: 'maneuver', engine: 'valhalla', index: item.index });
     openInspector('maneuver');
 
     if (!item.coordinate || !mapRef.current) return;
@@ -2109,6 +2392,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
   function focusOsrmStep(item: OsrmStepView) {
     setSelectedOsrmStepIndex(item.index);
     setSelectedManeuverIndex(null);
+    requestRoutePoiPulse({ kind: 'maneuver', engine: 'osrm', index: item.index });
     openInspector('maneuver');
     closeActivePoiPopup();
 
@@ -2225,76 +2509,56 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
   }
 
   function focusPoi(item: NearbyPoi) {
-    focusPoiFeature(item.feature, item.distanceM);
+    focusPoiFeature({
+      ...item.feature,
+      properties: {
+        ...(item.feature.properties ?? {}),
+        _route_poi: true,
+        _association_classification: 'nearby_diagnostic',
+        _association_label: 'Nearby diagnostic POI',
+        _source_identifier: item.poiId || item.sourceNodeId || 'Unavailable',
+        _candidate_status: item.candidateEvidence.map((evidence) =>
+          `${routePoiEngineLabel(evidence.engine)}: ${evidence.status}`).join(' · '),
+        _candidate_reason: item.candidateEvidence.map((evidence) => evidence.reason).filter(Boolean).join(' · '),
+      },
+    }, item.distanceM);
   }
 
   function focusNarrationEvidence(item: NarrationPoiEvidence) {
+    requestRoutePoiPulse({ kind: 'key', key: sourcePoiKey(item.feature) });
     focusPoiFeature(item.feature, item.distanceM ?? undefined);
   }
 
-  function focusRouteNarrationPoi(item: RouteNarrationPoi) {
-    setSelectedManeuverIndex(item.primaryManeuverIndex);
-    setSelectedOsrmStepIndex(null);
+  function focusRouteFocusedPoi(item: RouteFocusedPoi) {
+    const association = [...item.associations].sort((a, b) => {
+      if (a.classification !== b.classification) return a.classification === 'confirmed' ? -1 : 1;
+      return a.primaryIndex - b.primaryIndex;
+    })[0];
+    if (!association) return;
 
-    focusPoiFeature(
-      item.evidence.feature,
-      item.evidence.distanceM ?? undefined,
-    );
+    if (association.engine === 'valhalla') {
+      setSelectedManeuverIndex(association.primaryIndex);
+      setSelectedOsrmStepIndex(null);
+    } else {
+      setSelectedOsrmStepIndex(association.primaryIndex);
+      setSelectedManeuverIndex(null);
+    }
+    requestRoutePoiPulse({ kind: 'key', key: item.key });
 
-    const maneuver =
-      maneuverViews.find(
-        (candidate) =>
-          candidate.index === item.primaryManeuverIndex,
-      );
-
-    if (maneuver?.coordinate) {
-      inspectPoiTurn(
-        'valhalla',
-        item.evidence.coordinate,
-        maneuver.coordinate,
-      );
+    const feature = routeFocusedFeature(item);
+    focusPoiFeature(feature, association.distanceM ?? undefined);
+    const routePosition = association.engine === 'valhalla'
+      ? maneuverViews.find((candidate) => candidate.index === association.primaryIndex)
+      : osrmStepViews.find((candidate) => candidate.index === association.primaryIndex);
+    if (routePosition?.coordinate) {
+      inspectPoiTurn(association.engine, item.coordinate, routePosition.coordinate);
     }
 
+    const selector = association.engine === 'valhalla'
+      ? `[data-maneuver-index="${association.primaryIndex}"]`
+      : `[data-osrm-step-index="${association.primaryIndex}"]`;
     window.setTimeout(() => {
-      document.querySelector(
-        `[data-maneuver-index="${item.primaryManeuverIndex}"]`,
-      )?.scrollIntoView({
-        behavior: 'smooth',
-        block: 'center',
-      });
-    }, 80);
-  }
-
-  function focusOsrmRouteNarrationPoi(item: OsrmRouteNarrationPoi) {
-    setSelectedOsrmStepIndex(item.primaryStepIndex);
-    setSelectedManeuverIndex(null);
-
-    focusPoiFeature(
-      item.evidence.feature,
-      item.evidence.distanceM ?? undefined,
-    );
-
-    const step =
-      osrmStepViews.find(
-        (candidate) =>
-          candidate.index === item.primaryStepIndex,
-      );
-
-    if (step?.coordinate) {
-      inspectPoiTurn(
-        'osrm',
-        item.evidence.coordinate,
-        step.coordinate,
-      );
-    }
-
-    window.setTimeout(() => {
-      document.querySelector(
-        `[data-osrm-step-index="${item.primaryStepIndex}"]`,
-      )?.scrollIntoView({
-        behavior: 'smooth',
-        block: 'center',
-      });
+      document.querySelector(selector)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }, 80);
   }
 
@@ -2414,6 +2678,10 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
             poiSearch={poiSearch}
             advancedFilters={advancedFilters}
             showPois={showPois}
+            hasRoute={Boolean(route || osrmRoute)}
+            showGuidancePois={showGuidancePois}
+            showNearbyDiagnosticPois={showNearbyDiagnosticPois}
+            highlightSelectedManeuver={highlightSelectedManeuver}
             visualizationMode={poiVisualizationMode}
             visualizationStatus={poiVisualizationStatus}
             densityLegend={effectivePoiVisualization === 'density'}
@@ -2423,6 +2691,9 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
             searchHasMore={searchResponse?.has_more === true}
             onSearchChange={setPoiSearch}
             onShowPoisChange={setShowPois}
+            onShowGuidancePoisChange={setShowGuidancePois}
+            onShowNearbyDiagnosticPoisChange={setShowNearbyDiagnosticPois}
+            onHighlightSelectedManeuverChange={setHighlightSelectedManeuver}
             onVisualizationModeChange={setPoiVisualizationMode}
             onResetFilters={resetPoiFilters}
             onFocusPoi={focusPoiFeature}
@@ -2627,7 +2898,10 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
               <span><i className="legend-route valhalla" />Valhalla route</span>
               <span><i className="legend-route osrm" />OSRM route / casing</span>
               <span><i className="legend-dot source" />Source POI</span>
-              <span><i className="legend-dot strong" />POI in Valhalla/Odin instruction</span>
+              <span><i className="legend-dot confirmed" />Confirmed guidance association</span>
+              <span><i className="legend-dot valhalla-match" />Valhalla narration match</span>
+              <span><i className="legend-dot osrm-match" />OSRM narration match</span>
+              <span><i className="legend-dot nearby" />Nearby diagnostic POI</span>
               <span><i className="legend-dot selected" />Selected POI</span>
               <span><i className="legend-inspection-line" />POI ↔ turn</span>
             </div>
@@ -2636,9 +2910,9 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
           {(route || osrmRoute) && (
             <div className={`route-narration-overlay dual-engine-pois ${routePoiCardCollapsed ? 'collapsed' : ''}`}>
               <div className="route-narration-overlay-heading">
-                <strong>Landmark POIs on this route</strong>
+                <strong>Route guidance POIs</strong>
                 <span>
-                  V {routeNarrationStrongCount} · O {osrmRouteNarrationPois.length}
+                  {routePoiCounts.confirmed} confirmed · {routePoiCounts.inferred} inferred
                 </span>
                 <button
                   type="button"
@@ -2653,113 +2927,39 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
               </div>
 
               <div className="route-poi-engine-sections" aria-hidden={routePoiCardCollapsed}>
-              <div className="route-poi-engine-section valhalla">
-                <div className="route-poi-engine-heading">
-                  <span className="route-poi-engine-badge valhalla">
-                    Valhalla
-                  </span>
-                  <span>
-                    {routeNarrationStrongCount} POI
-                    {routeNarrationStrongCount === 1 ? '' : 's'}
-                  </span>
-                </div>
-
-                {routeNarrationPois.length === 0 ? (
+                {visibleRouteFocusedPois.length === 0 ? (
                   <div className="route-narration-empty compact">
                     {diagnosticStatus === 'complete'
-                      ? 'No source POI name matched the Odin instructions.'
-                      : 'Source-POI correlation is incomplete; Odin instructions remain authoritative.'}
+                      ? 'No confirmed or narration-matched source POIs were found for this engine view.'
+                      : 'Route POI evidence is incomplete; missing associations remain unavailable.'}
                   </div>
-                ) : (
-                  <div className="route-narration-overlay-list engine-list">
-                    {routeNarrationPois.map((item) => {
-                      const alsoOsrm = osrmRoutePoiKeys.has(item.key);
-
-                      return (
-                        <button
-                          key={`valhalla-${item.key}`}
-                          className="route-narration-overlay-item valhalla-engine"
-                          onClick={() => focusRouteNarrationPoi(item)}
-                          title={item.evidence.matchedInstruction}
-                        >
-                          <i />
-
-                          <span>
-                            <strong>{item.evidence.name}</strong>
-
-                            <small>
-                              Odin maneuver {item.primaryManeuverIndex + 1}
-                              {' · '}
-                              {item.evidence.poiId ||
-                                item.evidence.sourceNodeId ||
-                                'source POI'}
-                            </small>
-                          </span>
-
-                          <b className={`engine-match-badge ${alsoOsrm ? 'both' : 'valhalla'}`}>
-                            {alsoOsrm ? 'BOTH' : 'V'}
-                          </b>
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-
-              <div className="route-poi-engine-section osrm">
-                <div className="route-poi-engine-heading">
-                  <span className="route-poi-engine-badge osrm">
-                    OSRM
-                  </span>
-
-                  <span>
-                    {osrmRouteNarrationPois.length} POI
-                    {osrmRouteNarrationPois.length === 1 ? '' : 's'}
-                  </span>
-                </div>
-
-                {osrmRouteNarrationPois.length === 0 ? (
-                  <div className="route-narration-empty compact">
-                    {diagnosticStatus === 'complete'
-                      ? 'No source POI name matched the OSRM maneuver instructions.'
-                      : 'Source-POI correlation is incomplete; OSRM instructions remain authoritative.'}
-                  </div>
-                ) : (
-                  <div className="route-narration-overlay-list engine-list">
-                    {osrmRouteNarrationPois.map((item) => {
-                      const alsoValhalla =
-                        valhallaRoutePoiKeys.has(item.key);
-
-                      return (
-                        <button
-                          key={`osrm-${item.key}`}
-                          className="route-narration-overlay-item osrm-engine"
-                          onClick={() => focusOsrmRouteNarrationPoi(item)}
-                          title={item.evidence.matchedInstruction}
-                        >
-                          <i />
-
-                          <span>
-                            <strong>{item.evidence.name}</strong>
-
-                            <small>
-                              OSRM step {item.primaryStepIndex + 1}
-                              {' · '}
-                              {item.evidence.poiId ||
-                                item.evidence.sourceNodeId ||
-                                'source POI'}
-                            </small>
-                          </span>
-
-                          <b className={`engine-match-badge ${alsoValhalla ? 'both' : 'osrm'}`}>
-                            {alsoValhalla ? 'BOTH' : 'O'}
-                          </b>
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
+                ) : <div className="route-narration-overlay-list engine-list">
+                  {visibleRouteFocusedPois.map((item) => {
+                    const confirmed = item.associations.some((association) => association.classification === 'confirmed');
+                    const engines = Array.from(new Set(item.associations.map((association) => association.engine)));
+                    const engineClass = engines.length > 1 ? 'both' : engines[0];
+                    const positions = item.associations.map((association) =>
+                      `${association.engine === 'valhalla' ? 'V maneuver' : 'O step'} ${association.primaryIndex + 1}`).join(' · ');
+                    const instructions = Array.from(new Set(item.associations.map((association) => association.instruction).filter(Boolean))).join(' · ');
+                    return <button
+                      key={item.key}
+                      className={`route-narration-overlay-item route-focused ${confirmed ? 'confirmed' : `${engineClass}-engine`}`}
+                      onClick={() => focusRouteFocusedPoi(item)}
+                      title={instructions}
+                    >
+                      <i />
+                      <span>
+                        <strong>{item.name}</strong>
+                        <small>{confirmed ? 'Confirmed engine association' : 'Narration match'} · {positions}</small>
+                      </span>
+                      <b className={`engine-match-badge ${engineClass}`}>{engines.length > 1 ? 'BOTH' : engines[0] === 'valhalla' ? 'V' : 'O'}</b>
+                    </button>;
+                  })}
+                </div>}
+                {(((routeView === 'both' || routeView === 'valhalla') && route && !valhallaCandidateAnalysis?.available) ||
+                  ((routeView === 'both' || routeView === 'osrm') && osrmRoute && !osrmCandidateAnalysis?.available)) &&
+                  <div className="route-poi-evidence-note">Confirmed-selection evidence is unavailable for one or more visible engines. Instruction-name matches remain inferred.</div>}
+                <div className="route-poi-scope-note">Nearby markers cover the selected maneuver only, not the full route corridor.</div>
               </div>
             </div>
           )}

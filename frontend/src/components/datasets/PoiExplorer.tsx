@@ -123,6 +123,10 @@ export interface CompactPoiExplorerProps {
   poiSearch: string;
   advancedFilters: AdvancedPoiFiltersProps;
   showPois: boolean;
+  hasRoute: boolean;
+  showGuidancePois: boolean;
+  showNearbyDiagnosticPois: boolean;
+  highlightSelectedManeuver: boolean;
   visualizationMode: PoiVisualizationMode;
   visualizationStatus: string;
   densityLegend: boolean;
@@ -132,6 +136,9 @@ export interface CompactPoiExplorerProps {
   searchHasMore: boolean;
   onSearchChange: (value: string) => void;
   onShowPoisChange: (value: boolean) => void;
+  onShowGuidancePoisChange: (value: boolean) => void;
+  onShowNearbyDiagnosticPoisChange: (value: boolean) => void;
+  onHighlightSelectedManeuverChange: (value: boolean) => void;
   onVisualizationModeChange: (value: PoiVisualizationMode) => void;
   onResetFilters: () => void;
   onFocusPoi: (feature: GeoJSON.Feature<GeoJSON.Point>) => void;
@@ -141,11 +148,15 @@ export interface CompactPoiExplorerProps {
 
 export function CompactPoiExplorer({
   viewportSummary, searchResults, availablePoiTypes,
-  poiSearch, advancedFilters, showPois,
+  poiSearch, advancedFilters, showPois, hasRoute,
+  showGuidancePois, showNearbyDiagnosticPois, highlightSelectedManeuver,
   visualizationMode, visualizationStatus, densityLegend,
   searchLoading, searchLoadingMore, searchError, searchHasMore,
   onSearchChange: setPoiSearch,
   onShowPoisChange: setShowPois,
+  onShowGuidancePoisChange: setShowGuidancePois,
+  onShowNearbyDiagnosticPoisChange: setShowNearbyDiagnosticPois,
+  onHighlightSelectedManeuverChange: setHighlightSelectedManeuver,
   onVisualizationModeChange: setVisualizationMode,
   onResetFilters: resetPoiFilters,
   onFocusPoi: focusPoiFeature,
@@ -189,6 +200,13 @@ export function CompactPoiExplorer({
           <small>Relative concentration</small>
         </div>}
       </div>
+      {hasRoute && <fieldset className="route-poi-layer-controls" disabled={!showPois}>
+        <legend>Route POI layers</legend>
+        <label><input type="checkbox" checked={showGuidancePois} onChange={(event) => setShowGuidancePois(event.target.checked)} /><span>Guidance-related POIs</span></label>
+        <label><input type="checkbox" checked={showNearbyDiagnosticPois} onChange={(event) => setShowNearbyDiagnosticPois(event.target.checked)} /><span>Nearby diagnostic POIs</span></label>
+        <label><input type="checkbox" checked={highlightSelectedManeuver} onChange={(event) => setHighlightSelectedManeuver(event.target.checked)} /><span>Highlight selected maneuver</span></label>
+        {!showPois && <small>Enable POIs on map to display route POI layers.</small>}
+      </fieldset>}
       {(poiSearch.trim() || advancedFilters.conditions.length > 0) && <div className="poi-search-results">
         {searchLoading && <div className="empty-state" role="status">Searching POIs…</div>}
         {searchError && <div className="dataset-warning" role="alert">{searchError} <button onClick={onRetrySearch}>Retry</button></div>}

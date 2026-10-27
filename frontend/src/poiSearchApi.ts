@@ -56,10 +56,96 @@ export interface DiagnosticPoiResponse extends FeatureCollection<Point> {
   radius_m: number;
 }
 
+export interface ViewportAggregate {
+  id: string;
+  source_record_count: number;
+  coordinates: [number, number];
+  coordinate_kind: 'represented_bounds_center';
+  bounds: PoiBounds;
+  aggregation_level: number;
+  cluster_ref: string;
+}
+
+export interface ViewportIndividualPoi {
+  id: string;
+  source_record_id: number;
+  coordinates: [number, number];
+  feature: Feature<Point>;
+}
+
+export interface ViewportResponseMeta {
+  spatial_strategy: string;
+  requested_aggregation_level: number | null;
+  aggregation_level: number | null;
+  adaptive_coarsening: boolean;
+  feature_count: number;
+  aggregate_count: number;
+  individual_count: number;
+  represented_poi_count: number;
+  max_features: number;
+  server_max_features: number;
+  max_payload_bytes: number;
+  serialized_bytes: number;
+}
+
+export interface PoiViewportResponse {
+  dataset_id: string;
+  generation: string;
+  bbox: PoiBounds;
+  zoom: number;
+  mode: 'aggregated' | 'individual';
+  complete: boolean;
+  total_matching_pois: number;
+  aggregates: ViewportAggregate[];
+  individual_pois: ViewportIndividualPoi[];
+  meta: ViewportResponseMeta;
+}
+
+export interface ClusterMemberResponse {
+  dataset_id: string;
+  generation: string;
+  cluster_id: string;
+  cluster_ref: string;
+  bounds: PoiBounds;
+  aggregation_level: number;
+  total_matching_pois: number;
+  individual_pois: ViewportIndividualPoi[];
+  returned: number;
+  has_more: boolean;
+  next_cursor: string | null;
+  meta: {
+    order: 'source_record_id_ascending';
+    max_limit: number;
+    max_payload_bytes: number;
+    serialized_bytes: number;
+  };
+}
+
+export interface PoiViewportParams {
+  datasetId: string;
+  bbox: PoiBounds;
+  zoom: number;
+  maxFeatures?: number;
+}
+
+export interface ClusterMemberParams {
+  datasetId: string;
+  clusterRef: string;
+  limit?: number;
+  cursor?: string;
+}
+
 export class PoiSearchRequestError extends Error {
-  constructor(message: string, public readonly status: number) {
+  constructor(message: string, public readonly status: number, public readonly code: string | null = null) {
     super(message);
     this.name = 'PoiSearchRequestError';
+  }
+}
+
+export class PoiIndexStaleError extends PoiSearchRequestError {
+  constructor(message = 'The POI index changed. Refresh the map and try this cluster again.') {
+    super(message, 409, 'poi_index_generation_stale');
+    this.name = 'PoiIndexStaleError';
   }
 }
 
@@ -94,15 +180,82 @@ function responseDetail(body: unknown, fallback: string): string {
   return fallback;
 }
 
-export async function searchPois(params: PoiSearchParams, signal?: AbortSignal): Promise<PoiSearchResponse> {
-  const response = await apiFetch(buildPoiSearchUrl(params), { signal });
+function responseCode(body: unknown): string | null {
+  const detail = (body as { detail?: unknown } | null)?.detail;
+  return detail && typeof detail === 'object' && typeof (detail as { code?: unknown }).code === 'string'
+    ? (detail as { code: string }).code
+    : null;
+}
+
+async function jsonResponse<T>(response: Response, fallback: string): Promise<T> {
   let body: unknown;
   try { body = await response.json(); } catch { body = null; }
   if (!response.ok) {
-    const detail = responseDetail(body, `POI search request failed: ${response.status}`);
-    throw new PoiSearchRequestError(detail, response.status);
+    const code = responseCode(body);
+    if (response.status === 409 && code === 'poi_index_generation_stale') throw new PoiIndexStaleError();
+    throw new PoiSearchRequestError(responseDetail(body, fallback), response.status, code);
   }
-  return body as PoiSearchResponse;
+  return body as T;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object';
+}
+
+function parseViewportResponse(value: unknown): PoiViewportResponse {
+  if (!isRecord(value) || typeof value.dataset_id !== 'string' || typeof value.generation !== 'string' ||
+      (value.mode !== 'aggregated' && value.mode !== 'individual') || typeof value.complete !== 'boolean' ||
+      typeof value.total_matching_pois !== 'number' || !Array.isArray(value.bbox) ||
+      !Array.isArray(value.aggregates) || !Array.isArray(value.individual_pois) || !isRecord(value.meta)) {
+    throw new PoiSearchRequestError('The POI map service returned an invalid response.', 503);
+  }
+  return value as unknown as PoiViewportResponse;
+}
+
+function parseClusterMemberResponse(value: unknown): ClusterMemberResponse {
+  if (!isRecord(value) || typeof value.dataset_id !== 'string' || typeof value.generation !== 'string' ||
+      typeof value.cluster_ref !== 'string' || typeof value.total_matching_pois !== 'number' ||
+      !Array.isArray(value.individual_pois) || typeof value.has_more !== 'boolean' ||
+      !(value.next_cursor === null || typeof value.next_cursor === 'string') || !isRecord(value.meta)) {
+    throw new PoiSearchRequestError('The POI map service returned an invalid member response.', 503);
+  }
+  return value as unknown as ClusterMemberResponse;
+}
+
+export async function searchPois(params: PoiSearchParams, signal?: AbortSignal): Promise<PoiSearchResponse> {
+  const response = await apiFetch(buildPoiSearchUrl(params), { signal });
+  return jsonResponse(response, `POI search request failed: ${response.status}`);
+}
+
+export function buildPoiViewportUrl(params: PoiViewportParams): string {
+  if (!params.datasetId.trim()) throw new Error('dataset_id is required');
+  if (!Number.isFinite(params.zoom)) throw new Error('zoom must be finite');
+  const query = new URLSearchParams({
+    dataset_id: params.datasetId,
+    bbox: serializePoiBounds(params.bbox),
+    zoom: String(params.zoom),
+  });
+  if (params.maxFeatures !== undefined) query.set('max_features', String(params.maxFeatures));
+  return `/api/pois/viewport?${query.toString()}`;
+}
+
+export async function fetchPoiViewport(params: PoiViewportParams, signal?: AbortSignal): Promise<PoiViewportResponse> {
+  const response = await apiFetch(buildPoiViewportUrl(params), { signal });
+  return parseViewportResponse(await jsonResponse(response, `Viewport POI request failed: ${response.status}`));
+}
+
+export function buildClusterMemberUrl(params: ClusterMemberParams): string {
+  if (!params.datasetId.trim()) throw new Error('dataset_id is required');
+  if (!params.clusterRef) throw new Error('cluster_ref is required');
+  const query = new URLSearchParams({ dataset_id: params.datasetId, cluster_ref: params.clusterRef });
+  if (params.limit !== undefined) query.set('limit', String(params.limit));
+  if (params.cursor) query.set('cursor', params.cursor);
+  return `/api/pois/viewport/cluster-members?${query.toString()}`;
+}
+
+export async function fetchClusterMembers(params: ClusterMemberParams, signal?: AbortSignal): Promise<ClusterMemberResponse> {
+  const response = await apiFetch(buildClusterMemberUrl(params), { signal });
+  return parseClusterMemberResponse(await jsonResponse(response, `Cluster member request failed: ${response.status}`));
 }
 
 export function buildPoiQueryBody(params: PoiQueryParams): Record<string, unknown> {

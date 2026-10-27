@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { buildPoiQueryBody, buildPoiSearchUrl, fetchDiagnosticPois, mergePoiPages, queryPois, searchPois, serializePoiBounds } from './poiSearchApi';
+import { buildClusterMemberUrl, buildPoiQueryBody, buildPoiSearchUrl, buildPoiViewportUrl, fetchClusterMembers, fetchDiagnosticPois, fetchPoiViewport, mergePoiPages, PoiIndexStaleError, queryPois, searchPois, serializePoiBounds } from './poiSearchApi';
 
 const feature = (id: string) => ({
   type: 'Feature' as const,
@@ -95,6 +95,40 @@ describe('POI search client', () => {
       signal: controller.signal,
       body: JSON.stringify({ dataset_id: 'demo', points: [[77, 28], [77.1, 28.1]], radius_m: 500 }),
     }));
+    vi.unstubAllGlobals();
+  });
+
+  it('serializes the authoritative viewport contract and uses authenticated fetch', async () => {
+    expect(new URL(buildPoiViewportUrl({ datasetId: 'weekly data', bbox: [76, 27, 78, 29], zoom: 12.5, maxFeatures: 500 }), 'http://local').searchParams.toString())
+      .toBe('dataset_id=weekly+data&bbox=76%2C27%2C78%2C29&zoom=12.5&max_features=500');
+    const payload = { dataset_id: 'weekly data', generation: 'g1', bbox: [76, 27, 78, 29], zoom: 12.5, mode: 'aggregated', complete: true, total_matching_pois: 0, aggregates: [], individual_pois: [], meta: {} };
+    const controller = new AbortController();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => payload }));
+    await expect(fetchPoiViewport({ datasetId: 'weekly data', bbox: [76, 27, 78, 29], zoom: 12.5 }, controller.signal)).resolves.toBe(payload);
+    expect(fetch).toHaveBeenCalledWith(expect.stringContaining('/api/pois/viewport?'), expect.objectContaining({ signal: controller.signal, credentials: 'same-origin' }));
+    vi.unstubAllGlobals();
+  });
+
+  it('serializes bounded cluster pagination and distinguishes stale generations', async () => {
+    const url = new URL(buildClusterMemberUrl({ datasetId: 'weekly', clusterRef: 'a+b=', limit: 100, cursor: 'next=' }), 'http://local');
+    expect(Object.fromEntries(url.searchParams)).toEqual({ dataset_id: 'weekly', cluster_ref: 'a+b=', limit: '100', cursor: 'next=' });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 409, json: async () => ({ detail: { code: 'poi_index_generation_stale', message: 'internal detail' } }) }));
+    await expect(fetchClusterMembers({ datasetId: 'weekly', clusterRef: 'old' })).rejects.toBeInstanceOf(PoiIndexStaleError);
+    vi.unstubAllGlobals();
+  });
+
+  it('preserves abort failures from viewport requests', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new DOMException('Aborted', 'AbortError')));
+    await expect(fetchPoiViewport({ datasetId: 'weekly', bbox: [76, 27, 78, 29], zoom: 10 }, controller.signal)).rejects.toMatchObject({ name: 'AbortError' });
+    vi.unstubAllGlobals();
+  });
+
+  it.each([400, 413, 503])('preserves viewport HTTP %s failures as typed request errors', async (status) => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status, json: async () => ({ detail: 'rejected' }) }));
+    await expect(fetchPoiViewport({ datasetId: 'weekly', bbox: [76, 27, 78, 29], zoom: 10 }))
+      .rejects.toMatchObject({ name: 'PoiSearchRequestError', status });
     vi.unstubAllGlobals();
   });
 

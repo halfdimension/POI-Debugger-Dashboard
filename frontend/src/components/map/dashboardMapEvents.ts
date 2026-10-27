@@ -2,12 +2,13 @@ import type { Feature, GeoJsonProperties, Point } from 'geojson';
 import type maplibregl from 'maplibre-gl';
 import type { LngLat } from '../../types';
 import {
-  expandPoiCluster,
+  expandServerAggregate,
   INDIVIDUAL_POI_LAYER_ID,
   POI_CLUSTER_LAYER_ID,
 } from './poiMap';
 
 export interface DashboardMapEventCallbacks {
+  onAggregateSelected: (feature: Feature<Point>) => void;
   onPoiSelected: (feature: Feature<Point>) => void;
   onRouteNarrationManeuverSelected: (maneuverIndex: number) => void;
   onManeuverScrollRequested: (maneuverIndex: number) => void;
@@ -70,7 +71,8 @@ export function bindDashboardMapEvents(
     event.originalEvent.stopPropagation();
     const feature = event.features?.[0] as Feature | undefined;
     if (feature) {
-      void expandPoiCluster(map, feature, () => !disposed);
+      if (feature.geometry.type === 'Point') callbacks.onAggregateSelected(feature as Feature<Point>);
+      expandServerAggregate(map, feature);
     }
   };
 

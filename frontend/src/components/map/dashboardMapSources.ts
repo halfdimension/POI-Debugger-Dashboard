@@ -4,6 +4,7 @@ import type maplibregl from 'maplibre-gl';
 export const DASHBOARD_GEOJSON_SOURCE_IDS = [
   'route',
   'osrm-route',
+  'poi-aggregates',
   'pois',
   'selected-poi',
   'poi-turn-inspection',

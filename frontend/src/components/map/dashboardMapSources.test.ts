@@ -133,6 +133,7 @@ describe('createDashboardMapSourceManager', () => {
     expect(DASHBOARD_GEOJSON_SOURCE_IDS).toEqual([
       'route',
       'osrm-route',
+      'poi-aggregates',
       'pois',
       'selected-poi',
       'poi-turn-inspection',

@@ -4,7 +4,7 @@ import { getDatasetPreparationJob, getDatasets, getOsrmStatus, getValhallaStatus
 import { haversineMeters, updateCoordinateValue } from './coordinates';
 import { decodePolyline6 } from './polyline';
 import { pointFeature, propNumber, propText } from './poi';
-import { fetchDiagnosticPois, mergePoiPages, queryPois, searchPois, type PoiSearchCondition, type PoiSearchResponse } from './poiSearchApi';
+import { fetchClusterMembers, fetchDiagnosticPois, fetchPoiViewport, mergePoiPages, PoiIndexStaleError, PoiSearchRequestError, queryPois, searchPois, type ClusterMemberResponse, type PoiSearchCondition, type PoiSearchResponse, type PoiViewportResponse, type ViewportAggregate } from './poiSearchApi';
 import { loadInitialDashboard } from './initialization';
 import { developmentLogin, getAuthConfig, getCurrentSession, logout, setAuthSession, type AuthConfig, type AuthSession } from './auth';
 import { AnalysisWorkspace, Sidebar } from './components/DashboardLayout';
@@ -16,6 +16,7 @@ import { CompactPoiExplorer } from './components/datasets/PoiExplorer';
 import type { ManeuverView, NarrationPoiEvidence, NearbyPoi, OsrmRouteNarrationPoi, OsrmStepView, RouteNarrationPoi } from './components/inspection/viewModels';
 import { ManeuverInspection } from './components/inspection/ManeuverInspection';
 import { SelectedPoiDetails } from './components/inspection/SelectedPoiDetails';
+import { ClusterMemberDetails } from './components/inspection/ClusterMemberDetails';
 import { MapContextMenu, type MapContextMenuLocation } from './components/map/MapContextMenu';
 import { bindDashboardMapEvents } from './components/map/dashboardMapEvents';
 import { registerDashboardMapLayers } from './components/map/dashboardMapLayers';
@@ -27,12 +28,15 @@ import {
 import { visibleMapBounds } from './components/map/mapBounds';
 import {
   bindDebouncedViewportListener,
+  aggregateBounds,
   incompleteViewportMessage,
   INDIVIDUAL_POI_LAYER_ID,
   POI_CLUSTER_LAYER_ID,
   ViewportRequestCoordinator,
   viewportPoiLabel,
   viewportRequestKey,
+  viewportFeatureCollections,
+  VIEWPORT_MAX_FEATURES,
 } from './components/map/poiMap';
 import { PoiPopupController } from './components/map/poiPopup';
 import { RouteSetupControls } from './components/route/RouteSetupControls';
@@ -60,12 +64,12 @@ import { useVerticalPanelResize } from './useVerticalPanelResize';
 declare const __VPD_MOCK_API__: boolean;
 
 type PickMode = 'start' | 'end';
+type SelectedViewportAggregate = ViewportAggregate & { dataset_id: string; generation: string };
 
 const EMPTY_FC: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features: [] };
 const NEARBY_POI_RADIUS_M = 100;
 const NEARBY_POI_LIMIT = 12;
 const NARRATION_POI_MAX_DISTANCE_M = 500;
-const VIEWPORT_POI_LIMIT = 500;
 const SEARCH_POI_LIMIT = 50;
 const ANALYSIS_HEIGHT_STORAGE_KEY = 'poi-dashboard.analysis-height';
 const DEFAULT_ANALYSIS_HEIGHT = 300;
@@ -135,9 +139,17 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
   const [end, setEnd] = useState<LngLat | null>(null);
   const [mapContextMenu, setMapContextMenu] = useState<MapContextMenuLocation | null>(null);
   const [pois, setPois] = useState<GeoJSON.FeatureCollection>(EMPTY_FC);
-  const [viewportMeta, setViewportMeta] = useState({ loading: false, error: '', incomplete: false });
+  const [poiAggregates, setPoiAggregates] = useState<GeoJSON.FeatureCollection>(EMPTY_FC);
+  const [viewportResponse, setViewportResponse] = useState<PoiViewportResponse | null>(null);
+  const [viewportMeta, setViewportMeta] = useState({ loading: false, error: '' });
   const [viewportRevision, setViewportRevision] = useState(0);
   const viewportRequestsRef = useRef(new ViewportRequestCoordinator());
+  const viewportGenerationRef = useRef('');
+  const clusterMemberControllerRef = useRef<AbortController | null>(null);
+  const [selectedAggregate, setSelectedAggregate] = useState<SelectedViewportAggregate | null>(null);
+  const [clusterMembers, setClusterMembers] = useState<GeoJSON.Feature<GeoJSON.Point>[]>([]);
+  const [clusterMemberResponse, setClusterMemberResponse] = useState<ClusterMemberResponse | null>(null);
+  const [clusterMemberState, setClusterMemberState] = useState({ loading: false, loadingMore: false, error: '' });
   const [searchResponse, setSearchResponse] = useState<PoiSearchResponse | null>(null);
   const [searchFeatures, setSearchFeatures] = useState<GeoJSON.Feature<GeoJSON.Point>[]>([]);
   const [searchState, setSearchState] = useState({ loading: false, loadingMore: false, error: '' });
@@ -1162,11 +1174,14 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
       if (disposed || disposeDashboardMapEvents) return;
       registerDashboardMapLayers(map, {
         initialPois: showPois ? filteredPois : EMPTY_FC,
+        initialPoiAggregates: showPois ? poiAggregates : EMPTY_FC,
       });
       sourceManager.flush();
 
       disposeDashboardMapEvents = bindDashboardMapEvents(map, {
+        onAggregateSelected: inspectAggregateFeature,
         onPoiSelected: (feature) => {
+          setSelectedAggregate(null);
           setSelectedPoi(feature);
           setInspectorTab('poi');
           setLayout((current) => ({ ...current, rightCollapsed: false }));
@@ -1265,6 +1280,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
 
   useEffect(() => () => {
     viewportRequestsRef.current.cancel();
+    clusterMemberControllerRef.current?.abort();
     diagnosticRequestRef.current?.controller.abort();
     routeRequestRef.current?.abort();
   }, []);
@@ -1272,33 +1288,61 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
   useEffect(() => {
     const datasetId = datasetRegistry?.active_dataset;
     const map = mapRef.current;
-    if (!datasetId || !map) {
-      viewportRequestsRef.current.cancel();
+    if (!datasetId || !map || !showPois) {
+      viewportRequestsRef.current.invalidate();
+      if (!showPois) {
+        setPois(EMPTY_FC);
+        setPoiAggregates(EMPTY_FC);
+        setViewportResponse(null);
+        setViewportMeta({ loading: false, error: '' });
+      }
       return;
     }
     const bbox = visibleMapBounds(map);
     if (!bbox) {
       viewportRequestsRef.current.cancel();
       setPois(EMPTY_FC);
-      setViewportMeta({ loading: false, incomplete: false, error: 'POIs are unavailable for a viewport crossing the antimeridian.' });
+      setPoiAggregates(EMPTY_FC);
+      setViewportResponse(null);
+      setViewportMeta({ loading: false, error: 'POIs are unavailable for a viewport crossing the antimeridian.' });
       return;
     }
-    const ticket = viewportRequestsRef.current.begin(viewportRequestKey(datasetId, bbox));
+    if (viewportResponse && viewportResponse.dataset_id !== datasetId) {
+      setPois(EMPTY_FC);
+      setPoiAggregates(EMPTY_FC);
+      setViewportResponse(null);
+    }
+    const zoom = Math.max(0, Math.min(22, map.getZoom()));
+    const ticket = viewportRequestsRef.current.begin(viewportRequestKey(datasetId, bbox, zoom, showPois, viewportGenerationRef.current));
     if (!ticket) return;
     setViewportMeta((state) => ({ ...state, loading: true, error: '' }));
-    searchPois({
+    fetchPoiViewport({
       datasetId,
       bbox,
-      limit: VIEWPORT_POI_LIMIT,
+      zoom,
+      maxFeatures: VIEWPORT_MAX_FEATURES,
     }, ticket.controller.signal).then((response) => {
-      if (!viewportRequestsRef.current.complete(ticket)) return;
-      setPois(response);
-      setViewportMeta({ loading: false, error: '', incomplete: response.has_more });
+      if (!showPois || activeDatasetIdRef.current !== datasetId || !viewportRequestsRef.current.complete(ticket)) return;
+      viewportGenerationRef.current = response.generation;
+      const collections = viewportFeatureCollections(response);
+      setPois(collections.individuals);
+      setPoiAggregates(collections.aggregates);
+      setViewportResponse(response);
+      setViewportMeta({ loading: false, error: '' });
     }).catch((err) => {
       if (ticket.controller.signal.aborted || !viewportRequestsRef.current.fail(ticket)) return;
-      setViewportMeta({ loading: false, incomplete: false, error: err instanceof Error ? err.message : String(err) });
+      const message = err instanceof PoiSearchRequestError && err.code === 'poi_index_not_ready'
+        ? 'The POI index is not ready. A Super Admin must prepare this dataset.'
+        : err instanceof PoiSearchRequestError && err.status === 400
+          ? 'The current map view could not be requested. Move or zoom the map and try again.'
+        : err instanceof PoiSearchRequestError && err.status === 413
+          ? 'This map area is too dense to display safely. Zoom in and try again.'
+          : err instanceof PoiSearchRequestError && err.status === 503
+            ? 'The POI map service is temporarily unavailable.'
+            : 'The POI map service could not be reached.';
+      setViewportMeta({ loading: false, error: message });
     });
-  }, [datasetRegistry?.active_dataset, viewportRevision]);
+  }, [datasetRegistry?.active_dataset, viewportRevision, showPois]);
 
   useEffect(() => {
     const datasetId = datasetRegistry?.active_dataset;
@@ -1423,9 +1467,21 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
   }, [config]);
 
   useEffect(() => {
-    const data = showPois ? filteredPois : EMPTY_FC;
-    syncGeoJsonSource('pois', data);
-  }, [filteredPois, showPois, config]);
+    syncGeoJsonSource('pois', showPois ? filteredPois : EMPTY_FC);
+    syncGeoJsonSource('poi-aggregates', showPois ? poiAggregates : EMPTY_FC);
+  }, [filteredPois, poiAggregates, showPois, config]);
+
+  useEffect(() => {
+    if (!selectedAggregate) return;
+    if (!showPois || selectedAggregate.dataset_id !== datasetRegistry?.active_dataset ||
+        viewportResponse && selectedAggregate.generation !== viewportResponse.generation) {
+      clusterMemberControllerRef.current?.abort();
+      setSelectedAggregate(null);
+      setClusterMembers([]);
+      setClusterMemberResponse(null);
+      setClusterMemberState({ loading: false, loadingMore: false, error: '' });
+    }
+  }, [datasetRegistry?.active_dataset, showPois, viewportResponse?.generation]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -1572,6 +1628,14 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
     const registry = await getDatasets();
     setDatasetRegistry(registry);
     setPois(EMPTY_FC);
+    setPoiAggregates(EMPTY_FC);
+    setViewportResponse(null);
+    viewportGenerationRef.current = '';
+    clusterMemberControllerRef.current?.abort();
+    setSelectedAggregate(null);
+    setClusterMembers([]);
+    setClusterMemberResponse(null);
+    setClusterMemberState({ loading: false, loadingMore: false, error: '' });
     setDiagnosticPois(EMPTY_FC);
     setDiagnosticStatus('idle');
     setDiagnosticWarning('');
@@ -2017,6 +2081,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
   }
 
   function focusPoiFeature(feature: GeoJSON.Feature<GeoJSON.Point>, debugDistanceM?: number) {
+    setSelectedAggregate(null);
     setSelectedPoi(feature);
     openInspector('poi');
 
@@ -2048,6 +2113,72 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
       coordinate,
       properties,
     );
+  }
+
+  async function requestClusterMemberPage(aggregate: SelectedViewportAggregate, cursor?: string) {
+    const controller = new AbortController();
+    clusterMemberControllerRef.current?.abort();
+    clusterMemberControllerRef.current = controller;
+    setClusterMemberState({ loading: !cursor, loadingMore: Boolean(cursor), error: '' });
+    try {
+      const response = await fetchClusterMembers({
+        datasetId: aggregate.dataset_id,
+        clusterRef: aggregate.cluster_ref,
+        limit: 100,
+        cursor,
+      }, controller.signal);
+      if (controller.signal.aborted || activeDatasetIdRef.current !== aggregate.dataset_id || response.generation !== aggregate.generation) return;
+      setClusterMemberResponse(response);
+      setClusterMembers((current) => cursor ? mergePoiPages(current, response.individual_pois.map((item) => item.feature)) : response.individual_pois.map((item) => item.feature));
+      setClusterMemberState({ loading: false, loadingMore: false, error: '' });
+    } catch (err) {
+      if (controller.signal.aborted) return;
+      if (err instanceof PoiIndexStaleError) {
+        setClusterMemberState({ loading: false, loadingMore: false, error: 'This aggregate is from an older POI index. The viewport is being refreshed.' });
+        viewportRequestsRef.current.invalidate();
+        setViewportRevision((revision) => revision + 1);
+      } else {
+        const message = err instanceof PoiSearchRequestError && err.status === 400
+          ? 'This aggregate can no longer be inspected. Refresh the viewport and try again.'
+          : err instanceof PoiSearchRequestError && err.status === 413
+            ? 'This member page is too large. Try the aggregate again.'
+            : 'Aggregate members are temporarily unavailable.';
+        setClusterMemberState({ loading: false, loadingMore: false, error: message });
+      }
+    } finally {
+      if (clusterMemberControllerRef.current === controller) clusterMemberControllerRef.current = null;
+    }
+  }
+
+  function inspectAggregateFeature(feature: GeoJSON.Feature<GeoJSON.Point>) {
+    const bounds = aggregateBounds(feature);
+    const properties = feature.properties ?? {};
+    const datasetId = String(properties.dataset_id ?? '');
+    const generation = String(properties.generation ?? '');
+    const clusterRef = String(properties.cluster_ref ?? '');
+    if (!bounds || !datasetId || !generation || !clusterRef || datasetId !== activeDatasetIdRef.current) return;
+    const aggregate: SelectedViewportAggregate = {
+      id: String(feature.id ?? ''),
+      source_record_count: Number(properties.source_record_count),
+      coordinates: feature.geometry.coordinates.slice() as [number, number],
+      coordinate_kind: 'represented_bounds_center',
+      bounds,
+      aggregation_level: Number(properties.aggregation_level),
+      cluster_ref: clusterRef,
+      dataset_id: datasetId,
+      generation,
+    };
+    setSelectedPoi(null);
+    setSelectedAggregate(aggregate);
+    setClusterMembers([]);
+    setClusterMemberResponse(null);
+    openInspector('poi');
+    void requestClusterMemberPage(aggregate);
+  }
+
+  function loadMoreClusterMembers() {
+    if (!selectedAggregate || !clusterMemberResponse?.next_cursor || clusterMemberState.loadingMore) return;
+    void requestClusterMemberPage(selectedAggregate, clusterMemberResponse.next_cursor);
   }
 
   function focusPoi(item: NearbyPoi) {
@@ -2223,7 +2354,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
           />
 
           <CompactPoiExplorer
-            filteredPoiFeatures={filteredPoiFeatures}
+            viewportSummary={showPois ? viewportPoiLabel(viewportResponse) : 'Map visualization hidden'}
             searchResults={searchResults}
             availablePoiTypes={availablePoiTypes}
             poiSearch={poiSearch}
@@ -2281,15 +2412,15 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
             </div>
 
             <span>
-              {viewportMeta.loading ? 'Loading POIs…' : viewportPoiLabel(filteredPoiFeatures.length, viewportMeta.incomplete)} ·
+              {viewportMeta.loading ? 'Loading viewport representation…' : viewportPoiLabel(viewportResponse)} ·
               {' '}{maneuverViews.length} Odin maneuvers · {osrmStepViews.length} OSRM steps
             </span>
           </div>
           <div className="map-surface">
             <div ref={mapContainer} className="map" />
-            {viewportMeta.incomplete && (
+            {viewportResponse && !viewportResponse.complete && (
               <div className="map-data-notice" role="status">
-                {incompleteViewportMessage(filteredPoiFeatures.length, viewportMeta.incomplete)}
+                {incompleteViewportMessage(viewportResponse)}
               </div>
             )}
             {(viewportMeta.error || diagnosticWarning) && (
@@ -2618,7 +2749,9 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
           <div className="inspector-content" role="tabpanel">
           {inspectorTab === 'poi' && (selectedPoi
             ? <SelectedPoiDetails poi={selectedPoi} />
-            : <div className="inspector-empty"><strong>No POI selected</strong><span>Select a POI on the map or from search results to inspect its properties.</span></div>)}
+            : selectedAggregate
+              ? <ClusterMemberDetails aggregate={selectedAggregate} response={clusterMemberResponse} members={clusterMembers} loading={clusterMemberState.loading} loadingMore={clusterMemberState.loadingMore} error={clusterMemberState.error} onSelect={focusPoiFeature} onLoadMore={loadMoreClusterMembers} />
+              : <div className="inspector-empty"><strong>No POI selected</strong><span>Select a POI or aggregate on the map, or choose a search result.</span></div>)}
 
           {inspectorTab === 'route' && <>
             <RouteComparisonSummary

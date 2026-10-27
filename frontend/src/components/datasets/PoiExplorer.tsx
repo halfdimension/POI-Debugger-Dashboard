@@ -117,7 +117,7 @@ export function AdvancedPoiFilters({ conditions, mode, scope, availablePoiTypes,
 }
 
 export interface CompactPoiExplorerProps {
-  filteredPoiFeatures: GeoJSON.Feature<GeoJSON.Point>[];
+  viewportSummary: string;
   searchResults: GeoJSON.Feature<GeoJSON.Point>[];
   availablePoiTypes: string[];
   poiSearch: string;
@@ -136,7 +136,7 @@ export interface CompactPoiExplorerProps {
 }
 
 export function CompactPoiExplorer({
-  filteredPoiFeatures, searchResults, availablePoiTypes,
+  viewportSummary, searchResults, availablePoiTypes,
   poiSearch, advancedFilters, showPois,
   searchLoading, searchLoadingMore, searchError, searchHasMore,
   onSearchChange: setPoiSearch,
@@ -146,7 +146,7 @@ export function CompactPoiExplorer({
   onLoadMore, onRetrySearch,
 }: CompactPoiExplorerProps) {
   return (
-    <PanelSection title="POI explorer" meta={`${filteredPoiFeatures.length} in view`}>
+    <PanelSection title="POI explorer" meta={viewportSummary}>
       <label className="poi-search-label" htmlFor="compact-poi-search">Search by name or identifier</label>
       <div className="poi-search-row">
         <input id="compact-poi-search" value={poiSearch} placeholder="Name, Mappls ID, node ID, OSM ID or type" onChange={(event) => setPoiSearch(event.target.value)} />

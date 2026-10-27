@@ -1,11 +1,12 @@
 import type { FeatureCollection } from 'geojson';
 import type maplibregl from 'maplibre-gl';
 import {
-  explorerPoiSource,
+  authoritativePoiSource,
   EXPLORER_POI_SOURCE_ID,
   INDIVIDUAL_POI_LAYER_ID,
   POI_CLUSTER_COUNT_LAYER_ID,
   POI_CLUSTER_LAYER_ID,
+  POI_AGGREGATE_SOURCE_ID,
 } from './poiMap';
 
 const EMPTY_FEATURE_COLLECTION: FeatureCollection = {
@@ -15,11 +16,12 @@ const EMPTY_FEATURE_COLLECTION: FeatureCollection = {
 
 export interface DashboardMapLayerOptions {
   initialPois: FeatureCollection;
+  initialPoiAggregates?: FeatureCollection;
 }
 
 export function registerDashboardMapLayers(
   map: maplibregl.Map,
-  { initialPois }: DashboardMapLayerOptions,
+  { initialPois, initialPoiAggregates = EMPTY_FEATURE_COLLECTION }: DashboardMapLayerOptions,
 ): void {
   // OSRM goes underneath as a thick red line. Valhalla is registered next so
   // overlapping routes retain the existing red casing around the blue line.
@@ -55,15 +57,14 @@ export function registerDashboardMapLayers(
     },
   });
 
-  map.addSource(EXPLORER_POI_SOURCE_ID, explorerPoiSource(initialPois));
+  map.addSource(POI_AGGREGATE_SOURCE_ID, authoritativePoiSource(initialPoiAggregates));
   map.addLayer({
     id: POI_CLUSTER_LAYER_ID,
     type: 'circle',
-    source: EXPLORER_POI_SOURCE_ID,
-    filter: ['has', 'point_count'],
+    source: POI_AGGREGATE_SOURCE_ID,
     paint: {
-      'circle-radius': ['step', ['get', 'point_count'], 15, 25, 18, 100, 22, 250, 26],
-      'circle-color': ['step', ['get', 'point_count'], '#6d5bd0', 100, '#5746b8', 250, '#43338f'],
+      'circle-radius': ['step', ['get', 'source_record_count'], 15, 25, 18, 100, 22, 250, 26],
+      'circle-color': ['step', ['get', 'source_record_count'], '#6d5bd0', 100, '#5746b8', 250, '#43338f'],
       'circle-stroke-width': 2,
       'circle-stroke-color': 'rgba(255,255,255,.9)',
       'circle-opacity': 0.94,
@@ -72,10 +73,9 @@ export function registerDashboardMapLayers(
   map.addLayer({
     id: POI_CLUSTER_COUNT_LAYER_ID,
     type: 'symbol',
-    source: EXPLORER_POI_SOURCE_ID,
-    filter: ['has', 'point_count'],
+    source: POI_AGGREGATE_SOURCE_ID,
     layout: {
-      'text-field': ['get', 'point_count_abbreviated'],
+      'text-field': ['number-format', ['get', 'source_record_count'], {}],
       'text-size': 11,
       'text-font': ['Noto Sans Regular'],
       'text-allow-overlap': true,
@@ -87,11 +87,11 @@ export function registerDashboardMapLayers(
       'text-halo-width': 1,
     },
   });
+  map.addSource(EXPLORER_POI_SOURCE_ID, authoritativePoiSource(initialPois));
   map.addLayer({
     id: INDIVIDUAL_POI_LAYER_ID,
     type: 'circle',
     source: EXPLORER_POI_SOURCE_ID,
-    filter: ['!', ['has', 'point_count']],
     paint: {
       'circle-radius': 5,
       'circle-stroke-width': 1.5,

@@ -34,6 +34,7 @@ describe('registerDashboardMapLayers', () => {
     expect(sources.map(([id]) => id)).toEqual([
       'osrm-route',
       'route',
+      'poi-aggregates',
       'pois',
       'selected-poi',
       'poi-turn-inspection',
@@ -47,13 +48,8 @@ describe('registerDashboardMapLayers', () => {
     ]);
 
     const poiSource = sources.find(([id]) => id === 'pois')?.[1];
-    expect(poiSource).toMatchObject({
-      type: 'geojson',
-      data: initialPois,
-      cluster: true,
-      clusterRadius: 48,
-      clusterMaxZoom: 14,
-    });
+    expect(poiSource).toEqual({ type: 'geojson', data: initialPois });
+    expect(poiSource).not.toHaveProperty('cluster');
     expect(poiSource?.data).toBe(initialPois);
   });
 
@@ -65,8 +61,8 @@ describe('registerDashboardMapLayers', () => {
     expect(layers.map(({ id, source }) => [id, source])).toEqual([
       ['osrm-route', 'osrm-route'],
       ['route', 'route'],
-      ['poi-clusters', 'pois'],
-      ['poi-cluster-count', 'pois'],
+      ['poi-clusters', 'poi-aggregates'],
+      ['poi-cluster-count', 'poi-aggregates'],
       ['pois', 'pois'],
       ['selected-poi', 'selected-poi'],
       ['poi-turn-inspection-line', 'poi-turn-inspection'],

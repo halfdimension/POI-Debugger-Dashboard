@@ -37,6 +37,7 @@ function mapDouble(expansionZoom: Promise<number> = Promise.resolve(18)) {
     getZoom: vi.fn(() => 10),
     flyTo: vi.fn(),
     easeTo: vi.fn(),
+    fitBounds: vi.fn(),
     getSource: vi.fn(() => ({
       getClusterExpansionZoom: vi.fn(() => expansionZoom),
     })),
@@ -51,6 +52,7 @@ function mapDouble(expansionZoom: Promise<number> = Promise.resolve(18)) {
 
 function callbackDouble(): DashboardMapEventCallbacks {
   return {
+    onAggregateSelected: vi.fn(),
     onPoiSelected: vi.fn(),
     onRouteNarrationManeuverSelected: vi.fn(),
     onManeuverScrollRequested: vi.fn(),
@@ -156,18 +158,15 @@ describe('bindDashboardMapEvents', () => {
 
   it('expands clusters and preserves hover cursor behavior', async () => {
     const { map, canvas, emit } = mapDouble();
-    const dispose = bindDashboardMapEvents(map as never, callbackDouble());
+    const callbacks = callbackDouble();
+    const dispose = bindDashboardMapEvents(map as never, callbacks);
     const stopPropagation = vi.fn();
 
-    emit('click', 'poi-clusters', mapEvent(point({ cluster: true, cluster_id: 12 }), stopPropagation));
-    await Promise.resolve();
+    const aggregate = point({ cluster_ref: 'ref', source_record_count: 12, bounds: '[77,28,78,29]' });
+    emit('click', 'poi-clusters', mapEvent(aggregate, stopPropagation));
     expect(stopPropagation).toHaveBeenCalledOnce();
-    expect(map.easeTo).toHaveBeenCalledWith({
-      center: [77.2, 28.6],
-      zoom: 14,
-      duration: 350,
-      essential: true,
-    });
+    expect(callbacks.onAggregateSelected).toHaveBeenCalledWith(aggregate);
+    expect(map.fitBounds).toHaveBeenCalledWith([[77, 28], [78, 29]], expect.objectContaining({ maxZoom: 14 }));
 
     emit('mouseenter', 'pois', {});
     expect(canvas.style.cursor).toBe('pointer');
@@ -180,22 +179,17 @@ describe('bindDashboardMapEvents', () => {
 
   it('cancels pending work and does not accumulate listeners when rebound', async () => {
     vi.useFakeTimers();
-    let resolveExpansion!: (zoom: number) => void;
-    const expansionZoom = new Promise<number>((resolve) => { resolveExpansion = resolve; });
-    const { map, emit, listenerCount } = mapDouble(expansionZoom);
+    const { map, emit, listenerCount } = mapDouble();
     const callbacks = callbackDouble();
     const firstDispose = bindDashboardMapEvents(map as never, callbacks);
 
     emit('click', 'route-narration-pois', mapEvent(point({ _primary_maneuver_index: 2 })));
-    emit('click', 'poi-clusters', mapEvent(point({ cluster: true, cluster_id: 9 })));
+    emit('click', 'poi-clusters', mapEvent(point({ cluster_ref: 'ref', source_record_count: 9, bounds: '[77,28,78,29]' })));
     firstDispose();
     firstDispose();
     vi.runAllTimers();
-    resolveExpansion(18);
-    await Promise.resolve();
 
     expect(callbacks.onManeuverScrollRequested).not.toHaveBeenCalled();
-    expect(map.easeTo).not.toHaveBeenCalled();
     expect(listenerCount()).toBe(0);
 
     const secondDispose = bindDashboardMapEvents(map as never, callbacks);

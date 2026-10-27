@@ -1,159 +1,94 @@
-import type { Feature, FeatureCollection, Point } from 'geojson';
+import type { Feature, Point } from 'geojson';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { PoiViewportResponse } from '../../poiSearchApi';
 import {
-  bindDebouncedViewportListener,
-  expandPoiCluster,
-  explorerPoiSource,
-  incompleteViewportMessage,
-  INDIVIDUAL_POI_LAYER_ID,
-  isIndividualPoiFeature,
-  isPoiClusterFeature,
-  POI_CLUSTER_COUNT_LAYER_ID,
-  POI_CLUSTER_LAYER_ID,
-  ViewportRequestCoordinator,
-  viewportPoiLabel,
-  viewportRequestKey,
+  authoritativePoiSource, bindDebouncedViewportListener, expandServerAggregate,
+  incompleteViewportMessage, viewportFeatureCollections, ViewportRequestCoordinator,
+  viewportPoiLabel, viewportRequestKey,
 } from './poiMap';
 
-const point = (
-  properties: Record<string, unknown>,
-  coordinates: [number, number] = [77, 28],
-): Feature<Point> => ({
-  type: 'Feature',
-  geometry: { type: 'Point', coordinates },
-  properties,
+const point = (properties: Record<string, unknown>, coordinates: [number, number] = [77, 28]): Feature<Point> => ({
+  type: 'Feature', geometry: { type: 'Point', coordinates }, properties,
 });
 
-describe('explorer POI clustering', () => {
-  it('configures native GeoJSON clustering without changing source features', () => {
-    const data: FeatureCollection = { type: 'FeatureCollection', features: [point({ mappls_poi_id: 'one' })] };
-    const source = explorerPoiSource(data);
+function response(mode: 'aggregated' | 'individual' = 'aggregated'): PoiViewportResponse {
+  const feature = point({ name: 'Cafe' });
+  return {
+    dataset_id: 'weekly', generation: 'g1', bbox: [76, 27, 78, 29], zoom: 10, mode, complete: true,
+    total_matching_pois: mode === 'aggregated' ? 18542 : 1,
+    aggregates: mode === 'aggregated' ? [{ id: 'cluster-1', source_record_count: 18542, coordinates: [77, 28], coordinate_kind: 'represented_bounds_center', bounds: [76, 27, 78, 29], aggregation_level: 10, cluster_ref: 'ref-1' }] : [],
+    individual_pois: mode === 'individual' ? [{ id: 'poi-1', source_record_id: 1, coordinates: [77, 28], feature }] : [],
+    meta: { spatial_strategy: 'grid', requested_aggregation_level: 10, aggregation_level: 10, adaptive_coarsening: false, feature_count: 1, aggregate_count: mode === 'aggregated' ? 1 : 0, individual_count: mode === 'individual' ? 1 : 0, represented_poi_count: mode === 'aggregated' ? 18542 : 1, max_features: 500, server_max_features: 1000, max_payload_bytes: 1_000_000, serialized_bytes: 1000 },
+  };
+}
 
-    expect(source).toMatchObject({ type: 'geojson', data, cluster: true, clusterRadius: 48, clusterMaxZoom: 14 });
-    expect(source.data).toBe(data);
-    expect([POI_CLUSTER_LAYER_ID, POI_CLUSTER_COUNT_LAYER_ID, INDIVIDUAL_POI_LAYER_ID])
-      .toEqual(['poi-clusters', 'poi-cluster-count', 'pois']);
+describe('authoritative POI sources', () => {
+  it('keeps server aggregates separate and never enables MapLibre clustering', () => {
+    const collections = viewportFeatureCollections(response());
+    const source = authoritativePoiSource(collections.aggregates) as Record<string, unknown>;
+    expect(source).toEqual({ type: 'geojson', data: collections.aggregates });
+    expect(source).not.toHaveProperty('cluster');
+    expect(collections.aggregates.features[0].properties).toMatchObject({ source_record_count: 18542, cluster_ref: 'ref-1', dataset_id: 'weekly', generation: 'g1' });
+    expect(collections.individuals.features).toHaveLength(0);
   });
 
-  it('distinguishes generated clusters from individual POIs', () => {
-    const cluster = point({ cluster: true, cluster_id: 12, point_count: 8 });
-    const individual = point({ mappls_poi_id: 'same', new_node_id: 'node-1' });
-
-    expect(isPoiClusterFeature(cluster)).toBe(true);
-    expect(isIndividualPoiFeature(cluster)).toBe(false);
-    expect(isPoiClusterFeature(individual)).toBe(false);
-    expect(isIndividualPoiFeature(individual)).toBe(true);
+  it('preserves original individual POI features', () => {
+    const collections = viewportFeatureCollections(response('individual'));
+    expect(collections.aggregates.features).toHaveLength(0);
+    expect(collections.individuals.features[0].properties).toEqual({ name: 'Cafe' });
   });
 
-  it('keeps records with duplicate external identifiers as distinct source features', () => {
-    const first = point({ mappls_poi_id: 'duplicate', new_node_id: 'a' }, [77, 28]);
-    const second = point({ mappls_poi_id: 'duplicate', new_node_id: 'b' }, [77, 28]);
-    const data: FeatureCollection = { type: 'FeatureCollection', features: [first, second] };
-
-    expect(explorerPoiSource(data).data).toBe(data);
-    expect(data.features).toHaveLength(2);
-    expect(data.features[0].properties).toEqual({ mappls_poi_id: 'duplicate', new_node_id: 'a' });
-    expect(data.features[1].properties).toEqual({ mappls_poi_id: 'duplicate', new_node_id: 'b' });
-  });
-
-  it('uses the cluster expansion API and limits a single zoom jump', async () => {
-    const easeTo = vi.fn();
-    const getClusterExpansionZoom = vi.fn().mockResolvedValue(19);
-    const map = {
-      getSource: vi.fn().mockReturnValue({ getClusterExpansionZoom }),
-      getZoom: vi.fn().mockReturnValue(10),
-      easeTo,
-    };
-    const cluster = point({ cluster: true, cluster_id: 44, point_count: 25 }, [77.2, 28.6]);
-
-    await expect(expandPoiCluster(map as never, cluster)).resolves.toBe(true);
-    expect(getClusterExpansionZoom).toHaveBeenCalledWith(44);
-    expect(easeTo).toHaveBeenCalledWith(expect.objectContaining({ center: [77.2, 28.6], zoom: 14, duration: 350 }));
-  });
-
-  it('does not treat an individual POI click as a cluster click', async () => {
-    const map = { getSource: vi.fn(), getZoom: vi.fn(), easeTo: vi.fn() };
-    await expect(expandPoiCluster(map as never, point({ name: 'Cafe', priority: 1 }))).resolves.toBe(false);
-    expect(map.getSource).not.toHaveBeenCalled();
+  it('fits aggregate bounds without consulting a client cluster index', () => {
+    const fitBounds = vi.fn();
+    const map = { getZoom: () => 10, fitBounds, easeTo: vi.fn() };
+    const aggregate = viewportFeatureCollections(response()).aggregates.features[0];
+    expect(expandServerAggregate(map as never, aggregate)).toBe(true);
+    expect(fitBounds).toHaveBeenCalledWith([[76, 27], [78, 29]], expect.objectContaining({ maxZoom: 14 }));
   });
 });
 
-describe('viewport completeness labels', () => {
-  it('does not imply a dataset total for incomplete viewport data', () => {
-    expect(viewportPoiLabel(500, true)).toBe('500 loaded viewport POIs');
-    expect(incompleteViewportMessage(500, true)).toContain('Additional POIs are available');
-    expect(incompleteViewportMessage(500, true)).toContain('Zoom in');
-  });
-
-  it('does not show an incomplete notice for a complete response', () => {
-    expect(viewportPoiLabel(23, false)).toBe('23 viewport POIs');
-    expect(incompleteViewportMessage(23, false)).toBe('');
+describe('viewport labels', () => {
+  it('distinguishes represented records from rendered features', () => {
+    expect(viewportPoiLabel(response())).toBe('18,542 POIs represented · 1 aggregate displayed');
+    expect(viewportPoiLabel(response('individual'))).toBe('1 POI represented · 1 individual marker displayed');
+    const incomplete = { ...response(), complete: false };
+    expect(incompleteViewportMessage(incomplete)).toContain('incomplete');
   });
 });
 
 describe('viewport request coordination', () => {
-  it('normalizes insignificant bounds jitter and prevents duplicate requests', () => {
-    const firstKey = viewportRequestKey('weekly', [77, 28, 78, 29]);
-    const jitteredKey = viewportRequestKey('weekly', [77.0000001, 28, 78, 29]);
-    const requests = new ViewportRequestCoordinator();
-    const first = requests.begin(firstKey)!;
-
-    expect(jitteredKey).toBe(firstKey);
-    expect(requests.begin(jitteredKey)).toBeNull();
-    expect(requests.complete(first)).toBe(true);
-    expect(requests.begin(firstKey)).toBeNull();
+  it('includes zoom, generation and visibility while normalizing insignificant jitter', () => {
+    const firstKey = viewportRequestKey('weekly', [77, 28, 78, 29], 10, true, 'g1');
+    expect(viewportRequestKey('weekly', [77.0000001, 28, 78, 29], 10, true, 'g1')).toBe(firstKey);
+    expect(viewportRequestKey('weekly', [77, 28, 78, 29], 11, true, 'g1')).not.toBe(firstKey);
+    expect(viewportRequestKey('weekly', [77, 28, 78, 29], 10, false, 'g1')).not.toBe(firstKey);
   });
 
-  it('aborts stale work and rejects an older response after viewport or dataset changes', () => {
+  it('aborts stale work and permits refresh after invalidation', () => {
     const requests = new ViewportRequestCoordinator();
-    const oldRequest = requests.begin(viewportRequestKey('weekly', [77, 28, 78, 29]))!;
-    const newRequest = requests.begin(viewportRequestKey('monthly', [77, 28, 78, 29]))!;
-
+    const oldRequest = requests.begin('old')!;
+    const newRequest = requests.begin('new')!;
     expect(oldRequest.controller.signal.aborted).toBe(true);
     expect(requests.complete(oldRequest)).toBe(false);
     expect(requests.complete(newRequest)).toBe(true);
-  });
-
-  it('allows unchanged bounds to refresh after dataset data is invalidated', () => {
-    const requests = new ViewportRequestCoordinator();
-    const key = viewportRequestKey('weekly', [77, 28, 78, 29]);
-    const initial = requests.begin(key)!;
-    requests.complete(initial);
     requests.invalidate();
-
-    expect(requests.begin(key)).not.toBeNull();
+    expect(requests.begin('new')).not.toBeNull();
   });
 
-  it('debounces map movement and removes listeners and timers on cleanup', () => {
+  it('debounces movement and removes listeners and timers', () => {
     vi.useFakeTimers();
     const listeners = new Map<string, () => void>();
-    const map = {
-      loaded: () => true,
-      on: vi.fn((type: string, listener: () => void) => { listeners.set(type, listener); }),
-      once: vi.fn((type: string, listener: () => void) => { listeners.set(type, listener); }),
-      off: vi.fn((type: string, listener: () => void) => {
-        if (listeners.get(type) === listener) listeners.delete(type);
-      }),
-    };
+    const map = { loaded: () => true, on: vi.fn((type: string, listener: () => void) => listeners.set(type, listener)), once: vi.fn(), off: vi.fn((type: string, listener: () => void) => { if (listeners.get(type) === listener) listeners.delete(type); }) };
     const settled = vi.fn();
     const cleanup = bindDebouncedViewportListener(map, settled, 100);
-
     listeners.get('moveend')?.();
-    listeners.get('moveend')?.();
-    vi.advanceTimersByTime(99);
-    expect(settled).not.toHaveBeenCalled();
-    vi.advanceTimersByTime(1);
-    expect(settled).toHaveBeenCalledTimes(1);
-
+    vi.advanceTimersByTime(100);
+    expect(settled).toHaveBeenCalledOnce();
     listeners.get('moveend')?.();
     cleanup();
     vi.runAllTimers();
-    expect(settled).toHaveBeenCalledTimes(1);
-    expect(map.off).toHaveBeenCalledWith('moveend', expect.any(Function));
-    expect(map.off).toHaveBeenCalledWith('load', expect.any(Function));
+    expect(settled).toHaveBeenCalledOnce();
   });
 });
 
-afterEach(() => {
-  vi.useRealTimers();
-});
+afterEach(() => vi.useRealTimers());

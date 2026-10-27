@@ -88,7 +88,7 @@ export function DatasetPoiExplorerPanel({
       <section className="card poi-explorer-card">
         <div className="maneuver-heading">
           <h2>POI Explorer</h2>
-          <span>{filteredPoiFeatures.length} in view</span>
+          <span>{filteredPoiFeatures.length} individual markers</span>
         </div>
   
         <label className="poi-search-label" htmlFor="dataset-poi-search">Search by name or identifier</label>
@@ -109,7 +109,7 @@ export function DatasetPoiExplorerPanel({
         </div>
   
         <div className="poi-filter-summary">
-          <strong>{filteredPoiFeatures.length}</strong> POIs loaded in the current viewport.
+          <strong>{filteredPoiFeatures.length}</strong> individual POI markers loaded in the current viewport.
           <span>Map/search filters do not change either routing engine.</span>
         </div>
   

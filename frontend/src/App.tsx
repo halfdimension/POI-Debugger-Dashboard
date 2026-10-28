@@ -30,12 +30,13 @@ import { visibleMapBounds } from './components/map/mapBounds';
 import {
   bindDebouncedViewportListener,
   aggregateBounds,
+  clusterFeatureBudget,
   densityFeatureCollection,
-  CLUSTER_MAX_FEATURES,
   DENSITY_MAX_SAMPLES,
   incompleteViewportMessage,
   INDIVIDUAL_POI_LAYER_ID,
   POI_CLUSTER_LAYER_ID,
+  POI_AGGREGATE_SOURCE_ID,
   poiVisualizationLabel,
   selectAutoPoiVisualization,
   ViewportRequestCoordinator,
@@ -1597,7 +1598,12 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
       setDensityResponse(null);
     }
     const zoom = Math.max(0, Math.min(22, map.getZoom()));
-    const ticket = viewportRequestsRef.current.begin(viewportRequestKey(datasetId, bbox, zoom, showPois, viewportGenerationRef.current, activePoiVisualization));
+    const mapContainerSize = map.getContainer().getBoundingClientRect();
+    const clusterBudget = clusterFeatureBudget(mapContainerSize.width, mapContainerSize.height, zoom);
+    const requestVisualizationKey = activePoiVisualization === 'clusters'
+      ? `${activePoiVisualization}:${clusterBudget}`
+      : activePoiVisualization;
+    const ticket = viewportRequestsRef.current.begin(viewportRequestKey(datasetId, bbox, zoom, showPois, viewportGenerationRef.current, requestVisualizationKey));
     if (!ticket) return;
     setViewportMeta((state) => ({ ...state, loading: true, error: '' }));
     const request = activePoiVisualization === 'density'
@@ -1615,7 +1621,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
           datasetId,
           bbox,
           zoom,
-          maxFeatures: activePoiVisualization === 'clusters' ? CLUSTER_MAX_FEATURES : VIEWPORT_MAX_FEATURES,
+          maxFeatures: activePoiVisualization === 'clusters' ? clusterBudget : VIEWPORT_MAX_FEATURES,
           representation: activePoiVisualization,
         }, ticket.controller.signal).then((response) => {
           if (activeDatasetIdRef.current !== datasetId || !viewportRequestsRef.current.complete(ticket)) return;
@@ -1790,6 +1796,16 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
     if (!showPois) closeActivePoiPopup();
     return () => { map.off('style.load', syncVisibility); };
   }, [showPois, effectivePoiVisualization, showCandidateMap, config, workspaceView]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !map.isStyleLoaded() || !map.getSource(POI_AGGREGATE_SOURCE_ID) || !selectedAggregate) return;
+    const target = { source: POI_AGGREGATE_SOURCE_ID, id: selectedAggregate.id };
+    map.setFeatureState(target, { selected: true });
+    return () => {
+      if (map.getSource(POI_AGGREGATE_SOURCE_ID)) map.setFeatureState(target, { selected: false });
+    };
+  }, [selectedAggregate, config]);
 
   useEffect(() => {
     if (!selectedAggregate) return;
@@ -2902,7 +2918,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
         ? `${densityResponse.total_matching_pois.toLocaleString()} POIs represented · ${densityResponse.samples.length.toLocaleString()} weighted density samples`
         : viewportResponse
           ? activePoiVisualization === 'points' && viewportResponse.mode === 'aggregated' && viewportResponse.meta.requested_representation === 'points'
-            ? `${viewportResponse.total_matching_pois.toLocaleString()} POIs represented · authoritative cluster fallback (zoom closer for complete points)`
+            ? `${viewportResponse.total_matching_pois.toLocaleString()} POIs represented · Showing clusters · Zoom in to see individual POIs`
             : `${viewportPoiLabel(viewportResponse)} · ${poiVisualizationLabel(effectivePoiVisualization)}`
           : `No ${poiVisualizationLabel(activePoiVisualization).toLowerCase()} data loaded`;
 
@@ -3055,6 +3071,26 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
               </button>
             </div>
 
+            <details className="map-poi-control">
+              <summary title="POI visualization controls" aria-label={`POI visualization: ${showPois ? poiVisualizationMode : 'off'}`}>
+                <span aria-hidden="true" className={showPois ? 'is-on' : ''} />
+                POI&nbsp;·&nbsp;{showPois ? (poiVisualizationMode === 'auto' ? `Auto / ${poiVisualizationLabel(effectivePoiVisualization)}` : poiVisualizationLabel(effectivePoiVisualization)) : 'Off'}
+              </summary>
+              <div className="map-poi-control__menu" aria-label="POI visualization controls">
+                <button type="button" className={!showPois ? 'is-active' : ''} aria-pressed={!showPois} onClick={() => setShowPois(false)}>Off</button>
+                {(['auto', 'density', 'clusters', 'points'] as PoiVisualizationMode[]).map((mode) => (
+                  <button
+                    type="button"
+                    key={mode}
+                    className={showPois && poiVisualizationMode === mode ? 'is-active' : ''}
+                    aria-pressed={showPois && poiVisualizationMode === mode}
+                    title={mode === 'auto' ? 'Adapt to zoom and viewport density' : `Show POIs as ${mode}`}
+                    onClick={() => { setShowPois(true); setPoiVisualizationMode(mode); }}
+                  >{mode[0].toUpperCase() + mode.slice(1)}</button>
+                ))}
+              </div>
+            </details>
+
             <span>
               {poiVisualizationStatus} ·
               {' '}{maneuverViews.length} Odin maneuvers · {osrmStepViews.length} OSRM steps
@@ -3065,11 +3101,6 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
             {viewportResponse && !viewportResponse.complete && (
               <div className="map-data-notice" role="status">
                 {incompleteViewportMessage(viewportResponse)}
-              </div>
-            )}
-            {showPois && activePoiVisualization === 'points' && viewportResponse?.meta.fallback_reason === 'viewport_too_dense_for_complete_points' && (
-              <div className="map-data-notice" role="status">
-                Points fallback: this viewport is too dense for a complete individual rendering. Authoritative clusters preserve every matching source record; zoom closer to see points.
               </div>
             )}
             {(viewportMeta.error || diagnosticWarning) && (

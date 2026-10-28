@@ -72,16 +72,16 @@ export function registerDashboardMapLayers(
       maxzoom: 20,
       paint: {
         'heatmap-weight': ['interpolate', ['linear'], ['get', 'normalized_render_weight'], 0, 0, 1, 1],
-        'heatmap-intensity': ['interpolate', ['linear'], ['zoom'], 0, 0.55, 10, 0.8, 17, 1.05],
-        'heatmap-radius': ['interpolate', ['linear'], ['zoom'], 0, 12, 8, 20, 15, 28, 20, 34],
-        'heatmap-opacity': ['interpolate', ['linear'], ['zoom'], 0, 0.58, 15, 0.68, 20, 0.42],
+        'heatmap-intensity': ['interpolate', ['linear'], ['zoom'], 0, 0.7, 10, 0.92, 17, 1.12],
+        'heatmap-radius': ['interpolate', ['linear'], ['zoom'], 0, 10, 8, 17, 15, 24, 20, 29],
+        'heatmap-opacity': ['interpolate', ['linear'], ['zoom'], 0, 0.62, 13, 0.7, 20, 0.46],
         'heatmap-color': [
           'interpolate', ['linear'], ['heatmap-density'],
-          0, 'rgba(79,70,229,0)',
-          0.18, 'rgba(96,165,250,0.28)',
-          0.42, 'rgba(99,102,241,0.48)',
-          0.7, 'rgba(109,40,217,0.68)',
-          1, 'rgba(236,72,153,0.82)',
+          0, 'rgba(14,116,144,0)',
+          0.16, 'rgba(56,189,248,0.24)',
+          0.38, 'rgba(14,165,233,0.42)',
+          0.68, 'rgba(79,70,229,0.62)',
+          1, 'rgba(49,46,129,0.78)',
         ],
       },
     },
@@ -129,26 +129,40 @@ export function registerDashboardMapLayers(
     paint: {
       'circle-radius': [
         'interpolate', ['linear'], ['ln', ['max', 1, ['get', 'source_record_count']]],
-        0, 12,
-        2.302585, 14,
-        4.60517, 17,
-        6.907755, 21,
-        9.21034, 25,
-        11.512925, 29,
-        13.815511, 32,
+        0, 7,
+        2.302585, 8,
+        4.60517, 10,
+        6.907755, 12,
+        9.21034, 14,
+        11.512925, 15.5,
+        13.815511, 17,
       ],
       'circle-color': [
         'interpolate', ['linear'], ['ln', ['max', 1, ['get', 'source_record_count']]],
-        0, '#8b7ee8',
-        4.60517, '#6d5bd0',
-        9.21034, '#4f3ca7',
-        13.815511, '#352473',
+        0, '#64748b',
+        4.60517, '#596782',
+        9.21034, '#4f5b78',
+        13.815511, '#414d6d',
       ],
-      'circle-stroke-width': ['case', ['boolean', ['feature-state', 'hover'], false], 3, 1.5],
-      'circle-stroke-color': ['case', ['boolean', ['feature-state', 'hover'], false], '#ffffff', 'rgba(255,255,255,.82)'],
-      'circle-opacity': 0.88,
+      'circle-stroke-width': [
+        'case',
+        ['boolean', ['feature-state', 'selected'], false], 3,
+        ['boolean', ['feature-state', 'hover'], false], 2.5,
+        1,
+      ],
+      'circle-stroke-color': [
+        'case',
+        ['boolean', ['feature-state', 'selected'], false], '#0f172a',
+        ['boolean', ['feature-state', 'hover'], false], '#ffffff',
+        'rgba(255,255,255,.74)',
+      ],
+      'circle-opacity': [
+        'case',
+        ['any', ['boolean', ['feature-state', 'selected'], false], ['boolean', ['feature-state', 'hover'], false]], 0.96,
+        0.78,
+      ],
     },
-  });
+  }, firstBasemapLabel);
   map.addLayer({
     id: POI_CLUSTER_COUNT_LAYER_ID,
     type: 'symbol',
@@ -156,24 +170,25 @@ export function registerDashboardMapLayers(
     layout: {
       'text-field': [
         'case',
+        ['<', ['get', 'source_record_count'], 3], '',
         ['>=', ['get', 'source_record_count'], 1000000],
         ['concat', ['number-format', ['/', ['get', 'source_record_count'], 1000000], { 'max-fraction-digits': 1 }], 'm'],
         ['>=', ['get', 'source_record_count'], 1000],
         ['concat', ['number-format', ['/', ['get', 'source_record_count'], 1000], { 'max-fraction-digits': 1 }], 'k'],
         ['number-format', ['get', 'source_record_count'], { 'max-fraction-digits': 0 }],
       ],
-      'text-size': ['interpolate', ['linear'], ['ln', ['max', 1, ['get', 'source_record_count']]], 0, 10, 9.21034, 11.5, 13.815511, 12],
+      'text-size': ['interpolate', ['linear'], ['ln', ['max', 1, ['get', 'source_record_count']]], 0, 9, 9.21034, 10.5, 13.815511, 11],
       'text-font': ['Noto Sans Regular'],
       'text-allow-overlap': false,
       'text-ignore-placement': false,
-      'text-padding': 3,
+      'text-padding': 5,
     },
     paint: {
       'text-color': '#ffffff',
-      'text-halo-color': 'rgba(31,23,76,.55)',
-      'text-halo-width': 1.25,
+      'text-halo-color': 'rgba(15,23,42,.48)',
+      'text-halo-width': 1,
     },
-  });
+  }, firstBasemapLabel);
   map.addSource(EXPLORER_POI_SOURCE_ID, authoritativePoiSource(initialPois));
   map.addLayer({
     id: INDIVIDUAL_POI_LAYER_ID,
@@ -487,4 +502,11 @@ export function registerDashboardMapLayers(
       'circle-opacity': 0.95,
     },
   });
+
+  // General POIs remain below route geometry while selected, maneuver, and
+  // turn-coverage diagnostics retain their higher-priority layer ordering.
+  if (typeof map.moveLayer === 'function') {
+    map.moveLayer('osrm-route', 'selected-poi');
+    map.moveLayer('route', 'selected-poi');
+  }
 }

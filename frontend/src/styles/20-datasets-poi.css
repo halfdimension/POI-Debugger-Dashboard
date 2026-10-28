@@ -272,7 +272,7 @@
 .poi-density-legend i {
   height: 6px;
   border-radius: 999px;
-  background: linear-gradient(90deg, rgba(96,165,250,.25), #6366f1, #6d28d9, #ec4899);
+  background: linear-gradient(90deg, rgba(56,189,248,.25), #0ea5e9, #4f46e5, #312e81);
 }
 .poi-density-legend small { grid-column: 1 / -1; color: #98a2b3; font-size: 9px; }
 .poi-filter-summary {

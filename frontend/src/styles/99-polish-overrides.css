@@ -164,6 +164,59 @@ summary:focus-visible,
 .landmark-map-legend { left: 12px; bottom: 12px; max-height: min(260px, calc(100% - 24px)); overflow: auto; }
 .map-data-notice, .map-data-warning { right: 12px; left: auto; bottom: 12px; max-width: min(440px, calc(100% - 24px)); }
 .map-data-notice + .map-data-warning { bottom: 58px; }
+.map-poi-control {
+  position: relative;
+  z-index: 20;
+  flex: 0 0 auto;
+  color: #344054;
+  font-size: 10px;
+}
+.map-poi-control summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 25px;
+  list-style: none;
+  border: 1px solid rgba(100,116,139,.38);
+  border-radius: 7px;
+  padding: 3px 8px;
+  background: rgba(255,255,255,.94);
+  box-shadow: var(--shadow-control);
+  cursor: pointer;
+  font-weight: 750;
+  backdrop-filter: blur(7px);
+}
+.map-poi-control summary::-webkit-details-marker { display: none; }
+.map-poi-control summary > span { width: 7px; height: 7px; border-radius: 50%; background: #94a3b8; }
+.map-poi-control summary > span.is-on { background: #16845b; box-shadow: 0 0 0 2px rgba(22,132,91,.13); }
+.map-poi-control[open] summary { border-color: #8aa9d8; border-radius: 7px 7px 0 0; }
+.map-poi-control__menu {
+  position: absolute;
+  top: calc(100% + 1px);
+  left: 0;
+  display: grid;
+  min-width: 148px;
+  overflow: hidden;
+  border: 1px solid rgba(100,116,139,.38);
+  border-top: 0;
+  border-radius: 0 0 7px 7px;
+  background: rgba(255,255,255,.97);
+  box-shadow: var(--shadow-panel);
+  backdrop-filter: blur(7px);
+}
+.map-poi-control__menu button {
+  min-height: 29px;
+  border: 0;
+  border-top: 1px solid #edf0f4;
+  padding: 5px 9px;
+  background: transparent;
+  color: #475467;
+  font-size: 10px;
+  font-weight: 700;
+  text-align: left;
+}
+.map-poi-control__menu button:hover { background: #f3f6fa; }
+.map-poi-control__menu button.is-active { background: #edf4ff; color: #1d4fb5; }
 .map-context-menu { max-height: min(280px, calc(100% - 16px)); overflow-y: auto; }
 
 .admin-console { padding: 22px clamp(16px, 3vw, 36px) 32px; background: var(--shell-bg); }

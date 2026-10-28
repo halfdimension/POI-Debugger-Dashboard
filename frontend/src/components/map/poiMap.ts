@@ -59,6 +59,19 @@ export function densityFeatureCollection(response: PoiDensityResponse): FeatureC
 
 export function emptyViewportCollections() { return { aggregates: EMPTY, individuals: EMPTY }; }
 
+export function clusterFeatureBudget(viewportWidth: number, viewportHeight: number, zoom: number): number {
+  const width = Math.max(320, viewportWidth);
+  const height = Math.max(240, viewportHeight);
+  const wideViewCapacity = Math.max(45, Math.min(100, Math.round((width / 100) * (height / 85))));
+  const zoomFactor = zoom < 8 ? 0.85
+    : zoom < 11 ? 1
+      : zoom < 13 ? 1.25
+        : zoom < 15 ? 1.65
+          : zoom < 17 ? 2.1
+            : 2.5;
+  return Math.max(35, Math.min(CLUSTER_MAX_FEATURES, Math.round(wideViewCapacity * zoomFactor)));
+}
+
 export function authoritativePoiSource(data: FeatureCollection): maplibregl.GeoJSONSourceSpecification {
   return { type: 'geojson', data };
 }

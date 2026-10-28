@@ -139,6 +139,7 @@ export interface OsrmStep {
   weight?: number;
   name?: string;
   maneuver?: OsrmStepManeuver;
+  geometry?: OsrmRouteGeometry;
 }
 
 export interface OsrmPassByEvent {

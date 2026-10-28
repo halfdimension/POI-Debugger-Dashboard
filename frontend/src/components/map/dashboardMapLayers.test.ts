@@ -48,6 +48,8 @@ describe('registerDashboardMapLayers', () => {
       'maneuver-points',
       'osrm-selected-maneuver',
       'osrm-pass-by-events',
+      'turn-poi-coverage',
+      'turn-poi-coverage-pois',
     ]);
 
     const poiSource = sources.find(([id]) => id === 'pois')?.[1];
@@ -83,6 +85,10 @@ describe('registerDashboardMapLayers', () => {
       ['maneuver-points', 'maneuver-points'],
       ['osrm-selected-maneuver', 'osrm-selected-maneuver'],
       ['osrm-pass-by-events', 'osrm-pass-by-events'],
+      ['turn-poi-coverage-footprint', 'turn-poi-coverage'],
+      ['turn-poi-coverage-rim', 'turn-poi-coverage'],
+      ['turn-poi-coverage-origin', 'turn-poi-coverage'],
+      ['turn-poi-coverage-pois', 'turn-poi-coverage-pois'],
     ]);
 
     const sourceIds = new Set(sources.map(([id]) => id));

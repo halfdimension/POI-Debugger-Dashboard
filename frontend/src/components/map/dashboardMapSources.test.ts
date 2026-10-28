@@ -146,6 +146,8 @@ describe('createDashboardMapSourceManager', () => {
       'maneuver-points',
       'osrm-selected-maneuver',
       'osrm-pass-by-events',
+      'turn-poi-coverage',
+      'turn-poi-coverage-pois',
     ]);
   });
 });

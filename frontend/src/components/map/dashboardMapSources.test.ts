@@ -133,6 +133,7 @@ describe('createDashboardMapSourceManager', () => {
     expect(DASHBOARD_GEOJSON_SOURCE_IDS).toEqual([
       'route',
       'osrm-route',
+      'poi-density',
       'poi-aggregates',
       'pois',
       'selected-poi',
@@ -144,6 +145,7 @@ describe('createDashboardMapSourceManager', () => {
       'route-points',
       'maneuver-points',
       'osrm-selected-maneuver',
+      'osrm-pass-by-events',
     ]);
   });
 });

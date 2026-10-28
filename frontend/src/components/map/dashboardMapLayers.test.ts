@@ -6,6 +6,7 @@ function registrationRecorder() {
   const sources: Array<[string, Record<string, unknown>]> = [];
   const layers: Array<Record<string, unknown>> = [];
   const map = {
+    getStyle: vi.fn(() => ({ layers: [] })),
     addSource: vi.fn((id: string, source: Record<string, unknown>) => {
       sources.push([id, source]);
     }),
@@ -32,6 +33,7 @@ describe('registerDashboardMapLayers', () => {
     registerDashboardMapLayers(map as never, { initialPois });
 
     expect(sources.map(([id]) => id)).toEqual([
+      'poi-density',
       'osrm-route',
       'route',
       'poi-aggregates',
@@ -45,6 +47,7 @@ describe('registerDashboardMapLayers', () => {
       'route-points',
       'maneuver-points',
       'osrm-selected-maneuver',
+      'osrm-pass-by-events',
     ]);
 
     const poiSource = sources.find(([id]) => id === 'pois')?.[1];
@@ -59,6 +62,7 @@ describe('registerDashboardMapLayers', () => {
     registerDashboardMapLayers(map as never, { initialPois });
 
     expect(layers.map(({ id, source }) => [id, source])).toEqual([
+      ['poi-density-heatmap', 'poi-density'],
       ['osrm-route', 'osrm-route'],
       ['route', 'route'],
       ['poi-clusters', 'poi-aggregates'],
@@ -78,11 +82,12 @@ describe('registerDashboardMapLayers', () => {
       ['route-points', 'route-points'],
       ['maneuver-points', 'maneuver-points'],
       ['osrm-selected-maneuver', 'osrm-selected-maneuver'],
+      ['osrm-pass-by-events', 'osrm-pass-by-events'],
     ]);
 
     const sourceIds = new Set(sources.map(([id]) => id));
     expect(layers.every((layer) => sourceIds.has(String(layer.source)))).toBe(true);
-    expect(layers[0]).toMatchObject({ paint: { 'line-width': 10, 'line-color': '#dc2626' } });
-    expect(layers[1]).toMatchObject({ paint: { 'line-width': 5, 'line-color': '#2563eb' } });
+    expect(layers[1]).toMatchObject({ paint: { 'line-width': 10, 'line-color': '#dc2626' } });
+    expect(layers[2]).toMatchObject({ paint: { 'line-width': 5, 'line-color': '#2563eb' } });
   });
 });

@@ -1,5 +1,5 @@
 import type { OsrmRouteResponse, OsrmStep, ValhallaRouteResponse } from '../../types';
-import type { ManeuverView, NarrationPoiEvidence, NearbyPoi, OsrmStepView } from './viewModels';
+import type { ManeuverView, NarrationPoiEvidence, NearbyPoi, OsrmPassByEventView, OsrmPassByLandmark, OsrmStepView } from './viewModels';
 
 const NEARBY_POI_RADIUS_M = 100;
 
@@ -12,6 +12,8 @@ export interface ManeuverInspectionProps {
   selectedOsrmStepIndex: number | null;
   selectedManeuver: ManeuverView | null;
   selectedOsrmStep?: OsrmStepView | null;
+  selectedPassBy?: OsrmPassByEventView | null;
+  selectedPassByLandmark?: OsrmPassByLandmark | null;
   compact?: boolean;
   narrationEvidenceByManeuver: Map<number, NarrationPoiEvidence[]>;
   osrmPoiNamesByStep: Map<number, string[]>;
@@ -25,11 +27,13 @@ export interface ManeuverInspectionProps {
   onFocusOsrmStep: (item: OsrmStepView) => void;
   onFocusNarrationEvidence: (item: NarrationPoiEvidence) => void;
   onFocusPoi: (item: NearbyPoi) => void;
+  onFocusPassBySource?: (item: NarrationPoiEvidence) => void;
 }
 
 export function ManeuverInspection({
   route, osrmRoute, maneuverViews, osrmStepViews,
   selectedManeuverIndex, selectedOsrmStepIndex, selectedManeuver, selectedOsrmStep = null, compact = false,
+  selectedPassBy = null, selectedPassByLandmark = null,
   narrationEvidenceByManeuver, osrmPoiNamesByStep,
   primaryNarrationEvidence, selectedNarrationEvidence, nearbyPois,
   diagnosticStatus, diagnosticMessage,
@@ -38,6 +42,7 @@ export function ManeuverInspection({
   onFocusOsrmStep: focusOsrmStep,
   onFocusNarrationEvidence: focusNarrationEvidence,
   onFocusPoi: focusPoi,
+  onFocusPassBySource: focusPassBySource = () => undefined,
 }: ManeuverInspectionProps) {
   return (
     <>
@@ -149,8 +154,34 @@ export function ManeuverInspection({
           <h2>Landmark Details</h2>
           <span>{NEARBY_POI_RADIUS_M} m radius</span>
         </div>
-        {!selectedManeuver && !selectedOsrmStep ? (
+        {!selectedManeuver && !selectedOsrmStep && !selectedPassBy ? (
           <div className="empty-state">Select a Valhalla maneuver or OSRM step on the map or in the analysis workspace.</div>
+        ) : selectedPassBy ? (
+          <div className="selected-maneuver-summary selected-osrm-summary pass-by-summary">
+            <strong>OSRM pass-by event #{selectedPassBy.index + 1}</strong>
+            <span>{selectedPassBy.instruction}</span>
+            <code>Engine pass-by event · {selectedPassBy.event.side ?? 'side unavailable'}</code>
+            <small>
+              Leg {selectedPassBy.legIndex + 1}
+              {selectedPassBy.legDistanceM === null ? ' · leg distance unavailable' : ` · ${selectedPassBy.legDistanceM.toFixed(1)} m from leg start`}
+              {selectedPassBy.coordinate ? ` · ${selectedPassBy.coordinate[1].toFixed(6)}, ${selectedPassBy.coordinate[0].toFixed(6)} (event location)` : ' · event location unavailable'}
+            </small>
+            <small>POI ID {String(selectedPassBy.event.poi_id ?? 'unavailable')} · OSM node {String(selectedPassBy.event.osm_node_id ?? 'unavailable')}</small>
+            {selectedPassByLandmark?.sourceEvidence ? (
+              <button className="narration-primary-match" onClick={() => focusPassBySource(selectedPassByLandmark.sourceEvidence!)}>
+                <span>
+                  <strong>{selectedPassByLandmark.sourceEvidence.name}</strong>
+                  <small>{selectedPassByLandmark.sourceMatch === 'poi-id' || selectedPassByLandmark.sourceMatch === 'osm-node-id'
+                    ? `Source POI matched via ${selectedPassByLandmark.sourceMatch}`
+                    : 'Name/proximity candidate; source identity unresolved'}</small>
+                </span>
+                <span><strong>Inspect source record</strong><small>physical coordinate is separate from event location</small></span>
+              </button>
+            ) : (
+              <p>Source POI correlation is unresolved. The engine event remains authoritative; its location is not presented as the physical POI coordinate.</p>
+            )}
+            <p>Candidate extraction and turn-selection diagnostics are unavailable for pass-by events.</p>
+          </div>
         ) : !selectedManeuver && selectedOsrmStep ? (
           <div className="selected-maneuver-summary selected-osrm-summary">
             <strong>OSRM step #{selectedOsrmStep.index + 1}</strong>

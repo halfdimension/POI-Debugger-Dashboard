@@ -12,8 +12,10 @@ export interface DashboardMapEventCallbacks {
   onAggregateSelected: (feature: Feature<Point>) => void;
   onPoiSelected: (feature: Feature<Point>) => void;
   onRouteNarrationManeuverSelected: (maneuverIndex: number) => void;
+  onRouteNarrationOsrmStepSelected: (stepIndex: number) => void;
   onManeuverScrollRequested: (maneuverIndex: number) => void;
   onManeuverSelected: (maneuverIndex: number) => void;
+  onPassBySelected: (key: string) => void;
   openPoiPopup: (
     coordinate: LngLat,
     properties: GeoJsonProperties,
@@ -33,6 +35,7 @@ const INTERACTIVE_LAYER_IDS = [
   'narration-poi',
   'maneuver-points',
   'candidate-analysis-pois',
+  'osrm-pass-by-events',
 ];
 
 export function bindDashboardMapEvents(
@@ -85,6 +88,7 @@ export function bindDashboardMapEvents(
     const feature = rawFeature as Feature<Point>;
     const coordinates = feature.geometry.coordinates.slice() as LngLat;
     const maneuverIndex = Number(feature.properties?._primary_maneuver_index);
+    const osrmStepIndex = Number(feature.properties?._primary_osrm_step_index);
     if (Number.isFinite(maneuverIndex)) {
       callbacks.onRouteNarrationManeuverSelected(maneuverIndex);
       const timer = setTimeout(() => {
@@ -92,6 +96,8 @@ export function bindDashboardMapEvents(
         if (!disposed) callbacks.onManeuverScrollRequested(maneuverIndex);
       }, 80);
       pendingTimers.add(timer);
+    } else if (Number.isFinite(osrmStepIndex)) {
+      callbacks.onRouteNarrationOsrmStepSelected(osrmStepIndex);
     }
 
     callbacks.onPoiSelected(feature);
@@ -146,6 +152,17 @@ export function bindDashboardMapEvents(
     });
   };
 
+  const selectPassBy: DashboardLayerEventHandler = (event) => {
+    event.originalEvent.stopPropagation();
+    const feature = event.features?.[0];
+    if (!feature || feature.geometry.type !== 'Point') return;
+    const key = String(feature.properties?.event_key ?? '');
+    const coordinates = feature.geometry.coordinates.slice() as LngLat;
+    if (key) callbacks.onPassBySelected(key);
+    callbacks.openPoiPopup(coordinates, feature.properties ?? {});
+    map.flyTo({ center: coordinates, zoom: Math.max(map.getZoom(), 17), essential: true });
+  };
+
   bind('click', POI_CLUSTER_LAYER_ID, expandCluster);
   bind('click', INDIVIDUAL_POI_LAYER_ID, showPoiPopup);
   bind('click', 'selected-poi', showPoiPopup);
@@ -154,6 +171,7 @@ export function bindDashboardMapEvents(
   bind('click', 'route-narration-pois', showRouteNarrationPoi);
   bind('click', 'candidate-analysis-pois', showCandidatePopup);
   bind('click', 'maneuver-points', selectManeuver);
+  bind('click', 'osrm-pass-by-events', selectPassBy);
 
   for (const layerId of INTERACTIVE_LAYER_IDS) {
     bind('mouseenter', layerId, (event) => {

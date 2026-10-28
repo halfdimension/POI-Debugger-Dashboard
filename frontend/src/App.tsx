@@ -13,7 +13,7 @@ import { AnalysisTabContent } from './components/analysis/AnalysisTabContent';
 import { AuthenticationScreen } from './components/auth/AuthenticationScreen';
 import { CompactDatasetSelector } from './components/datasets/DatasetSelector';
 import { CompactPoiExplorer } from './components/datasets/PoiExplorer';
-import type { ManeuverView, NarrationPoiEvidence, NearbyPoi, OsrmRouteNarrationPoi, OsrmStepView, RouteNarrationPoi } from './components/inspection/viewModels';
+import { buildOsrmGuidance, type ManeuverView, type NarrationPoiEvidence, type NearbyPoi, type OsrmPassByEventView, type OsrmPassByLandmark, type OsrmRouteNarrationPoi, type OsrmStepView, type RouteNarrationPoi } from './components/inspection/viewModels';
 import { ManeuverInspection } from './components/inspection/ManeuverInspection';
 import { SelectedPoiDetails } from './components/inspection/SelectedPoiDetails';
 import { ClusterMemberDetails } from './components/inspection/ClusterMemberDetails';
@@ -58,6 +58,7 @@ import {
 import {
   hasStrongLandmarkCue,
   instructionContainsName,
+  matchOsrmLandmarkInstruction,
   maneuverInstructionTexts,
   narrationPoiKey,
   normalizeNarrationText,
@@ -187,6 +188,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
   const [error, setError] = useState<string>('');
   const [selectedManeuverIndex, setSelectedManeuverIndex] = useState<number | null>(null);
   const [selectedOsrmStepIndex, setSelectedOsrmStepIndex] = useState<number | null>(null);
+  const [selectedOsrmPassByKey, setSelectedOsrmPassByKey] = useState<string | null>(null);
   const [selectedPoi, setSelectedPoi] = useState<GeoJSON.Feature<GeoJSON.Point> | null>(null);
   const [datasetRegistry, setDatasetRegistry] = useState<DatasetRegistryResponse | null>(null);
   const [datasetBusy, setDatasetBusy] = useState(false);
@@ -711,28 +713,16 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
 
   const osrmPoiNamesByStep = useMemo(() => {
     const result = new Map<number, string[]>();
+    const sourceNames = diagnosticPois.features.flatMap((rawFeature) => {
+      const feature = pointFeature(rawFeature);
+      const name = feature ? propText(feature.properties, 'name', '').trim() : '';
+      return name ? [name] : [];
+    });
 
     for (const item of osrmStepViews) {
       const instruction = osrmInstructionText(item.step);
-      const names: string[] = [];
-
-      for (const rawFeature of diagnosticPois.features) {
-        const feature = pointFeature(rawFeature);
-        if (!feature) continue;
-
-        const name = propText(feature.properties, 'name', '').trim();
-        if (!name) continue;
-
-        if (
-          instructionContainsName(instruction, name) &&
-          hasStrongLandmarkCue(instruction, name) &&
-          !names.includes(name)
-        ) {
-          names.push(name);
-        }
-      }
-
-      result.set(item.index, names);
+      const match = matchOsrmLandmarkInstruction(instruction, sourceNames);
+      result.set(item.index, match ? [match.name] : []);
     }
 
     return result;
@@ -757,10 +747,8 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
 
         if (!name || normalizeNarrationText(name).length < 3) continue;
 
-        // For the OSRM fork, a POI-bearing turn is currently emitted as
-        // "Turn <modifier> at <landmark>".
-        if (!instructionContainsName(instruction, name)) continue;
-        if (!hasStrongLandmarkCue(instruction, name)) continue;
+        const landmarkMatch = matchOsrmLandmarkInstruction(instruction, [name]);
+        if (!landmarkMatch) continue;
 
         const coordinate = feature.geometry.coordinates as LngLat;
 
@@ -768,10 +756,10 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
           ? haversineMeters(item.coordinate, coordinate)
           : null;
 
-        if (
-          distanceM !== null &&
-          distanceM > NARRATION_POI_MAX_DISTANCE_M
-        ) {
+        // At-intersection landmarks should remain close to the maneuver.
+        // After/prefix landmarks can legitimately precede it by more than the
+        // diagnostic radius, so their grammar is stronger than proximity.
+        if (landmarkMatch.cue === 'at' && distanceM !== null && distanceM > NARRATION_POI_MAX_DISTANCE_M) {
           continue;
         }
 
@@ -814,6 +802,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
           evidence: primary,
           stepIndexes: [item.index],
           primaryStepIndex: item.index,
+          cue: matchOsrmLandmarkInstruction(instruction, [primary.name])!.cue,
         });
 
         continue;
@@ -839,6 +828,94 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
       (a, b) => a.primaryStepIndex - b.primaryStepIndex,
     );
   }, [osrmStepViews, diagnosticPois]);
+
+  const osrmGuidance = useMemo(
+    () => buildOsrmGuidance(osrmRoute),
+    [osrmRoute],
+  );
+
+  const selectedOsrmPassBy = useMemo(
+    () => selectedOsrmPassByKey === null
+      ? null
+      : osrmGuidance.passByEvents.find((event) => event.key === selectedOsrmPassByKey) ?? null,
+    [osrmGuidance.passByEvents, selectedOsrmPassByKey],
+  );
+
+  const osrmPassByLandmarks = useMemo<OsrmPassByLandmark[]>(() => {
+    return osrmGuidance.passByEvents.map((event) => {
+      const eventPoiId = String(event.event.poi_id ?? '').trim();
+      const eventOsmNodeId = String(event.event.osm_node_id ?? '').trim();
+      const normalizedEventName = normalizeNarrationText(event.name);
+      const candidates: Array<{ evidence: NarrationPoiEvidence; match: OsrmPassByLandmark['sourceMatch'] }> = [];
+
+      for (const rawFeature of diagnosticPois.features) {
+        const feature = pointFeature(rawFeature);
+        if (!feature) continue;
+        const properties = feature.properties ?? {};
+        const coordinate = feature.geometry.coordinates as LngLat;
+        const name = propText(properties, 'name', '').trim();
+        const poiId = propText(properties, 'mappls_poi_id', '').trim();
+        const sourceNodeId = propText(properties, 'new_node_id', '').trim();
+        const osmSourceId = propText(properties, 'osm_source_id', '').trim();
+        const distanceM = event.coordinate ? haversineMeters(event.coordinate, coordinate) : null;
+        let match: OsrmPassByLandmark['sourceMatch'] = null;
+        if (eventPoiId && poiId === eventPoiId) match = 'poi-id';
+        else if (eventOsmNodeId && osmSourceId === eventOsmNodeId) match = 'osm-node-id';
+        else if (normalizedEventName && normalizeNarrationText(name) === normalizedEventName && distanceM !== null && distanceM <= NARRATION_POI_MAX_DISTANCE_M) match = 'name-and-proximity';
+        if (!match) continue;
+        candidates.push({
+          match,
+          evidence: {
+            feature, coordinate, distanceM,
+            priority: propNumber(properties, 'priority'), name,
+            landmarkType: propText(properties, 'landmark_type', 'unknown'),
+            poiId, sourceNodeId, evidence: 'strong',
+            matchedInstruction: event.instruction,
+          },
+        });
+      }
+
+      const rank = (match: OsrmPassByLandmark['sourceMatch']) => match === 'poi-id' ? 0 : match === 'osm-node-id' ? 1 : 2;
+      candidates.sort((a, b) => rank(a.match) - rank(b.match) || (a.evidence.distanceM ?? Infinity) - (b.evidence.distanceM ?? Infinity));
+      const sourceEvidence = candidates[0]?.evidence ?? null;
+      const sourceMatch = candidates[0]?.match ?? null;
+      const hasStableSourceMatch = sourceMatch === 'poi-id' || sourceMatch === 'osm-node-id';
+      return {
+        key: hasStableSourceMatch && sourceEvidence ? narrationPoiKey(sourceEvidence) : `unresolved:${event.key}`,
+        event,
+        sourceEvidence,
+        sourceMatch,
+      };
+    });
+  }, [osrmGuidance.passByEvents, diagnosticPois]);
+
+  const osrmLandmarkGuidanceEntries = useMemo(
+    () => osrmGuidance.entries.filter((entry) => entry.kind === 'maneuver' && entry.category !== 'maneuver'),
+    [osrmGuidance.entries],
+  );
+  const resolvedOsrmLandmarkStepIndexes = useMemo(
+    () => new Set(osrmRouteNarrationPois.flatMap((item) => item.stepIndexes)),
+    [osrmRouteNarrationPois],
+  );
+  const osrmManeuverLandmarkOccurrenceCount = useMemo(
+    () => new Set([
+      ...osrmLandmarkGuidanceEntries.flatMap((entry) => entry.step ? [entry.step.index] : []),
+      ...resolvedOsrmLandmarkStepIndexes,
+    ]).size,
+    [osrmLandmarkGuidanceEntries, resolvedOsrmLandmarkStepIndexes],
+  );
+  const osrmPassByUniqueCount = useMemo(
+    () => new Set(osrmPassByLandmarks.filter((item) => item.sourceMatch === 'poi-id' || item.sourceMatch === 'osm-node-id').map((item) => item.key)).size,
+    [osrmPassByLandmarks],
+  );
+  const osrmPassByStableSourceCount = useMemo(
+    () => osrmPassByLandmarks.filter((item) => item.sourceMatch === 'poi-id' || item.sourceMatch === 'osm-node-id').length,
+    [osrmPassByLandmarks],
+  );
+  const selectedOsrmPassByLandmark = useMemo(
+    () => selectedOsrmPassBy ? osrmPassByLandmarks.find((item) => item.event.key === selectedOsrmPassBy.key) ?? null : null,
+    [selectedOsrmPassBy, osrmPassByLandmarks],
+  );
 
   const osrmGeometryPointCount =
     osrmRoute?.routes?.[0]?.geometry?.coordinates?.length ?? 0;
@@ -1176,12 +1253,26 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
           setInspectorTab('maneuver');
           setLayout((current) => ({ ...current, rightCollapsed: false }));
         },
+        onRouteNarrationOsrmStepSelected: (stepIndex) => {
+          setSelectedOsrmStepIndex(stepIndex);
+          setSelectedManeuverIndex(null);
+          setSelectedOsrmPassByKey(null);
+          setInspectorTab('maneuver');
+          setLayout((current) => ({ ...current, rightCollapsed: false }));
+        },
         onManeuverScrollRequested: (maneuverIndex) => {
           document.querySelector(`[data-maneuver-index="${maneuverIndex}"]`)
             ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
         },
         onManeuverSelected: (maneuverIndex) => {
           setSelectedManeuverIndex(maneuverIndex);
+          setSelectedOsrmStepIndex(null);
+          setInspectorTab('maneuver');
+          setLayout((current) => ({ ...current, rightCollapsed: false }));
+        },
+        onPassBySelected: (key) => {
+          setSelectedOsrmPassByKey(key);
+          setSelectedManeuverIndex(null);
           setSelectedOsrmStepIndex(null);
           setInspectorTab('maneuver');
           setLayout((current) => ({ ...current, rightCollapsed: false }));
@@ -1399,6 +1490,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
     const coordinates = [
       ...maneuverViews.map((item) => item.coordinate),
       ...osrmStepViews.map((item) => item.coordinate),
+      ...osrmGuidance.passByEvents.map((item) => item.coordinate),
     ].filter((coordinate): coordinate is LngLat => coordinate !== null);
     if (!datasetId || coordinates.length === 0) {
       diagnosticRequestRef.current?.controller.abort();
@@ -1436,7 +1528,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
       setDiagnosticStatus('unavailable');
       setDiagnosticWarning(`Route diagnostic POIs could not be loaded: ${err instanceof Error ? err.message : String(err)}`);
     });
-  }, [datasetRegistry?.active_dataset, maneuverViews, osrmStepViews]);
+  }, [datasetRegistry?.active_dataset, maneuverViews, osrmStepViews, osrmGuidance.passByEvents]);
 
   useEffect(() => {
     const map = mapRef.current as (MapLibreMap & { __pickMode?: PickMode }) | null;
@@ -1541,7 +1633,10 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
         routeView === 'valhalla' ? 'none' : 'visible',
       );
     }
-  }, [routeView, config]);
+    if (map.getLayer('osrm-pass-by-events')) {
+      map.setLayoutProperty('osrm-pass-by-events', 'visibility', routeView === 'valhalla' || !showPois ? 'none' : 'visible');
+    }
+  }, [routeView, showPois, config]);
 
   useEffect(() => {
     const data: GeoJSON.FeatureCollection = selectedPoi
@@ -1616,6 +1711,30 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
   }, [selectedOsrmStepIndex, osrmStepViews]);
 
   useEffect(() => {
+    const features: GeoJSON.Feature<GeoJSON.Point>[] = osrmGuidance.passByEvents.flatMap((event) => event.coordinate ? [{
+      type: 'Feature' as const,
+      geometry: { type: 'Point' as const, coordinates: event.coordinate },
+      properties: {
+        event_key: event.key,
+        name: event.name,
+        instruction: event.instruction,
+        evidence: 'Engine pass-by event',
+        side: event.event.side ?? '',
+        poi_id: event.event.poi_id ?? '',
+        osm_node_id: event.event.osm_node_id ?? '',
+        distance_from_leg_start: event.legDistanceM ?? '',
+        route_distance_m: event.routeDistanceM ?? '',
+        selected: event.key === selectedOsrmPassByKey,
+      },
+    }] : []);
+    syncGeoJsonSource('osrm-pass-by-events', { type: 'FeatureCollection', features });
+  }, [osrmGuidance.passByEvents, selectedOsrmPassByKey]);
+
+  useEffect(() => {
+    if (selectedOsrmPassByKey && !selectedOsrmPassBy) setSelectedOsrmPassByKey(null);
+  }, [selectedOsrmPassByKey, selectedOsrmPassBy]);
+
+  useEffect(() => {
     const features: GeoJSON.Feature[] = nearbyPois.map((item) => ({
       ...item.feature,
       properties: {
@@ -1639,8 +1758,24 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
       },
     }));
 
+    for (const item of osrmRouteNarrationPois) {
+      features.push({
+        ...item.evidence.feature,
+        properties: {
+          ...(item.evidence.feature.properties ?? {}),
+          _route_evidence: 'strong',
+          _engine: 'osrm',
+          _primary_osrm_step_index: item.primaryStepIndex,
+          _osrm_step_indexes: item.stepIndexes.map((index) => index + 1).join(', '),
+          _matched_instruction: item.evidence.matchedInstruction,
+          _landmark_cue: item.cue,
+          _debug_distance_m: item.evidence.distanceM === null ? '' : item.evidence.distanceM.toFixed(1),
+        },
+      });
+    }
+
     syncGeoJsonSource('route-narration-pois', { type: 'FeatureCollection', features });
-  }, [routeNarrationPois]);
+  }, [routeNarrationPois, osrmRouteNarrationPois]);
 
   useEffect(() => {
     if (!primaryNarrationEvidence) {
@@ -2095,6 +2230,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
   function focusManeuver(item: ManeuverView) {
     setSelectedManeuverIndex(item.index);
     setSelectedOsrmStepIndex(null);
+    setSelectedOsrmPassByKey(null);
     openInspector('maneuver');
 
     if (!item.coordinate || !mapRef.current) return;
@@ -2109,6 +2245,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
   function focusOsrmStep(item: OsrmStepView) {
     setSelectedOsrmStepIndex(item.index);
     setSelectedManeuverIndex(null);
+    setSelectedOsrmPassByKey(null);
     openInspector('maneuver');
     closeActivePoiPopup();
 
@@ -2118,6 +2255,25 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
       center: item.coordinate,
       zoom: Math.max(mapRef.current.getZoom(), 17),
       essential: true,
+    });
+  }
+
+  function focusOsrmPassBy(item: OsrmPassByEventView) {
+    setSelectedOsrmPassByKey(item.key);
+    setSelectedManeuverIndex(null);
+    setSelectedOsrmStepIndex(null);
+    openInspector('maneuver');
+    const map = mapRef.current;
+    if (!map || !item.coordinate) return;
+    map.flyTo({ center: item.coordinate, zoom: Math.max(map.getZoom(), 17), essential: true });
+    openPoiPopup(map, item.coordinate, {
+      name: item.name,
+      instruction: item.instruction,
+      evidence: 'Engine pass-by event',
+      side: item.event.side ?? '',
+      poi_id: item.event.poi_id ?? '',
+      osm_node_id: item.event.osm_node_id ?? '',
+      distance_from_leg_start: item.legDistanceM ?? '',
     });
   }
 
@@ -2638,7 +2794,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
               <div className="route-narration-overlay-heading">
                 <strong>Landmark POIs on this route</strong>
                 <span>
-                  V {routeNarrationStrongCount} · O {osrmRouteNarrationPois.length}
+                  V {routeNarrationStrongCount} · O M{osrmManeuverLandmarkOccurrenceCount}/P{osrmPassByLandmarks.length}
                 </span>
                 <button
                   type="button"
@@ -2713,50 +2869,83 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
                   </span>
 
                   <span>
-                    {osrmRouteNarrationPois.length} POI
-                    {osrmRouteNarrationPois.length === 1 ? '' : 's'}
+                    {osrmManeuverLandmarkOccurrenceCount} named maneuver{osrmManeuverLandmarkOccurrenceCount === 1 ? '' : 's'} · {osrmPassByLandmarks.length} pass-by event{osrmPassByLandmarks.length === 1 ? '' : 's'} · {osrmPassByUniqueCount} identified physical POI{osrmPassByUniqueCount === 1 ? '' : 's'}
                   </span>
                 </div>
 
-                {osrmRouteNarrationPois.length === 0 ? (
+                {osrmManeuverLandmarkOccurrenceCount === 0 && osrmPassByLandmarks.length === 0 ? (
                   <div className="route-narration-empty compact">
                     {diagnosticStatus === 'complete'
                       ? 'No source POI name matched the OSRM maneuver instructions.'
                       : 'Source-POI correlation is incomplete; OSRM instructions remain authoritative.'}
                   </div>
                 ) : (
-                  <div className="route-narration-overlay-list engine-list">
-                    {osrmRouteNarrationPois.map((item) => {
-                      const alsoValhalla =
-                        valhallaRoutePoiKeys.has(item.key);
+                  <div className="route-poi-osrm-groups">
+                    <details className="route-poi-subsection" open>
+                      <summary>
+                        <strong>Maneuver landmarks</strong>
+                        <span>{osrmManeuverLandmarkOccurrenceCount} named occurrence{osrmManeuverLandmarkOccurrenceCount === 1 ? '' : 's'} · {osrmRouteNarrationPois.length} source-correlated POI{osrmRouteNarrationPois.length === 1 ? '' : 's'}</span>
+                      </summary>
+                      <div className="route-narration-overlay-list engine-list route-poi-subsection-list">
+                        {osrmRouteNarrationPois.map((item) => {
+                          const alsoValhalla = valhallaRoutePoiKeys.has(item.key);
+                          const cueLabel = item.cue === 'prefix-after' ? 'PREFIX' : item.cue.toUpperCase();
+                          return (
+                            <button key={`osrm-${item.key}`} className="route-narration-overlay-item osrm-engine" onClick={() => focusOsrmRouteNarrationPoi(item)} title={item.evidence.matchedInstruction}>
+                              <i />
+                              <span>
+                                <strong>{item.evidence.name}</strong>
+                                <small>OSRM step {item.primaryStepIndex + 1} · Narration match · {item.evidence.poiId || item.evidence.sourceNodeId || 'source record'}</small>
+                              </span>
+                              <span className="route-poi-item-badges">
+                                <b className={`guidance-kind-badge ${item.cue}`}>{cueLabel}</b>
+                                <b className={`engine-match-badge ${alsoValhalla ? 'both' : 'osrm'}`}>{alsoValhalla ? 'BOTH' : 'O'}</b>
+                              </span>
+                            </button>
+                          );
+                        })}
+                        {osrmLandmarkGuidanceEntries.filter((entry) => entry.step && !resolvedOsrmLandmarkStepIndexes.has(entry.step.index)).map((entry) => {
+                          const cueLabel = entry.category === 'landmark-prefix' ? 'PREFIX' : entry.category === 'landmark-after' ? 'AFTER' : 'AT';
+                          return (
+                            <button key={`osrm-unresolved-${entry.key}`} className="route-narration-overlay-item osrm-engine unresolved-engine" onClick={() => focusOsrmStep(entry.step!)} title={entry.instruction}>
+                              <i />
+                              <span>
+                                <strong>{entry.instruction}</strong>
+                                <small>OSRM step {entry.step!.index + 1} · Narration-derived named landmark · Source identity unresolved</small>
+                              </span>
+                              <b className={`guidance-kind-badge ${entry.category}`}>{cueLabel}</b>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </details>
 
-                      return (
-                        <button
-                          key={`osrm-${item.key}`}
-                          className="route-narration-overlay-item osrm-engine"
-                          onClick={() => focusOsrmRouteNarrationPoi(item)}
-                          title={item.evidence.matchedInstruction}
-                        >
-                          <i />
-
-                          <span>
-                            <strong>{item.evidence.name}</strong>
-
-                            <small>
-                              OSRM step {item.primaryStepIndex + 1}
-                              {' · '}
-                              {item.evidence.poiId ||
-                                item.evidence.sourceNodeId ||
-                                'source POI'}
-                            </small>
-                          </span>
-
-                          <b className={`engine-match-badge ${alsoValhalla ? 'both' : 'osrm'}`}>
-                            {alsoValhalla ? 'BOTH' : 'O'}
-                          </b>
-                        </button>
-                      );
-                    })}
+                    <details className="route-poi-subsection" open>
+                      <summary>
+                        <strong>Pass-by events</strong>
+                        <span>{osrmPassByLandmarks.length} occurrence{osrmPassByLandmarks.length === 1 ? '' : 's'} · {osrmPassByStableSourceCount} stable source match{osrmPassByStableSourceCount === 1 ? '' : 'es'} · {osrmPassByUniqueCount} distinct identified POI{osrmPassByUniqueCount === 1 ? '' : 's'}</span>
+                      </summary>
+                      <div className="route-narration-overlay-list engine-list route-poi-subsection-list">
+                        {osrmPassByLandmarks.map((item) => {
+                          const stableSourceMatch = item.sourceMatch === 'poi-id' || item.sourceMatch === 'osm-node-id';
+                          const sourceLabel = stableSourceMatch
+                            ? `Source POI matched by ${item.sourceMatch === 'poi-id' ? 'POI ID' : 'OSM node ID'}`
+                            : item.sourceMatch === 'name-and-proximity'
+                              ? 'Name/proximity candidate · source identity unresolved'
+                              : 'Source identity unresolved';
+                          return (
+                            <button key={`osrm-pass-${item.event.key}`} className="route-narration-overlay-item osrm-engine pass-by-engine" onClick={() => focusOsrmPassBy(item.event)} title={item.event.instruction}>
+                              <i />
+                              <span>
+                                <strong>{item.event.name}</strong>
+                                <small>Engine pass-by event · leg {item.event.legIndex + 1}{item.event.legDistanceM === null ? '' : ` · ${item.event.legDistanceM.toFixed(1)} m`} · {sourceLabel}</small>
+                              </span>
+                              <b className="guidance-kind-badge pass-by">PASS-BY</b>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </details>
                   </div>
                 )}
               </div>
@@ -2843,6 +3032,8 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
             selectedOsrmStepIndex={selectedOsrmStepIndex}
             selectedManeuver={selectedManeuver}
             selectedOsrmStep={selectedOsrmStepView}
+            selectedPassBy={selectedOsrmPassBy}
+            selectedPassByLandmark={selectedOsrmPassByLandmark}
             narrationEvidenceByManeuver={narrationEvidenceByManeuver}
             osrmPoiNamesByStep={osrmPoiNamesByStep}
             primaryNarrationEvidence={primaryNarrationEvidence}
@@ -2855,10 +3046,11 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
             onFocusOsrmStep={focusOsrmStep}
             onFocusNarrationEvidence={focusNarrationEvidence}
             onFocusPoi={focusPoi}
+            onFocusPassBySource={focusNarrationEvidence}
           />
             <div className="inspector-analysis-actions">
               <button type="button" onClick={() => setLayout((current) => selectAnalysisTab(current, 'maneuvers'))}>Open maneuver lists</button>
-              <button type="button" disabled={!selectedManeuver && !selectedOsrmStepView} onClick={() => setLayout((current) => selectAnalysisTab(current, 'candidates'))}>Open candidate evidence</button>
+              <button type="button" disabled={!selectedManeuver && !selectedOsrmStepView && !selectedOsrmPassBy} onClick={() => setLayout((current) => selectAnalysisTab(current, 'candidates'))}>Open candidate evidence</button>
             </div>
           </>}
           </div>
@@ -2883,10 +3075,13 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
             osrmRoute={osrmRoute}
             maneuverViews={maneuverViews}
             osrmStepViews={osrmStepViews}
+            osrmGuidanceEntries={osrmGuidance.entries}
+            osrmGuidanceExactOrdering={osrmGuidance.exactOrdering}
             selectedManeuverIndex={selectedManeuverIndex}
             selectedOsrmStepIndex={selectedOsrmStepIndex}
             selectedManeuver={selectedManeuver}
             selectedOsrmStep={selectedOsrmStepView}
+            selectedOsrmPassBy={selectedOsrmPassBy}
             selectedValhallaAnalysis={selectedValhallaCandidateAnalysis}
             selectedOsrmAnalysis={selectedOsrmCandidateAnalysis}
             showCandidatesOnMap={showCandidateMap}
@@ -2928,6 +3123,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
             getOsrmInstruction={osrmInstructionText}
             onFocusManeuver={focusManeuver}
             onFocusOsrmStep={focusOsrmStep}
+            onFocusOsrmPassBy={focusOsrmPassBy}
             onToggleCandidatesOnMap={() => setShowCandidateMap((current) => !current)}
           />
         </AnalysisWorkspace>

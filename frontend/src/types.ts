@@ -141,11 +141,23 @@ export interface OsrmStep {
   maneuver?: OsrmStepManeuver;
 }
 
+export interface OsrmPassByEvent {
+  type?: string;
+  instruction?: string;
+  name?: string;
+  side?: string;
+  location?: LngLat;
+  distance_from_leg_start?: number;
+  poi_id?: string | number | null;
+  osm_node_id?: string | number | null;
+}
+
 export interface OsrmLeg {
   distance?: number;
   duration?: number;
   weight?: number;
   steps?: OsrmStep[];
+  pass_by_events?: OsrmPassByEvent[];
 }
 
 export interface OsrmRouteGeometry {

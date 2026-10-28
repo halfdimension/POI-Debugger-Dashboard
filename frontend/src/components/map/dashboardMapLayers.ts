@@ -30,6 +30,7 @@ const POI_OVERLAY_LAYER_IDS = [
   'route-narration-pois-halo',
   'route-narration-pois',
   'narration-poi',
+  'osrm-pass-by-events',
 ] as const;
 
 export function syncPoiLayerVisibility(
@@ -434,6 +435,20 @@ export function registerDashboardMapLayers(
       'circle-stroke-width': 3,
       'circle-stroke-color': '#ffffff',
       'circle-color': '#dc2626',
+    },
+  });
+
+  map.addSource('osrm-pass-by-events', { type: 'geojson', data: EMPTY_FEATURE_COLLECTION });
+  map.addLayer({
+    id: 'osrm-pass-by-events',
+    type: 'circle',
+    source: 'osrm-pass-by-events',
+    paint: {
+      'circle-radius': ['case', ['==', ['get', 'selected'], true], 12, 8],
+      'circle-stroke-width': ['case', ['==', ['get', 'selected'], true], 4, 3],
+      'circle-stroke-color': '#ffffff',
+      'circle-color': '#7c3aed',
+      'circle-opacity': 0.98,
     },
   });
 }

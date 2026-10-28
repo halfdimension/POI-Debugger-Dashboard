@@ -55,8 +55,10 @@ function callbackDouble(): DashboardMapEventCallbacks {
     onAggregateSelected: vi.fn(),
     onPoiSelected: vi.fn(),
     onRouteNarrationManeuverSelected: vi.fn(),
+    onRouteNarrationOsrmStepSelected: vi.fn(),
     onManeuverScrollRequested: vi.fn(),
     onManeuverSelected: vi.fn(),
+    onPassBySelected: vi.fn(),
     openPoiPopup: vi.fn(),
     closeActivePoiPopup: vi.fn(),
   };
@@ -83,6 +85,7 @@ describe('bindDashboardMapEvents', () => {
       ['click', 'route-narration-pois'],
       ['click', 'candidate-analysis-pois'],
       ['click', 'maneuver-points'],
+      ['click', 'osrm-pass-by-events'],
       ['mouseenter', 'poi-clusters'],
       ['mouseleave', 'poi-clusters'],
       ['mouseenter', 'pois'],
@@ -99,8 +102,10 @@ describe('bindDashboardMapEvents', () => {
       ['mouseleave', 'maneuver-points'],
       ['mouseenter', 'candidate-analysis-pois'],
       ['mouseleave', 'candidate-analysis-pois'],
+      ['mouseenter', 'osrm-pass-by-events'],
+      ['mouseleave', 'osrm-pass-by-events'],
     ]);
-    expect(listenerCount()).toBe(24);
+    expect(listenerCount()).toBe(27);
 
     dispose();
     expect(map.off.mock.calls).toEqual(map.on.mock.calls);
@@ -193,7 +198,7 @@ describe('bindDashboardMapEvents', () => {
     expect(listenerCount()).toBe(0);
 
     const secondDispose = bindDashboardMapEvents(map as never, callbacks);
-    expect(listenerCount()).toBe(24);
+    expect(listenerCount()).toBe(27);
     secondDispose();
     expect(listenerCount()).toBe(0);
   });

@@ -29,6 +29,21 @@ RANKED_CURSOR_VERSION = 2
 DEFAULT_LIMIT = 100
 MAX_LIMIT = 500
 BROAD_QUERY_THRESHOLD = 1_000
+# A bounded geographical candidate set is cheap to rank with the R-tree path,
+# even when it is somewhat larger than the global-sort cutoff. Keeping these
+# queries out of the priority-index partitions avoids repeatedly traversing the
+# whole dataset to find rows inside a selective viewport.
+BBOX_BROAD_QUERY_THRESHOLD = 10_000
+# Broad geographical extents already work well with the global priority scan;
+# the higher bounded-sort cutoff is reserved for genuinely local viewports.
+BBOX_BOUNDED_SORT_MAX_AREA = 25.0
+# Sorting a bounded name-prefix partition is more predictable than walking a
+# cold, non-covering priority index through hundreds of thousands of unrelated
+# rows. Larger prefix partitions retain the early-terminating rank scan.
+BROAD_PREFIX_SORT_THRESHOLD = 23_000
+# Reuse small probe results in the ranked query. Staying below SQLite's legacy
+# 999-variable default leaves room for relevance and cursor parameters.
+CANDIDATE_REUSE_LIMIT = 900
 MAX_CONDITIONS = 10
 MAX_TEXT_LENGTH = 200
 PRIORITY_ASCENDING = "ascending"
@@ -1492,17 +1507,64 @@ class PoiSearchIndex:
         }
 
     @staticmethod
+    def _candidate_probe(
+        connection: sqlite3.Connection,
+        joins: list[str],
+        conditions: list[str],
+        params: list[Any],
+        *,
+        threshold: int = BROAD_QUERY_THRESHOLD,
+        reuse_bounded: bool = False,
+        fts_only: bool = False,
+    ) -> tuple[bool, list[int] | None]:
+        if fts_only:
+            sql = "SELECT rowid FROM poi_fts"
+            probe_conditions = [
+                condition.replace("poi_fts.search_text", "search_text")
+                for condition in conditions
+            ]
+        else:
+            remaining_joins = [join for join in joins if "poi_fts" not in join]
+            if len(remaining_joins) != len(joins):
+                sql = (
+                    "SELECT p.id FROM poi_fts "
+                    "CROSS JOIN pois p ON p.id = poi_fts.rowid "
+                    + " ".join(remaining_joins)
+                )
+            else:
+                sql = f"SELECT p.id FROM pois p {' '.join(joins)}"
+            probe_conditions = conditions
+        if probe_conditions:
+            sql += " WHERE " + " AND ".join(probe_conditions)
+        if reuse_bounded and threshold <= BROAD_QUERY_THRESHOLD:
+            rows = connection.execute(
+                sql + " LIMIT ?", [*params, threshold + 1]
+            ).fetchall()
+            if len(rows) > threshold:
+                return True, None
+            if len(rows) <= CANDIDATE_REUSE_LIMIT:
+                return False, [int(row[0]) for row in rows]
+            return False, None
+        sql += " LIMIT 1 OFFSET ?"
+        return (
+            connection.execute(sql, [*params, threshold]).fetchone() is not None,
+            None,
+        )
+
+    @staticmethod
     def _has_many_candidates(
         connection: sqlite3.Connection,
         joins: list[str],
         conditions: list[str],
         params: list[Any],
+        *,
+        threshold: int = BROAD_QUERY_THRESHOLD,
     ) -> bool:
         sql = f"SELECT 1 FROM pois p {' '.join(joins)}"
         if conditions:
             sql += " WHERE " + " AND ".join(conditions)
         sql += " LIMIT 1 OFFSET ?"
-        return connection.execute(sql, [*params, BROAD_QUERY_THRESHOLD]).fetchone() is not None
+        return connection.execute(sql, [*params, threshold]).fetchone() is not None
 
     @staticmethod
     def _contains_has_many(
@@ -1516,6 +1578,17 @@ class PoiSearchIndex:
         return connection.execute(
             sql, (f"%{escaped}%", BROAD_QUERY_THRESHOLD)
         ).fetchone() is not None
+
+    @staticmethod
+    def _ranked_candidate_threshold(
+        bbox: tuple[float, float, float, float] | None,
+    ) -> int:
+        if bbox is None:
+            return BROAD_QUERY_THRESHOLD
+        west, south, east, north = bbox
+        if (east - west) * (north - south) <= BBOX_BOUNDED_SORT_MAX_AREA:
+            return BBOX_BROAD_QUERY_THRESHOLD
+        return BROAD_QUERY_THRESHOLD
 
     @staticmethod
     def _search_broad_ranked(
@@ -1536,8 +1609,9 @@ class PoiSearchIndex:
         """Read broad results in relevance partitions without a global temp sort.
 
         Exact identifier and exact-name partitions use their existing lookup
-        indexes. Lower relevance partitions traverse the configured priority
-        index, so large result sets are never collected and sorted in Python.
+        indexes. Bounded prefixes use the name index; larger lower-relevance
+        partitions traverse the configured priority index. No result partition
+        is collected and sorted in Python.
         """
         try:
             after_tier = int(after["tier"]) if after is not None else None
@@ -1598,6 +1672,13 @@ class PoiSearchIndex:
             ),
         }
         first_tier = after_tier or 1
+        prefix_uses_name_index = False
+        if first_tier <= 3 and len(query) >= 3:
+            prefix_uses_name_index = connection.execute(
+                "SELECT 1 FROM pois INDEXED BY pois_name_prefix "
+                "WHERE name_norm LIKE ? ESCAPE '\\' LIMIT 1 OFFSET ?",
+                (escaped_prefix, BROAD_PREFIX_SORT_THRESHOLD),
+            ).fetchone() is None
         for tier in range(first_tier, 6):
             remaining = limit + 1 - len(rows)
             if remaining <= 0:
@@ -1609,13 +1690,16 @@ class PoiSearchIndex:
                 part_conditions.append(quick_condition)
                 part_params.extend(quick_params)
             if after is not None and tier == after_tier:
+                inclusive_after_operator = ">=" if ascending else "<="
                 part_conditions.append(
+                    f"{priority_expression} {inclusive_after_operator} ? AND "
                     f"({priority_expression} {priority_after_operator} ? "
                     f"OR ({priority_expression} = ? AND p.name_norm > ?) "
                     f"OR ({priority_expression} = ? AND p.name_norm = ? AND p.id > ?))"
                 )
                 part_params.extend(
                     (
+                        after_priority,
                         after_priority,
                         after_priority,
                         after_name,
@@ -1626,17 +1710,24 @@ class PoiSearchIndex:
                 )
             if tier == 2:
                 index_hint = " INDEXED BY pois_name_exact"
+            elif tier == 3 and prefix_uses_name_index:
+                index_hint = " INDEXED BY pois_name_prefix"
             elif tier >= 3:
                 index_hint = f" INDEXED BY {rank_index}"
             else:
                 # SQLite can combine the three identifier indexes for this OR.
                 index_hint = ""
+            select_from = f"pois p{index_hint} {' '.join(filter_joins)}"
+            where_sql = " AND ".join(part_conditions)
+            order_sql = (
+                f"{priority_expression} {priority_direction}, "
+                "p.name_norm ASC, p.id ASC"
+            )
             sql = (
                 "SELECT p.id, p.feature_json, p.name_norm, p.priority, "
                 f"{tier} AS relevance_tier, {priority_expression} AS priority_sort "
-                f"FROM pois p{index_hint} {' '.join(filter_joins)} WHERE "
-                + " AND ".join(part_conditions)
-                + f" ORDER BY {priority_expression} {priority_direction}, p.name_norm ASC, p.id ASC LIMIT ?"
+                f"FROM {select_from} WHERE {where_sql} "
+                f"ORDER BY {order_sql} LIMIT ?"
             )
             rows.extend(connection.execute(sql, [*part_params, remaining]).fetchall())
         return rows
@@ -1902,10 +1993,20 @@ class PoiSearchIndex:
                 base_param_count = len(params)
                 broad_ranked = False
                 broad_advanced = False
+                bounded_candidate_ids: list[int] | None = None
                 if query:
-                    broad_ranked = self._has_many_candidates(
-                        connection, joins, sql_conditions, params
-                    )
+                    if after is not None and after.get("broad") is True:
+                        broad_ranked = True
+                    else:
+                        broad_ranked, bounded_candidate_ids = self._candidate_probe(
+                            connection,
+                            joins,
+                            sql_conditions,
+                            params,
+                            threshold=self._ranked_candidate_threshold(bbox),
+                            reuse_bounded=bbox is None,
+                            fts_only=bbox is None and not validated,
+                        )
                 elif not query and bbox is None and sql_conditions:
                     contains_items = [item for item in validated if item["operator"] == "contains"]
                     has_selective_equality = any(
@@ -1978,14 +2079,37 @@ class PoiSearchIndex:
                     relevance_sql, relevance_params = self._relevance_sql(
                         query, prefix, contains
                     )
+                    ranked_joins = joins
+                    ranked_conditions = sql_conditions
+                    ranked_params = params
+                    if bounded_candidate_ids is not None:
+                        if not bounded_candidate_ids:
+                            rows = []
+                        ranked_joins = []
+                        ranked_conditions = [
+                            "p.id IN ("
+                            + ",".join("?" for _ in bounded_candidate_ids)
+                            + ")"
+                        ]
+                        ranked_params = bounded_candidate_ids
+                    if any("poi_fts" in join for join in ranked_joins):
+                        remaining_ranked_joins = [
+                            join for join in ranked_joins if "poi_fts" not in join
+                        ]
+                        ranked_from = (
+                            "poi_fts CROSS JOIN pois p ON p.id = poi_fts.rowid "
+                            + " ".join(remaining_ranked_joins)
+                        )
+                    else:
+                        ranked_from = "pois p " + " ".join(ranked_joins)
                     inner_sql = (
                         "SELECT p.id, p.feature_json, p.name_norm, p.priority, "
                         f"{relevance_sql} AS relevance_tier, "
                         f"{priority_expression} AS priority_sort "
-                        f"FROM pois p {' '.join(joins)}"
+                        f"FROM {ranked_from}"
                     )
-                    if sql_conditions:
-                        inner_sql += " WHERE " + " AND ".join(sql_conditions)
+                    if ranked_conditions:
+                        inner_sql += " WHERE " + " AND ".join(ranked_conditions)
                     outer_conditions: list[str] = []
                     outer_params: list[Any] = []
                     if after is not None:
@@ -2023,10 +2147,16 @@ class PoiSearchIndex:
                         f" ORDER BY relevance_tier ASC, priority_sort {priority_direction}, "
                         "name_norm ASC, id ASC LIMIT ?"
                     )
-                    rows = connection.execute(
-                        sql,
-                        [*relevance_params, *params, *outer_params, limit + 1],
-                    ).fetchall()
+                    if bounded_candidate_ids != []:
+                        rows = connection.execute(
+                            sql,
+                            [
+                                *relevance_params,
+                                *ranked_params,
+                                *outer_params,
+                                limit + 1,
+                            ],
+                        ).fetchall()
                 else:
                     index_hint = f" INDEXED BY {rank_index}" if broad_advanced else ""
                     sql = f"SELECT p.id, p.feature_json, p.name_norm, p.priority{select_extra} FROM pois p{index_hint} {' '.join(joins)}"
@@ -2051,6 +2181,8 @@ class PoiSearchIndex:
             }
             if query:
                 cursor_payload["tier"] = last["relevance_tier"]
+                if broad_ranked:
+                    cursor_payload["broad"] = True
             next_cursor = self._encode_cursor(cursor_payload)
         return {
             "type": "FeatureCollection",
@@ -2160,12 +2292,27 @@ class PoiSearchIndex:
                     params.append(int(visible))
 
                 broad_ranked = False
+                bounded_candidate_ids: list[int] | None = None
                 broad_condition_count = len(conditions)
                 broad_param_count = len(params)
                 if query:
-                    broad_ranked = self._has_many_candidates(
-                        connection, joins, conditions, params
-                    )
+                    if after is not None and after.get("broad") is True:
+                        broad_ranked = True
+                    else:
+                        broad_ranked, bounded_candidate_ids = self._candidate_probe(
+                            connection,
+                            joins,
+                            conditions,
+                            params,
+                            threshold=self._ranked_candidate_threshold(bbox),
+                            reuse_bounded=bbox is None,
+                            fts_only=(
+                                bbox is None
+                                and type_filter is None
+                                and min_priority is None
+                                and visible is None
+                            ),
+                        )
 
                 if query:
                     escaped = escaped_query + "%"
@@ -2210,14 +2357,37 @@ class PoiSearchIndex:
                     relevance_sql, relevance_params = self._relevance_sql(
                         query, escaped, contains
                     )
+                    ranked_joins = joins
+                    ranked_conditions = conditions
+                    ranked_params = params
+                    if bounded_candidate_ids is not None:
+                        if not bounded_candidate_ids:
+                            rows = []
+                        ranked_joins = []
+                        ranked_conditions = [
+                            "p.id IN ("
+                            + ",".join("?" for _ in bounded_candidate_ids)
+                            + ")"
+                        ]
+                        ranked_params = bounded_candidate_ids
+                    if any("poi_fts" in join for join in ranked_joins):
+                        remaining_ranked_joins = [
+                            join for join in ranked_joins if "poi_fts" not in join
+                        ]
+                        ranked_from = (
+                            "poi_fts CROSS JOIN pois p ON p.id = poi_fts.rowid "
+                            + " ".join(remaining_ranked_joins)
+                        )
+                    else:
+                        ranked_from = "pois p " + " ".join(ranked_joins)
                     inner_sql = (
                         "SELECT p.id, p.feature_json, p.name_norm, p.priority, "
                         f"{relevance_sql} AS relevance_tier, "
                         f"{priority_expression} AS priority_sort "
-                        f"FROM pois p {' '.join(joins)}"
+                        f"FROM {ranked_from}"
                     )
-                    if conditions:
-                        inner_sql += " WHERE " + " AND ".join(conditions)
+                    if ranked_conditions:
+                        inner_sql += " WHERE " + " AND ".join(ranked_conditions)
                     outer_params: list[Any] = []
                     outer_condition = ""
                     if after is not None:
@@ -2253,10 +2423,16 @@ class PoiSearchIndex:
                         f"ORDER BY relevance_tier ASC, priority_sort {priority_direction}, "
                         "name_norm ASC, id ASC LIMIT ?"
                     )
-                    rows = connection.execute(
-                        sql,
-                        [*relevance_params, *params, *outer_params, limit + 1],
-                    ).fetchall()
+                    if bounded_candidate_ids != []:
+                        rows = connection.execute(
+                            sql,
+                            [
+                                *relevance_params,
+                                *ranked_params,
+                                *outer_params,
+                                limit + 1,
+                            ],
+                        ).fetchall()
                 else:
                     sql = f"SELECT p.id, p.feature_json, p.name_norm, p.priority{select_extra} FROM pois p {' '.join(joins)}"
                     if conditions:
@@ -2282,6 +2458,8 @@ class PoiSearchIndex:
                     priority=last["priority_sort"],
                     name=last["name_norm"],
                 )
+                if broad_ranked:
+                    cursor_payload["broad"] = True
             next_cursor = self._encode_cursor(cursor_payload)
         return {
             "type": "FeatureCollection",

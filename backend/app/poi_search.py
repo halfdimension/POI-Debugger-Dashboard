@@ -25,6 +25,7 @@ FALSE_VISIBLE_VALUES = {"0", "false", "no", "n"}
 LAT_CANDIDATES = ("lat", "latitude", "y")
 LON_CANDIDATES = ("lon", "lng", "longitude", "x")
 SCHEMA_VERSION = "7"
+RANKED_CURSOR_VERSION = 2
 DEFAULT_LIMIT = 100
 MAX_LIMIT = 500
 BROAD_QUERY_THRESHOLD = 1_000
@@ -1520,21 +1521,33 @@ class PoiSearchIndex:
     def _search_broad_ranked(
         connection: sqlite3.Connection,
         *,
-        conditions: list[str],
-        params: list[Any],
+        filter_joins: list[str],
+        filter_conditions: list[str],
+        filter_params: list[Any],
+        quick_condition: str,
+        quick_params: list[Any],
+        query: str,
         escaped_prefix: str,
+        escaped_contains: str,
         limit: int,
         after: dict[str, Any] | None,
         rank_order: str = PRIORITY_DESCENDING,
     ) -> list[sqlite3.Row]:
-        """Read a broad result directly in rank order, avoiding a large temp sort."""
+        """Read broad results in relevance partitions without a global temp sort.
+
+        Exact identifier and exact-name partitions use their existing lookup
+        indexes. Lower relevance partitions traverse the configured priority
+        index, so large result sets are never collected and sorted in Python.
+        """
         try:
-            after_starts = int(after["starts"]) if after is not None else None
+            after_tier = int(after["tier"]) if after is not None else None
             after_priority = float(after["priority"]) if after is not None else None
             after_name = str(after["name"]) if after is not None else None
             after_id = int(after["id"]) if after is not None else None
         except (KeyError, TypeError, ValueError) as exc:
             raise PoiSearchValidationError("Invalid pagination cursor") from exc
+        if after_tier is not None and after_tier not in range(1, 6):
+            raise PoiSearchValidationError("Invalid pagination cursor")
 
         rows: list[sqlite3.Row] = []
         ascending = rank_order == PRIORITY_ASCENDING
@@ -1542,27 +1555,60 @@ class PoiSearchIndex:
         priority_direction = "ASC" if ascending else "DESC"
         priority_after_operator = ">" if ascending else "<"
         rank_index = "pois_rank_ascending" if ascending else "pois_rank"
-        partitions = (1, 0) if after_starts in (None, 1) else (0,)
-        if 1 in partitions:
-            prefix_sql = (
-                "SELECT 1 FROM pois p INDEXED BY pois_name_prefix WHERE "
-                + " AND ".join([*conditions, "p.name_norm LIKE ? ESCAPE '\\'"])
-                + " LIMIT 1"
-            )
-            if connection.execute(
-                prefix_sql, [*params, escaped_prefix]
-            ).fetchone() is None:
-                partitions = (0,)
-        for starts in partitions:
+        identifier_exact = (
+            "(p.mappls_poi_id_norm = ? OR p.new_node_id_norm = ? "
+            "OR p.osm_source_id_norm = ?)"
+        )
+        tier_predicates = {
+            1: (identifier_exact, [query, query, query]),
+            2: (
+                f"NOT {identifier_exact} AND p.name_norm = ?",
+                [query, query, query, query],
+            ),
+            3: (
+                f"NOT {identifier_exact} AND p.name_norm <> ? "
+                "AND p.name_norm LIKE ? ESCAPE '\\'",
+                [query, query, query, query, escaped_prefix],
+            ),
+            4: (
+                f"NOT {identifier_exact} AND p.name_norm <> ? "
+                "AND NOT (p.name_norm LIKE ? ESCAPE '\\') "
+                "AND p.name_norm LIKE ? ESCAPE '\\'",
+                [
+                    query,
+                    query,
+                    query,
+                    query,
+                    escaped_prefix,
+                    escaped_contains,
+                ],
+            ),
+            5: (
+                f"NOT {identifier_exact} AND p.name_norm <> ? "
+                "AND NOT (p.name_norm LIKE ? ESCAPE '\\') "
+                "AND NOT (p.name_norm LIKE ? ESCAPE '\\')",
+                [
+                    query,
+                    query,
+                    query,
+                    query,
+                    escaped_prefix,
+                    escaped_contains,
+                ],
+            ),
+        }
+        first_tier = after_tier or 1
+        for tier in range(first_tier, 6):
             remaining = limit + 1 - len(rows)
             if remaining <= 0:
                 break
-            part_conditions = list(conditions)
-            part_params = list(params)
-            prefix_condition = "p.name_norm LIKE ? ESCAPE '\\'"
-            part_conditions.append(prefix_condition if starts else f"NOT ({prefix_condition})")
-            part_params.append(escaped_prefix)
-            if after is not None and starts == after_starts:
+            predicate, predicate_params = tier_predicates[tier]
+            part_conditions = [*filter_conditions, predicate]
+            part_params = [*filter_params, *predicate_params]
+            if tier == 5:
+                part_conditions.append(quick_condition)
+                part_params.extend(quick_params)
+            if after is not None and tier == after_tier:
                 part_conditions.append(
                     f"({priority_expression} {priority_after_operator} ? "
                     f"OR ({priority_expression} = ? AND p.name_norm > ?) "
@@ -1578,15 +1624,45 @@ class PoiSearchIndex:
                         after_id,
                     )
                 )
+            if tier == 2:
+                index_hint = " INDEXED BY pois_name_exact"
+            elif tier >= 3:
+                index_hint = f" INDEXED BY {rank_index}"
+            else:
+                # SQLite can combine the three identifier indexes for this OR.
+                index_hint = ""
             sql = (
                 "SELECT p.id, p.feature_json, p.name_norm, p.priority, "
-                f"{starts} AS name_starts, {priority_expression} AS priority_sort "
-                f"FROM pois p INDEXED BY {rank_index} WHERE "
+                f"{tier} AS relevance_tier, {priority_expression} AS priority_sort "
+                f"FROM pois p{index_hint} {' '.join(filter_joins)} WHERE "
                 + " AND ".join(part_conditions)
                 + f" ORDER BY {priority_expression} {priority_direction}, p.name_norm ASC, p.id ASC LIMIT ?"
             )
             rows.extend(connection.execute(sql, [*part_params, remaining]).fetchall())
         return rows
+
+    @staticmethod
+    def _relevance_sql(
+        query: str, escaped_prefix: str, escaped_contains: str
+    ) -> tuple[str, list[Any]]:
+        """Return the five-tier relevance expression for bounded result sets."""
+        expression = (
+            "CASE "
+            "WHEN p.mappls_poi_id_norm = ? OR p.new_node_id_norm = ? "
+            "OR p.osm_source_id_norm = ? THEN 1 "
+            "WHEN p.name_norm = ? THEN 2 "
+            "WHEN p.name_norm LIKE ? ESCAPE '\\' THEN 3 "
+            "WHEN p.name_norm LIKE ? ESCAPE '\\' THEN 4 "
+            "ELSE 5 END"
+        )
+        return expression, [
+            query,
+            query,
+            query,
+            query,
+            escaped_prefix,
+            escaped_contains,
+        ]
 
     @staticmethod
     def _encode_cursor(payload: dict[str, Any]) -> str:
@@ -1772,6 +1848,11 @@ class PoiSearchIndex:
                 after: dict[str, Any] | None = None
                 if cursor:
                     after = self._decode_cursor(cursor)
+                    if (
+                        after.get("version") != RANKED_CURSOR_VERSION
+                        or after.get("kind") != "poi_query"
+                    ):
+                        raise PoiSearchValidationError("Incompatible pagination cursor")
                     if after.get("generation") != generation:
                         raise PoiSearchValidationError("Pagination cursor is stale")
                     if after.get("filters") != filters_hash:
@@ -1821,7 +1902,7 @@ class PoiSearchIndex:
                 base_param_count = len(params)
                 broad_ranked = False
                 broad_advanced = False
-                if query and bbox is None and escaped_query == query:
+                if query:
                     broad_ranked = self._has_many_candidates(
                         connection, joins, sql_conditions, params
                     )
@@ -1849,29 +1930,8 @@ class PoiSearchIndex:
                         sql_conditions[0] = rank_group
 
                 if query:
-                    starts_sql = "CASE WHEN p.name_norm LIKE ? ESCAPE '\\' THEN 1 ELSE 0 END"
                     prefix = escaped_query + "%"
-                    select_params: list[Any] = [prefix]
-                    if after is not None:
-                        try:
-                            last_starts = int(after["starts"])
-                            last_priority = float(after["priority"])
-                            last_name = str(after["name"])
-                            last_id = int(after["id"])
-                        except (KeyError, TypeError, ValueError) as exc:
-                            raise PoiSearchValidationError("Invalid pagination cursor") from exc
-                        sql_conditions.append(
-                            f"(({starts_sql}) < ? OR (({starts_sql}) = ? AND {priority_expression} {priority_after_operator} ?) "
-                            f"OR (({starts_sql}) = ? AND {priority_expression} = ? AND p.name_norm > ?) "
-                            f"OR (({starts_sql}) = ? AND {priority_expression} = ? AND p.name_norm = ? AND p.id > ?))"
-                        )
-                        params.extend([
-                            prefix, last_starts, prefix, last_starts, last_priority,
-                            prefix, last_starts, last_priority, last_name,
-                            prefix, last_starts, last_priority, last_name, last_id,
-                        ])
-                    select_extra = f", {starts_sql} AS name_starts, {priority_expression} AS priority_sort"
-                    order_by = f"name_starts DESC, priority_sort {priority_direction}, p.name_norm ASC, p.id ASC"
+                    contains = "%" + escaped_query + "%"
                 else:
                     select_params = []
                     if after is not None:
@@ -1891,19 +1951,82 @@ class PoiSearchIndex:
                     order_by = f"priority_sort {priority_direction}, p.name_norm ASC, p.id ASC"
 
                 if broad_ranked:
-                    broad_conditions = [
+                    broad_filters = [
                         item.replace("poi_fts.search_text", "p.search_text")
-                        for item in sql_conditions[:base_condition_count]
+                        for item in sql_conditions[1:base_condition_count]
                     ]
+                    quick_condition = sql_conditions[0].replace(
+                        "poi_fts.search_text", "p.search_text"
+                    )
                     rows = self._search_broad_ranked(
                         connection,
-                        conditions=broad_conditions,
-                        params=params[:base_param_count],
+                        filter_joins=[
+                            join for join in joins if "poi_fts" not in join
+                        ],
+                        filter_conditions=broad_filters,
+                        filter_params=params[1:base_param_count],
+                        quick_condition=quick_condition,
+                        quick_params=params[:1],
+                        query=query,
                         escaped_prefix=prefix,
+                        escaped_contains=contains,
                         limit=limit,
                         after=after,
                         rank_order=policy["rank_order"],
                     )
+                elif query:
+                    relevance_sql, relevance_params = self._relevance_sql(
+                        query, prefix, contains
+                    )
+                    inner_sql = (
+                        "SELECT p.id, p.feature_json, p.name_norm, p.priority, "
+                        f"{relevance_sql} AS relevance_tier, "
+                        f"{priority_expression} AS priority_sort "
+                        f"FROM pois p {' '.join(joins)}"
+                    )
+                    if sql_conditions:
+                        inner_sql += " WHERE " + " AND ".join(sql_conditions)
+                    outer_conditions: list[str] = []
+                    outer_params: list[Any] = []
+                    if after is not None:
+                        try:
+                            last_tier = int(after["tier"])
+                            last_priority = float(after["priority"])
+                            last_name = str(after["name"])
+                            last_id = int(after["id"])
+                        except (KeyError, TypeError, ValueError) as exc:
+                            raise PoiSearchValidationError("Invalid pagination cursor") from exc
+                        if last_tier not in range(1, 6):
+                            raise PoiSearchValidationError("Invalid pagination cursor")
+                        outer_conditions.append(
+                            f"(relevance_tier > ? OR "
+                            f"(relevance_tier = ? AND priority_sort {priority_after_operator} ?) OR "
+                            "(relevance_tier = ? AND priority_sort = ? AND name_norm > ?) OR "
+                            "(relevance_tier = ? AND priority_sort = ? AND name_norm = ? AND id > ?))"
+                        )
+                        outer_params.extend((
+                            last_tier,
+                            last_tier,
+                            last_priority,
+                            last_tier,
+                            last_priority,
+                            last_name,
+                            last_tier,
+                            last_priority,
+                            last_name,
+                            last_id,
+                        ))
+                    sql = f"SELECT * FROM ({inner_sql}) ranked"
+                    if outer_conditions:
+                        sql += " WHERE " + " AND ".join(outer_conditions)
+                    sql += (
+                        f" ORDER BY relevance_tier ASC, priority_sort {priority_direction}, "
+                        "name_norm ASC, id ASC LIMIT ?"
+                    )
+                    rows = connection.execute(
+                        sql,
+                        [*relevance_params, *params, *outer_params, limit + 1],
+                    ).fetchall()
                 else:
                     index_hint = f" INDEXED BY {rank_index}" if broad_advanced else ""
                     sql = f"SELECT p.id, p.feature_json, p.name_norm, p.priority{select_extra} FROM pois p{index_hint} {' '.join(joins)}"
@@ -1918,6 +2041,8 @@ class PoiSearchIndex:
         if has_more and page:
             last = page[-1]
             cursor_payload: dict[str, Any] = {
+                "version": RANKED_CURSOR_VERSION,
+                "kind": "poi_query",
                 "generation": generation,
                 "filters": filters_hash,
                 "id": last["id"],
@@ -1925,7 +2050,7 @@ class PoiSearchIndex:
                 "name": last["name_norm"],
             }
             if query:
-                cursor_payload["starts"] = last["name_starts"]
+                cursor_payload["tier"] = last["relevance_tier"]
             next_cursor = self._encode_cursor(cursor_payload)
         return {
             "type": "FeatureCollection",
@@ -1948,6 +2073,10 @@ class PoiSearchIndex:
         limit: int = DEFAULT_LIMIT,
         cursor: str | None = None,
     ) -> dict[str, Any]:
+        if not isinstance(dataset_id, str) or not dataset_id.strip():
+            raise PoiSearchValidationError("dataset_id is required")
+        if dataset_id not in self._datasets:
+            raise PoiSearchNotFoundError("Unknown dataset")
         if not 1 <= limit <= MAX_LIMIT:
             raise PoiSearchValidationError(f"limit must be between 1 and {MAX_LIMIT}")
         if min_priority is not None and not math.isfinite(min_priority):
@@ -1958,10 +2087,16 @@ class PoiSearchIndex:
             raise PoiSearchValidationError("q must not exceed 200 characters")
         if type_filter is not None and len(type_filter) > 200:
             raise PoiSearchValidationError("type must not exceed 200 characters")
+        policy = priority_policy(self._datasets[dataset_id])
+        ascending_priority = policy["rank_order"] == PRIORITY_ASCENDING
+        priority_expression = "COALESCE(p.priority, 1e308)" if ascending_priority else "COALESCE(p.priority, -1)"
+        priority_direction = "ASC" if ascending_priority else "DESC"
+        priority_after_operator = ">" if ascending_priority else "<"
         filters_hash = hashlib.sha256(
             json.dumps(
-                [dataset_id, query, type_filter, min_priority, visible, bbox],
+                [dataset_id, query, type_filter, min_priority, visible, bbox, policy],
                 separators=(",", ":"),
+                sort_keys=True,
             ).encode("utf-8")
         ).hexdigest()[:20]
 
@@ -1976,6 +2111,11 @@ class PoiSearchIndex:
                 after: dict[str, Any] | None = None
                 if cursor:
                     after = self._decode_cursor(cursor)
+                    if (
+                        after.get("version") != RANKED_CURSOR_VERSION
+                        or after.get("kind") != "poi_search"
+                    ):
+                        raise PoiSearchValidationError("Incompatible pagination cursor")
                     if after.get("generation") != generation:
                         raise PoiSearchValidationError("Pagination cursor is stale")
                     if after.get("filters") != filters_hash:
@@ -2022,38 +2162,14 @@ class PoiSearchIndex:
                 broad_ranked = False
                 broad_condition_count = len(conditions)
                 broad_param_count = len(params)
-                if query and bbox is None and not any(
-                    character in query for character in ("%", "_", "\\")
-                ):
+                if query:
                     broad_ranked = self._has_many_candidates(
                         connection, joins, conditions, params
                     )
 
                 if query:
-                    starts_sql = "CASE WHEN p.name_norm LIKE ? ESCAPE '\\' THEN 1 ELSE 0 END"
                     escaped = escaped_query + "%"
-                    starts_params: list[Any] = [escaped]
-                    if after is not None:
-                        try:
-                            last_starts = int(after["starts"])
-                            last_priority = float(after["priority"])
-                            last_name = str(after["name"])
-                            last_id = int(after["id"])
-                        except (KeyError, TypeError, ValueError) as exc:
-                            raise PoiSearchValidationError("Invalid pagination cursor") from exc
-                        conditions.append(
-                            f"(({starts_sql}) < ? OR (({starts_sql}) = ? AND COALESCE(p.priority, -1) < ?) "
-                            f"OR (({starts_sql}) = ? AND COALESCE(p.priority, -1) = ? AND p.name_norm > ?) "
-                            f"OR (({starts_sql}) = ? AND COALESCE(p.priority, -1) = ? AND p.name_norm = ? AND p.id > ?))"
-                        )
-                        params.extend(
-                            [escaped, last_starts, escaped, last_starts, last_priority,
-                             escaped, last_starts, last_priority, last_name,
-                             escaped, last_starts, last_priority, last_name, last_id]
-                        )
-                    select_extra = f", {starts_sql} AS name_starts, COALESCE(p.priority, -1) AS priority_sort"
-                    order_by = "name_starts DESC, priority_sort DESC, p.name_norm ASC, p.id ASC"
-                    select_params = starts_params
+                    contains = "%" + escaped_query + "%"
                 else:
                     if after is not None:
                         try:
@@ -2067,18 +2183,80 @@ class PoiSearchIndex:
                     select_params = []
 
                 if broad_ranked:
-                    broad_conditions = [
+                    broad_filters = [
                         condition.replace("poi_fts.search_text", "p.search_text")
-                        for condition in conditions[:broad_condition_count]
+                        for condition in conditions[1:broad_condition_count]
                     ]
+                    quick_condition = conditions[0].replace(
+                        "poi_fts.search_text", "p.search_text"
+                    )
                     rows = self._search_broad_ranked(
                         connection,
-                        conditions=broad_conditions,
-                        params=params[:broad_param_count],
+                        filter_joins=[
+                            join for join in joins if "poi_fts" not in join
+                        ],
+                        filter_conditions=broad_filters,
+                        filter_params=params[1:broad_param_count],
+                        quick_condition=quick_condition,
+                        quick_params=params[:1],
+                        query=query,
                         escaped_prefix=escaped,
+                        escaped_contains=contains,
                         limit=limit,
                         after=after,
+                        rank_order=policy["rank_order"],
                     )
+                elif query:
+                    relevance_sql, relevance_params = self._relevance_sql(
+                        query, escaped, contains
+                    )
+                    inner_sql = (
+                        "SELECT p.id, p.feature_json, p.name_norm, p.priority, "
+                        f"{relevance_sql} AS relevance_tier, "
+                        f"{priority_expression} AS priority_sort "
+                        f"FROM pois p {' '.join(joins)}"
+                    )
+                    if conditions:
+                        inner_sql += " WHERE " + " AND ".join(conditions)
+                    outer_params: list[Any] = []
+                    outer_condition = ""
+                    if after is not None:
+                        try:
+                            last_tier = int(after["tier"])
+                            last_priority = float(after["priority"])
+                            last_name = str(after["name"])
+                            last_id = int(after["id"])
+                        except (KeyError, TypeError, ValueError) as exc:
+                            raise PoiSearchValidationError("Invalid pagination cursor") from exc
+                        if last_tier not in range(1, 6):
+                            raise PoiSearchValidationError("Invalid pagination cursor")
+                        outer_condition = (
+                            f" WHERE (relevance_tier > ? OR "
+                            f"(relevance_tier = ? AND priority_sort {priority_after_operator} ?) OR "
+                            "(relevance_tier = ? AND priority_sort = ? AND name_norm > ?) OR "
+                            "(relevance_tier = ? AND priority_sort = ? AND name_norm = ? AND id > ?))"
+                        )
+                        outer_params.extend((
+                            last_tier,
+                            last_tier,
+                            last_priority,
+                            last_tier,
+                            last_priority,
+                            last_name,
+                            last_tier,
+                            last_priority,
+                            last_name,
+                            last_id,
+                        ))
+                    sql = (
+                        f"SELECT * FROM ({inner_sql}) ranked{outer_condition} "
+                        f"ORDER BY relevance_tier ASC, priority_sort {priority_direction}, "
+                        "name_norm ASC, id ASC LIMIT ?"
+                    )
+                    rows = connection.execute(
+                        sql,
+                        [*relevance_params, *params, *outer_params, limit + 1],
+                    ).fetchall()
                 else:
                     sql = f"SELECT p.id, p.feature_json, p.name_norm, p.priority{select_extra} FROM pois p {' '.join(joins)}"
                     if conditions:
@@ -2092,13 +2270,15 @@ class PoiSearchIndex:
         if has_more and page:
             last = page[-1]
             cursor_payload: dict[str, Any] = {
+                "version": RANKED_CURSOR_VERSION,
+                "kind": "poi_search",
                 "generation": generation,
                 "filters": filters_hash,
                 "id": last["id"],
             }
             if query:
                 cursor_payload.update(
-                    starts=last["name_starts"],
+                    tier=last["relevance_tier"],
                     priority=last["priority_sort"],
                     name=last["name_norm"],
                 )

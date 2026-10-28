@@ -54,8 +54,7 @@ function callbackDouble(): DashboardMapEventCallbacks {
   return {
     onAggregateSelected: vi.fn(),
     onPoiSelected: vi.fn(),
-    onRouteNarrationManeuverSelected: vi.fn(),
-    onRouteNarrationOsrmStepSelected: vi.fn(),
+    onRouteNarrationPoiSelected: vi.fn(),
     onManeuverScrollRequested: vi.fn(),
     onManeuverSelected: vi.fn(),
     onPassBySelected: vi.fn(),
@@ -146,19 +145,33 @@ describe('bindDashboardMapEvents', () => {
     const { map, emit } = mapDouble();
     const callbacks = callbackDouble();
     bindDashboardMapEvents(map as never, callbacks);
-    const narrationPoi = point({ name: 'Clock Tower', _primary_maneuver_index: 4 });
+    const narrationPoi = point({ name: 'Clock Tower', _primary_maneuver_index: 4, _route_landmark_key: 'clock-tower' });
 
     emit('click', 'route-narration-pois', mapEvent(narrationPoi));
-    expect(callbacks.onRouteNarrationManeuverSelected).toHaveBeenCalledWith(4);
-    expect(callbacks.onPoiSelected).toHaveBeenCalledWith(narrationPoi);
+    expect(callbacks.onRouteNarrationPoiSelected).toHaveBeenCalledWith(narrationPoi, 'valhalla', 4, 'clock-tower');
+    expect(callbacks.onPoiSelected).not.toHaveBeenCalled();
+    expect(callbacks.openPoiPopup).not.toHaveBeenCalled();
+    expect(callbacks.closeActivePoiPopup).toHaveBeenCalledOnce();
     expect(map.flyTo).toHaveBeenCalledWith({ center: [77.2, 28.6], zoom: 17, essential: true });
     vi.advanceTimersByTime(80);
     expect(callbacks.onManeuverScrollRequested).toHaveBeenCalledWith(4);
 
     emit('click', 'maneuver-points', mapEvent(point({ index: 7 }, [78, 29])));
     expect(callbacks.onManeuverSelected).toHaveBeenCalledWith(7);
-    expect(callbacks.closeActivePoiPopup).toHaveBeenCalledOnce();
+    expect(callbacks.closeActivePoiPopup).toHaveBeenCalledTimes(2);
     expect(map.flyTo).toHaveBeenLastCalledWith({ center: [78, 29], zoom: 17, essential: true });
+
+    emit('click', 'osrm-pass-by-events', mapEvent(point({ event_key: 'pass-by:0:0' }, [79, 30])));
+    expect(callbacks.onPassBySelected).toHaveBeenCalledWith('pass-by:0:0');
+    expect(callbacks.openPoiPopup).not.toHaveBeenCalled();
+    expect(callbacks.closeActivePoiPopup).toHaveBeenCalledTimes(3);
+    expect(map.flyTo).toHaveBeenLastCalledWith({ center: [79, 30], zoom: 17, essential: true });
+
+    const highlightedRoutePoi = point({ _primary_osrm_step_index: 37, _route_landmark_key: 'bank-1' });
+    emit('click', 'selected-poi', mapEvent(highlightedRoutePoi));
+    expect(callbacks.onRouteNarrationPoiSelected).toHaveBeenLastCalledWith(highlightedRoutePoi, 'osrm', 37, 'bank-1');
+    expect(callbacks.openPoiPopup).not.toHaveBeenCalled();
+    expect(callbacks.closeActivePoiPopup).toHaveBeenCalledTimes(4);
   });
 
   it('expands clusters and preserves hover cursor behavior', async () => {

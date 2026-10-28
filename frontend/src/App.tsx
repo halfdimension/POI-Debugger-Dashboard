@@ -15,7 +15,7 @@ import { CompactDatasetSelector } from './components/datasets/DatasetSelector';
 import { CompactPoiExplorer } from './components/datasets/PoiExplorer';
 import { buildOsrmGuidance, type ManeuverView, type NarrationPoiEvidence, type NearbyPoi, type OsrmPassByEventView, type OsrmPassByLandmark, type OsrmRouteNarrationPoi, type OsrmStepView, type RouteNarrationPoi } from './components/inspection/viewModels';
 import { ManeuverInspection } from './components/inspection/ManeuverInspection';
-import { SelectedPoiDetails } from './components/inspection/SelectedPoiDetails';
+import { SelectedPoiDetails, type PoiGuidanceContext } from './components/inspection/SelectedPoiDetails';
 import { ClusterMemberDetails } from './components/inspection/ClusterMemberDetails';
 import { MapContextMenu, type MapContextMenuLocation } from './components/map/MapContextMenu';
 import { bindDashboardMapEvents } from './components/map/dashboardMapEvents';
@@ -71,6 +71,10 @@ declare const __VPD_MOCK_API__: boolean;
 
 type PickMode = 'start' | 'end';
 type SelectedViewportAggregate = ViewportAggregate & { dataset_id: string; generation: string };
+type RouteLandmarkSelection =
+  | { kind: 'valhalla'; key: string; occurrenceIndex: number }
+  | { kind: 'osrm'; key: string; occurrenceIndex: number }
+  | { kind: 'pass-by'; eventKey: string };
 
 const EMPTY_FC: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features: [] };
 const NEARBY_POI_RADIUS_M = 100;
@@ -190,6 +194,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
   const [selectedOsrmStepIndex, setSelectedOsrmStepIndex] = useState<number | null>(null);
   const [selectedOsrmPassByKey, setSelectedOsrmPassByKey] = useState<string | null>(null);
   const [selectedPoi, setSelectedPoi] = useState<GeoJSON.Feature<GeoJSON.Point> | null>(null);
+  const [routeLandmarkSelection, setRouteLandmarkSelection] = useState<RouteLandmarkSelection | null>(null);
   const [datasetRegistry, setDatasetRegistry] = useState<DatasetRegistryResponse | null>(null);
   const [datasetBusy, setDatasetBusy] = useState(false);
   const [datasetMessage, setDatasetMessage] = useState('');
@@ -1130,6 +1135,84 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
     [routeNarrationPois],
   );
 
+  const selectedPoiGuidance = useMemo<PoiGuidanceContext | null>(() => {
+    if (!routeLandmarkSelection) return null;
+    if (routeLandmarkSelection.kind === 'pass-by') {
+      const landmark = osrmPassByLandmarks.find((item) => item.event.key === routeLandmarkSelection.eventKey);
+      return landmark ? { kind: 'pass-by', landmark } : null;
+    }
+    if (routeLandmarkSelection.kind === 'osrm') {
+      const item = osrmRouteNarrationPois.find((candidate) => candidate.key === routeLandmarkSelection.key)
+        ?? osrmRouteNarrationPois.find((candidate) => candidate.stepIndexes.includes(routeLandmarkSelection.occurrenceIndex));
+      const selectedStep = osrmStepViews.find((step) => step.index === routeLandmarkSelection.occurrenceIndex);
+      if (!item || !selectedStep) return null;
+      return {
+        kind: 'osrm-step',
+        category: item.cue === 'prefix-after' ? 'PREFIX' : item.cue.toUpperCase() as 'AT' | 'AFTER',
+        selectedStep,
+        relatedSteps: item.stepIndexes.flatMap((index) => {
+          const step = osrmStepViews.find((candidate) => candidate.index === index);
+          return step ? [step] : [];
+        }),
+        evidence: item.evidence,
+      };
+    }
+    const item = routeNarrationPois.find((candidate) => candidate.key === routeLandmarkSelection.key)
+      ?? routeNarrationPois.find((candidate) => candidate.maneuverIndexes.includes(routeLandmarkSelection.occurrenceIndex));
+    const selectedManeuver = maneuverViews.find((maneuver) => maneuver.index === routeLandmarkSelection.occurrenceIndex);
+    if (!item || !selectedManeuver) return null;
+    return {
+      kind: 'valhalla-maneuver',
+      selectedManeuver,
+      relatedManeuvers: item.maneuverIndexes.flatMap((index) => {
+        const maneuver = maneuverViews.find((candidate) => candidate.index === index);
+        return maneuver ? [maneuver] : [];
+      }),
+      evidence: item.evidence,
+    };
+  }, [routeLandmarkSelection, osrmPassByLandmarks, osrmRouteNarrationPois, osrmStepViews, routeNarrationPois, maneuverViews]);
+
+  useEffect(() => {
+    if (!routeLandmarkSelection) return;
+    if (!selectedPoiGuidance) {
+      setRouteLandmarkSelection(null);
+      setSelectedPoi(null);
+      return;
+    }
+    const evidence = selectedPoiGuidance.kind === 'pass-by'
+      ? selectedPoiGuidance.landmark.sourceEvidence
+      : selectedPoiGuidance.evidence;
+    if (!evidence) {
+      setSelectedPoi(null);
+      return;
+    }
+    const selectionProperties = routeLandmarkSelection.kind === 'pass-by'
+      ? { _selected_pass_by_key: routeLandmarkSelection.eventKey }
+      : routeLandmarkSelection.kind === 'osrm'
+        ? { _route_landmark_key: routeLandmarkSelection.key, _primary_osrm_step_index: routeLandmarkSelection.occurrenceIndex }
+        : { _route_landmark_key: routeLandmarkSelection.key, _primary_maneuver_index: routeLandmarkSelection.occurrenceIndex };
+    setSelectedPoi({
+      ...evidence.feature,
+      properties: { ...(evidence.feature.properties ?? {}), ...selectionProperties },
+    });
+  }, [routeLandmarkSelection, selectedPoiGuidance]);
+
+  useEffect(() => {
+    if (!selectedPoiGuidance || selectedPoiGuidance.kind === 'pass-by') {
+      if (routeLandmarkSelection?.kind === 'pass-by') syncGeoJsonSource('poi-turn-inspection', EMPTY_FC);
+      return;
+    }
+    const turnCoordinate = selectedPoiGuidance.kind === 'osrm-step'
+      ? selectedPoiGuidance.selectedStep.coordinate
+      : selectedPoiGuidance.selectedManeuver.coordinate;
+    if (!turnCoordinate) return;
+    syncPoiTurnInspection(
+      selectedPoiGuidance.kind === 'osrm-step' ? 'osrm' : 'valhalla',
+      selectedPoiGuidance.evidence.coordinate,
+      turnCoordinate,
+    );
+  }, [selectedPoiGuidance, routeLandmarkSelection]);
+
   const selectedNarrationEvidence = useMemo(
     () => selectedManeuverIndex === null
       ? []
@@ -1245,19 +1328,21 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
         onPoiSelected: (feature) => {
           setSelectedAggregate(null);
           setSelectedPoi(feature);
+          setRouteLandmarkSelection(null);
+          setSelectedManeuverIndex(null);
+          setSelectedOsrmStepIndex(null);
+          setSelectedOsrmPassByKey(null);
           setInspectorTab('poi');
           setLayout((current) => ({ ...current, rightCollapsed: false }));
         },
-        onRouteNarrationManeuverSelected: (maneuverIndex) => {
-          setSelectedManeuverIndex(maneuverIndex);
-          setInspectorTab('maneuver');
-          setLayout((current) => ({ ...current, rightCollapsed: false }));
-        },
-        onRouteNarrationOsrmStepSelected: (stepIndex) => {
-          setSelectedOsrmStepIndex(stepIndex);
-          setSelectedManeuverIndex(null);
+        onRouteNarrationPoiSelected: (feature, engine, occurrenceIndex, landmarkKey) => {
+          setSelectedAggregate(null);
+          setSelectedPoi(feature);
           setSelectedOsrmPassByKey(null);
-          setInspectorTab('maneuver');
+          setRouteLandmarkSelection({ kind: engine, key: landmarkKey, occurrenceIndex });
+          setSelectedManeuverIndex(engine === 'valhalla' ? occurrenceIndex : null);
+          setSelectedOsrmStepIndex(engine === 'osrm' ? occurrenceIndex : null);
+          setInspectorTab('poi');
           setLayout((current) => ({ ...current, rightCollapsed: false }));
         },
         onManeuverScrollRequested: (maneuverIndex) => {
@@ -1267,6 +1352,8 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
         onManeuverSelected: (maneuverIndex) => {
           setSelectedManeuverIndex(maneuverIndex);
           setSelectedOsrmStepIndex(null);
+          setSelectedOsrmPassByKey(null);
+          setRouteLandmarkSelection(null);
           setInspectorTab('maneuver');
           setLayout((current) => ({ ...current, rightCollapsed: false }));
         },
@@ -1274,7 +1361,8 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
           setSelectedOsrmPassByKey(key);
           setSelectedManeuverIndex(null);
           setSelectedOsrmStepIndex(null);
-          setInspectorTab('maneuver');
+          setRouteLandmarkSelection({ kind: 'pass-by', eventKey: key });
+          setInspectorTab('poi');
           setLayout((current) => ({ ...current, rightCollapsed: false }));
         },
         openPoiPopup: (coordinate, properties) => {
@@ -1751,6 +1839,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
       properties: {
         ...(item.evidence.feature.properties ?? {}),
         _route_evidence: item.evidence.evidence,
+        _route_landmark_key: item.key,
         _primary_maneuver_index: item.primaryManeuverIndex,
         _maneuver_indexes: item.maneuverIndexes.map((index) => index + 1).join(', '),
         _matched_instruction: item.evidence.matchedInstruction,
@@ -1764,6 +1853,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
         properties: {
           ...(item.evidence.feature.properties ?? {}),
           _route_evidence: 'strong',
+          _route_landmark_key: item.key,
           _engine: 'osrm',
           _primary_osrm_step_index: item.primaryStepIndex,
           _osrm_step_indexes: item.stepIndexes.map((index) => index + 1).join(', '),
@@ -1818,6 +1908,12 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
     diagnosticRequestRef.current?.controller.abort();
     diagnosticRequestRef.current = null;
     completedDiagnosticKeyRef.current = '';
+    setRouteLandmarkSelection(null);
+    setSelectedManeuverIndex(null);
+    setSelectedOsrmStepIndex(null);
+    setSelectedOsrmPassByKey(null);
+    syncGeoJsonSource('poi-turn-inspection', EMPTY_FC);
+    closeActivePoiPopup();
     if (!preserveSelectedPoi) setSelectedPoi(null);
     viewportRequestsRef.current.invalidate();
     setViewportRevision((revision) => revision + 1);
@@ -1908,7 +2004,10 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
     setError('');
     setSelectedManeuverIndex(null);
     setSelectedOsrmStepIndex(null);
+    setSelectedOsrmPassByKey(null);
     setSelectedPoi(null);
+    setRouteLandmarkSelection(null);
+    closeActivePoiPopup();
     setValhallaCandidateAnalysis(null);
     setOsrmCandidateAnalysis(null);
     setShowCandidateMap(false);
@@ -2097,7 +2196,10 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
     setOsrmCandidateAnalysis(null);
     setSelectedManeuverIndex(null);
     setSelectedOsrmStepIndex(null);
+    setSelectedOsrmPassByKey(null);
     setSelectedPoi(null);
+    setRouteLandmarkSelection(null);
+    closeActivePoiPopup();
 
     syncGeoJsonSource(
       'poi-turn-inspection',
@@ -2151,16 +2253,11 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
     });
   }
 
-  function inspectPoiTurn(
+  function syncPoiTurnInspection(
     engine: 'valhalla' | 'osrm',
     poiCoordinate: LngLat,
     turnCoordinate: LngLat,
   ) {
-    const map = mapRef.current;
-    if (!map) return;
-
-    setMap3D(true);
-
     const inspectionData: GeoJSON.FeatureCollection = {
       type: 'FeatureCollection',
       features: [
@@ -2196,19 +2293,26 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
       'poi-turn-inspection',
       inspectionData,
     );
+  }
+
+  function inspectPoiTurn(
+    engine: 'valhalla' | 'osrm',
+    poiCoordinate: LngLat,
+    turnCoordinate: LngLat,
+  ) {
+    const map = mapRef.current;
+    if (!map) return;
+
+    syncPoiTurnInspection(engine, poiCoordinate, turnCoordinate);
 
     const center: LngLat = [
       (poiCoordinate[0] + turnCoordinate[0]) / 2,
       (poiCoordinate[1] + turnCoordinate[1]) / 2,
     ];
 
-    const currentBearing = map.getBearing();
-
     map.easeTo({
       center,
       zoom: Math.max(map.getZoom(), 18),
-      pitch: 60,
-      bearing: Math.abs(currentBearing) < 1 ? 25 : currentBearing,
       duration: 850,
       essential: true,
     });
@@ -2231,6 +2335,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
     setSelectedManeuverIndex(item.index);
     setSelectedOsrmStepIndex(null);
     setSelectedOsrmPassByKey(null);
+    setRouteLandmarkSelection(null);
     openInspector('maneuver');
 
     if (!item.coordinate || !mapRef.current) return;
@@ -2246,6 +2351,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
     setSelectedOsrmStepIndex(item.index);
     setSelectedManeuverIndex(null);
     setSelectedOsrmPassByKey(null);
+    setRouteLandmarkSelection(null);
     openInspector('maneuver');
     closeActivePoiPopup();
 
@@ -2258,28 +2364,35 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
     });
   }
 
-  function focusOsrmPassBy(item: OsrmPassByEventView) {
-    setSelectedOsrmPassByKey(item.key);
+  function focusOsrmPassBy(selection: OsrmPassByLandmark | OsrmPassByEventView) {
+    const item = 'sourceEvidence' in selection
+      ? selection
+      : osrmPassByLandmarks.find((candidate) => candidate.event.key === selection.key) ?? {
+          key: `unresolved:${selection.key}`,
+          event: selection,
+          sourceEvidence: null,
+          sourceMatch: null,
+        };
+    setSelectedOsrmPassByKey(item.event.key);
     setSelectedManeuverIndex(null);
     setSelectedOsrmStepIndex(null);
-    openInspector('maneuver');
+    setRouteLandmarkSelection({ kind: 'pass-by', eventKey: item.event.key });
+    setSelectedAggregate(null);
+    setSelectedPoi(item.sourceEvidence?.feature ?? null);
+    openInspector('poi');
+    closeActivePoiPopup();
     const map = mapRef.current;
-    if (!map || !item.coordinate) return;
-    map.flyTo({ center: item.coordinate, zoom: Math.max(map.getZoom(), 17), essential: true });
-    openPoiPopup(map, item.coordinate, {
-      name: item.name,
-      instruction: item.instruction,
-      evidence: 'Engine pass-by event',
-      side: item.event.side ?? '',
-      poi_id: item.event.poi_id ?? '',
-      osm_node_id: item.event.osm_node_id ?? '',
-      distance_from_leg_start: item.legDistanceM ?? '',
-    });
+    if (!map || !item.event.coordinate) return;
+    map.flyTo({ center: item.event.coordinate, zoom: Math.max(map.getZoom(), 17), essential: true });
   }
 
   function focusPoiFeature(feature: GeoJSON.Feature<GeoJSON.Point>, debugDistanceM?: number) {
     setSelectedAggregate(null);
     setSelectedPoi(feature);
+    setRouteLandmarkSelection(null);
+    setSelectedManeuverIndex(null);
+    setSelectedOsrmStepIndex(null);
+    setSelectedOsrmPassByKey(null);
     openInspector('poi');
 
     const map = mapRef.current;
@@ -2368,6 +2481,12 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
       generation,
     };
     setSelectedPoi(null);
+    setRouteLandmarkSelection(null);
+    setSelectedManeuverIndex(null);
+    setSelectedOsrmStepIndex(null);
+    setSelectedOsrmPassByKey(null);
+    closeActivePoiPopup();
+    syncGeoJsonSource('poi-turn-inspection', EMPTY_FC);
     setSelectedAggregate(aggregate);
     setClusterMembers([]);
     setClusterMemberResponse(null);
@@ -2388,14 +2507,20 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
     focusPoiFeature(item.feature, item.distanceM ?? undefined);
   }
 
+  function focusRouteLandmarkFeature(feature: GeoJSON.Feature<GeoJSON.Point>) {
+    setSelectedAggregate(null);
+    setSelectedPoi(feature);
+    closeActivePoiPopup();
+    syncGeoJsonSource('poi-turn-inspection', EMPTY_FC);
+  }
+
   function focusRouteNarrationPoi(item: RouteNarrationPoi) {
     setSelectedManeuverIndex(item.primaryManeuverIndex);
     setSelectedOsrmStepIndex(null);
-
-    focusPoiFeature(
-      item.evidence.feature,
-      item.evidence.distanceM ?? undefined,
-    );
+    setSelectedOsrmPassByKey(null);
+    setRouteLandmarkSelection({ kind: 'valhalla', key: item.key, occurrenceIndex: item.primaryManeuverIndex });
+    openInspector('poi');
+    focusRouteLandmarkFeature(item.evidence.feature);
 
     const maneuver =
       maneuverViews.find(
@@ -2409,6 +2534,12 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
         item.evidence.coordinate,
         maneuver.coordinate,
       );
+    } else if (mapRef.current) {
+      mapRef.current.flyTo({
+        center: item.evidence.coordinate,
+        zoom: Math.max(mapRef.current.getZoom(), 17),
+        essential: true,
+      });
     }
 
     window.setTimeout(() => {
@@ -2424,11 +2555,10 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
   function focusOsrmRouteNarrationPoi(item: OsrmRouteNarrationPoi) {
     setSelectedOsrmStepIndex(item.primaryStepIndex);
     setSelectedManeuverIndex(null);
-
-    focusPoiFeature(
-      item.evidence.feature,
-      item.evidence.distanceM ?? undefined,
-    );
+    setSelectedOsrmPassByKey(null);
+    setRouteLandmarkSelection({ kind: 'osrm', key: item.key, occurrenceIndex: item.primaryStepIndex });
+    openInspector('poi');
+    focusRouteLandmarkFeature(item.evidence.feature);
 
     const step =
       osrmStepViews.find(
@@ -2442,6 +2572,12 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
         item.evidence.coordinate,
         step.coordinate,
       );
+    } else if (mapRef.current) {
+      mapRef.current.flyTo({
+        center: item.evidence.coordinate,
+        zoom: Math.max(mapRef.current.getZoom(), 17),
+        essential: true,
+      });
     }
 
     window.setTimeout(() => {
@@ -2934,7 +3070,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
                               ? 'Name/proximity candidate · source identity unresolved'
                               : 'Source identity unresolved';
                           return (
-                            <button key={`osrm-pass-${item.event.key}`} className="route-narration-overlay-item osrm-engine pass-by-engine" onClick={() => focusOsrmPassBy(item.event)} title={item.event.instruction}>
+                            <button key={`osrm-pass-${item.event.key}`} className="route-narration-overlay-item osrm-engine pass-by-engine" onClick={() => focusOsrmPassBy(item)} title={item.event.instruction}>
                               <i />
                               <span>
                                 <strong>{item.event.name}</strong>
@@ -2999,8 +3135,8 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
           </div>
 
           <div className="inspector-content" role="tabpanel">
-          {inspectorTab === 'poi' && (selectedPoi
-            ? <SelectedPoiDetails poi={selectedPoi} />
+          {inspectorTab === 'poi' && (selectedPoi || selectedPoiGuidance
+            ? <SelectedPoiDetails poi={selectedPoi} guidance={selectedPoiGuidance} />
             : selectedAggregate
               ? <ClusterMemberDetails aggregate={selectedAggregate} response={clusterMemberResponse} members={clusterMembers} loading={clusterMemberState.loading} loadingMore={clusterMemberState.loadingMore} error={clusterMemberState.error} onSelect={focusPoiFeature} onLoadMore={loadMoreClusterMembers} />
               : <div className="inspector-empty"><strong>No POI selected</strong><span>Select a POI or aggregate on the map, or choose a search result.</span></div>)}

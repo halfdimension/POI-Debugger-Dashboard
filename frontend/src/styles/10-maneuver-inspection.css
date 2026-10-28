@@ -131,6 +131,22 @@
   overflow-wrap: anywhere;
   white-space: normal;
 }
+.landmark-inspector-card { display: grid; gap: 10px; }
+.landmark-inspector-card .selected-poi-name { margin-bottom: 0; font-size: 15px; }
+.landmark-summary-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+.landmark-summary-grid div { display: grid; gap: 2px; min-width: 0; padding: 7px; border-radius: 7px; background: #f8fafc; }
+.landmark-summary-grid span, .landmark-section-heading, .landmark-location-note, .landmark-reference-note { color: #64748b; font-size: 10px; }
+.landmark-summary-grid strong { overflow-wrap: anywhere; font-size: 11px; }
+.landmark-inspector-section { display: grid; gap: 6px; padding-top: 9px; border-top: 1px solid #e5e7eb; }
+.landmark-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.landmark-section-heading > strong { color: #334155; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+.landmark-instruction { margin: 0; color: #111827; font-size: 12px; font-weight: 650; line-height: 1.45; }
+.compact-property-grid { max-height: none; }
+.landmark-location-note, .landmark-reference-note { margin: 0; line-height: 1.4; }
+.landmark-related-occurrences, .landmark-source-diagnostics { font-size: 10px; }
+.landmark-related-occurrences summary, .landmark-source-diagnostics summary { color: #475569; cursor: pointer; }
+.landmark-related-occurrences div { display: grid; gap: 2px; padding: 5px 0; }
+.landmark-related-occurrences span { color: #64748b; }
 .poi-popup {
   max-height: 320px;
   overflow: auto;

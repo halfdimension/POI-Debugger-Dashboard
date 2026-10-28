@@ -11,8 +11,12 @@ import {
 export interface DashboardMapEventCallbacks {
   onAggregateSelected: (feature: Feature<Point>) => void;
   onPoiSelected: (feature: Feature<Point>) => void;
-  onRouteNarrationManeuverSelected: (maneuverIndex: number) => void;
-  onRouteNarrationOsrmStepSelected: (stepIndex: number) => void;
+  onRouteNarrationPoiSelected: (
+    feature: Feature<Point>,
+    engine: 'valhalla' | 'osrm',
+    occurrenceIndex: number,
+    landmarkKey: string,
+  ) => void;
   onManeuverScrollRequested: (maneuverIndex: number) => void;
   onManeuverSelected: (maneuverIndex: number) => void;
   onPassBySelected: (key: string) => void;
@@ -68,6 +72,27 @@ export function bindDashboardMapEvents(
     if (!rawFeature || rawFeature.geometry.type !== 'Point') return;
     const feature = rawFeature as Feature<Point>;
     const coordinates = feature.geometry.coordinates.slice() as LngLat;
+    const passByKey = String(feature.properties?._selected_pass_by_key ?? '');
+    const maneuverIndex = Number(feature.properties?._primary_maneuver_index);
+    const osrmStepIndex = Number(feature.properties?._primary_osrm_step_index);
+    const landmarkKey = String(feature.properties?._route_landmark_key ?? '');
+    if (passByKey) {
+      callbacks.onPassBySelected(passByKey);
+      callbacks.closeActivePoiPopup();
+      map.flyTo({ center: coordinates, zoom: Math.max(map.getZoom(), 17), essential: true });
+      return;
+    }
+    if (Number.isFinite(maneuverIndex) || Number.isFinite(osrmStepIndex)) {
+      callbacks.onRouteNarrationPoiSelected(
+        feature,
+        Number.isFinite(maneuverIndex) ? 'valhalla' : 'osrm',
+        Number.isFinite(maneuverIndex) ? maneuverIndex : osrmStepIndex,
+        landmarkKey,
+      );
+      callbacks.closeActivePoiPopup();
+      map.flyTo({ center: coordinates, zoom: Math.max(map.getZoom(), 17), essential: true });
+      return;
+    }
     callbacks.onPoiSelected(feature);
     callbacks.openPoiPopup(coordinates, feature.properties ?? {});
   };
@@ -89,24 +114,24 @@ export function bindDashboardMapEvents(
     const coordinates = feature.geometry.coordinates.slice() as LngLat;
     const maneuverIndex = Number(feature.properties?._primary_maneuver_index);
     const osrmStepIndex = Number(feature.properties?._primary_osrm_step_index);
+    const landmarkKey = String(feature.properties?._route_landmark_key ?? '');
     if (Number.isFinite(maneuverIndex)) {
-      callbacks.onRouteNarrationManeuverSelected(maneuverIndex);
+      callbacks.onRouteNarrationPoiSelected(feature, 'valhalla', maneuverIndex, landmarkKey);
       const timer = setTimeout(() => {
         pendingTimers.delete(timer);
         if (!disposed) callbacks.onManeuverScrollRequested(maneuverIndex);
       }, 80);
       pendingTimers.add(timer);
     } else if (Number.isFinite(osrmStepIndex)) {
-      callbacks.onRouteNarrationOsrmStepSelected(osrmStepIndex);
+      callbacks.onRouteNarrationPoiSelected(feature, 'osrm', osrmStepIndex, landmarkKey);
     }
 
-    callbacks.onPoiSelected(feature);
+    callbacks.closeActivePoiPopup();
     map.flyTo({
       center: coordinates,
       zoom: Math.max(map.getZoom(), 17),
       essential: true,
     });
-    callbacks.openPoiPopup(coordinates, feature.properties ?? {});
   };
 
   const showCandidatePopup: DashboardLayerEventHandler = (event) => {
@@ -159,7 +184,7 @@ export function bindDashboardMapEvents(
     const key = String(feature.properties?.event_key ?? '');
     const coordinates = feature.geometry.coordinates.slice() as LngLat;
     if (key) callbacks.onPassBySelected(key);
-    callbacks.openPoiPopup(coordinates, feature.properties ?? {});
+    callbacks.closeActivePoiPopup();
     map.flyTo({ center: coordinates, zoom: Math.max(map.getZoom(), 17), essential: true });
   };
 

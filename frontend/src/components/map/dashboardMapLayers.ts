@@ -451,4 +451,40 @@ export function registerDashboardMapLayers(
       'circle-opacity': 0.98,
     },
   });
+
+  map.addSource('turn-poi-coverage', { type: 'geojson', data: EMPTY_FEATURE_COLLECTION });
+  map.addLayer({
+    id: 'turn-poi-coverage-footprint',
+    type: 'fill',
+    source: 'turn-poi-coverage',
+    filter: ['==', ['get', 'kind'], 'footprint'],
+    paint: { 'fill-color': '#22d3ee', 'fill-opacity': 0.2, 'fill-outline-color': '#0891b2' },
+  });
+  map.addLayer({
+    id: 'turn-poi-coverage-rim',
+    type: 'line',
+    source: 'turn-poi-coverage',
+    filter: ['in', ['get', 'kind'], ['literal', ['footprint', 'arrow']]],
+    paint: { 'line-color': '#06b6d4', 'line-width': 3, 'line-opacity': 0.9 },
+  });
+  map.addLayer({
+    id: 'turn-poi-coverage-origin',
+    type: 'circle',
+    source: 'turn-poi-coverage',
+    filter: ['==', ['get', 'kind'], 'origin'],
+    paint: { 'circle-radius': 6, 'circle-color': '#ecfeff', 'circle-stroke-color': '#0891b2', 'circle-stroke-width': 3 },
+  });
+  map.addSource('turn-poi-coverage-pois', { type: 'geojson', data: EMPTY_FEATURE_COLLECTION });
+  map.addLayer({
+    id: 'turn-poi-coverage-pois',
+    type: 'circle',
+    source: 'turn-poi-coverage-pois',
+    paint: {
+      'circle-radius': 7,
+      'circle-color': ['match', ['get', 'lateral'], 'LEFT', '#2563eb', 'RIGHT', '#f97316', '#eab308'],
+      'circle-stroke-color': ['case', ['==', ['get', 'boundary'], true], '#fde047', '#ffffff'],
+      'circle-stroke-width': ['case', ['==', ['get', 'boundary'], true], 4, 2],
+      'circle-opacity': 0.95,
+    },
+  });
 }

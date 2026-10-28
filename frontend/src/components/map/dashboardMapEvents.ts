@@ -20,6 +20,7 @@ export interface DashboardMapEventCallbacks {
   onManeuverScrollRequested: (maneuverIndex: number) => void;
   onManeuverSelected: (maneuverIndex: number) => void;
   onPassBySelected: (key: string) => void;
+  onTurnCoverageSelected?: (stepIndex: number) => void;
   openPoiPopup: (
     coordinate: LngLat,
     properties: GeoJsonProperties,
@@ -40,6 +41,8 @@ const INTERACTIVE_LAYER_IDS = [
   'maneuver-points',
   'candidate-analysis-pois',
   'osrm-pass-by-events',
+  'turn-poi-coverage-pois',
+  'turn-poi-coverage-origin',
 ];
 
 export function bindDashboardMapEvents(
@@ -76,6 +79,13 @@ export function bindDashboardMapEvents(
     const maneuverIndex = Number(feature.properties?._primary_maneuver_index);
     const osrmStepIndex = Number(feature.properties?._primary_osrm_step_index);
     const landmarkKey = String(feature.properties?._route_landmark_key ?? '');
+    const turnCoverageKey = String(feature.properties?._turn_key ?? '');
+    if (turnCoverageKey) {
+      callbacks.onPoiSelected(feature);
+      callbacks.closeActivePoiPopup();
+      map.flyTo({ center: coordinates, zoom: Math.max(map.getZoom(), 18), essential: true });
+      return;
+    }
     if (passByKey) {
       callbacks.onPassBySelected(passByKey);
       callbacks.closeActivePoiPopup();
@@ -188,6 +198,14 @@ export function bindDashboardMapEvents(
     map.flyTo({ center: coordinates, zoom: Math.max(map.getZoom(), 17), essential: true });
   };
 
+  const selectTurnCoverage: DashboardLayerEventHandler = (event) => {
+    event.originalEvent.stopPropagation();
+    const feature = event.features?.[0];
+    if (!feature || feature.geometry.type !== 'Point') return;
+    const index = Number(feature.properties?.step_view_index);
+    if (Number.isFinite(index)) callbacks.onTurnCoverageSelected?.(index);
+  };
+
   bind('click', POI_CLUSTER_LAYER_ID, expandCluster);
   bind('click', INDIVIDUAL_POI_LAYER_ID, showPoiPopup);
   bind('click', 'selected-poi', showPoiPopup);
@@ -197,6 +215,8 @@ export function bindDashboardMapEvents(
   bind('click', 'candidate-analysis-pois', showCandidatePopup);
   bind('click', 'maneuver-points', selectManeuver);
   bind('click', 'osrm-pass-by-events', selectPassBy);
+  bind('click', 'turn-poi-coverage-pois', showPoiPopup);
+  bind('click', 'turn-poi-coverage-origin', selectTurnCoverage);
 
   for (const layerId of INTERACTIVE_LAYER_IDS) {
     bind('mouseenter', layerId, (event) => {

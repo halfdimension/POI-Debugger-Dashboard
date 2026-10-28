@@ -17,6 +17,8 @@ export const DASHBOARD_GEOJSON_SOURCE_IDS = [
   'maneuver-points',
   'osrm-selected-maneuver',
   'osrm-pass-by-events',
+  'turn-poi-coverage',
+  'turn-poi-coverage-pois',
 ] as const;
 
 export type DashboardGeoJsonSourceId = typeof DASHBOARD_GEOJSON_SOURCE_IDS[number];

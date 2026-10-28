@@ -1,5 +1,20 @@
 /* ===== Candidate fan-out map visualization ===== */
 
+.coverage-source-status { font-weight: 800; color: #64748b; }
+.coverage-source-status.complete { color: #15803d; }
+.coverage-source-status.incomplete, .coverage-source-status.unavailable { color: #b45309; }
+
+.turn-coverage-details { display: grid; gap: 9px; padding-top: 12px; border-top: 1px solid #dbeafe; }
+.coverage-kv { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 5px 9px; font-size: 10px; }
+.coverage-kv > span:nth-child(odd) { color: #64748b; }
+.coverage-kv code, .coverage-kv > span:nth-child(even) { overflow-wrap: anywhere; }
+.coverage-priority-note, .coverage-disclaimer { color: #64748b; font-size: 9px; line-height: 1.4; }
+.coverage-poi-row { width: 100%; display: grid; gap: 5px; padding: 8px; border: 1px solid #bae6fd; border-radius: 7px; background: #f0f9ff; text-align: left; cursor: pointer; }
+.coverage-poi-row > span { display: flex; justify-content: space-between; gap: 7px; }
+.coverage-poi-row small { color: #64748b; }
+.coverage-poi-list { display: grid; gap: 7px; max-height: 280px; overflow-y: auto; padding-right: 3px; }
+.coverage-outside { padding: 4px 0; color: #64748b; font-size: 10px; }
+
 .candidate-map-toggle {
   width: 100%;
   display: grid;

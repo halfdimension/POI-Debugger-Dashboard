@@ -17,6 +17,7 @@ import { buildOsrmGuidance, type ManeuverView, type NarrationPoiEvidence, type N
 import { ManeuverInspection } from './components/inspection/ManeuverInspection';
 import { SelectedPoiDetails, type PoiGuidanceContext } from './components/inspection/SelectedPoiDetails';
 import { ClusterMemberDetails } from './components/inspection/ClusterMemberDetails';
+import { TurnPoiCoverageDetails } from './components/inspection/TurnPoiCoverageDetails';
 import { MapContextMenu, type MapContextMenuLocation } from './components/map/MapContextMenu';
 import { bindDashboardMapEvents } from './components/map/dashboardMapEvents';
 import { POI_DENSITY_LAYER_ID, registerDashboardMapLayers, syncPoiLayerVisibility } from './components/map/dashboardMapLayers';
@@ -44,6 +45,7 @@ import {
   VIEWPORT_MAX_FEATURES,
 } from './components/map/poiMap';
 import { PoiPopupController } from './components/map/poiPopup';
+import { TURN_COVERAGE_3D_LAYER_ID, TurnCoverageCustomLayer } from './components/map/TurnCoverageCustomLayer';
 import { RouteSetupControls } from './components/route/RouteSetupControls';
 import { RouteComparisonSummary } from './components/route/RouteComparisonSummary';
 import { SavedScenarioControls } from './components/scenarios/SavedScenarioControls';
@@ -66,6 +68,7 @@ import {
 } from './narration';
 import type { CandidateAnalysis, CandidateAnalysisManeuver, DatasetRegistryResponse, DatasetSummary, DebuggerConfig, LngLat, OsrmRouteResponse, RouteScenario, UserPreferencesPatch, ValhallaRouteResponse } from './types';
 import { useVerticalPanelResize } from './useVerticalPanelResize';
+import { buildTurnOccurrences, classifyCoveragePoi, offsetLngLat, TURN_COVERAGE_RADIUS_M, type CoveragePoi, type TurnOccurrence } from './turnPoiCoverage';
 
 declare const __VPD_MOCK_API__: boolean;
 
@@ -113,6 +116,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
   const mapContainer = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const mapSourceManagerRef = useRef<DashboardMapSourceManager | null>(null);
+  const turnCoverageLayerRef = useRef(new TurnCoverageCustomLayer());
   const workspaceRef = useRef<HTMLElement | null>(null);
   const analysisWorkspaceRef = useRef<HTMLElement | null>(null);
 
@@ -193,6 +197,11 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
   const [selectedManeuverIndex, setSelectedManeuverIndex] = useState<number | null>(null);
   const [selectedOsrmStepIndex, setSelectedOsrmStepIndex] = useState<number | null>(null);
   const [selectedOsrmPassByKey, setSelectedOsrmPassByKey] = useState<string | null>(null);
+  const [turnCoveragePois, setTurnCoveragePois] = useState<Record<string, CoveragePoi[]>>({});
+  const [turnCoverageStatus, setTurnCoverageStatus] = useState<'idle' | 'loading' | 'complete' | 'incomplete' | 'unavailable'>('idle');
+  const [turnCoverageMessage, setTurnCoverageMessage] = useState('');
+  const turnCoverageRequestRef = useRef<AbortController | null>(null);
+  const turnCoverageCacheRef = useRef(new Map<string, { pois: CoveragePoi[]; status: 'complete' | 'incomplete'; message: string }>());
   const [selectedPoi, setSelectedPoi] = useState<GeoJSON.Feature<GeoJSON.Point> | null>(null);
   const [routeLandmarkSelection, setRouteLandmarkSelection] = useState<RouteLandmarkSelection | null>(null);
   const [datasetRegistry, setDatasetRegistry] = useState<DatasetRegistryResponse | null>(null);
@@ -366,6 +375,12 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
           ) ?? null
         ),
     [osrmStepViews, selectedOsrmStepIndex],
+  );
+
+  const turnOccurrences = useMemo(() => buildTurnOccurrences(osrmRoute), [osrmRoute]);
+  const selectedTurnOccurrence = useMemo(
+    () => selectedOsrmStepIndex === null ? null : turnOccurrences.find((turn) => turn.index === selectedOsrmStepIndex) ?? null,
+    [selectedOsrmStepIndex, turnOccurrences],
   );
 
   const selectedValhallaCandidateAnalysis = useMemo(
@@ -1323,10 +1338,17 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
         syncPoiLayerVisibility(map, showPois, activePoiVisualization, showCandidateMap);
         sourceManager.replay();
       }
+      if (!map.getLayer(TURN_COVERAGE_3D_LAYER_ID)) {
+        map.addLayer(turnCoverageLayerRef.current);
+      }
 
       if (!disposeDashboardMapEvents) disposeDashboardMapEvents = bindDashboardMapEvents(map, {
         onAggregateSelected: inspectAggregateFeature,
         onPoiSelected: (feature) => {
+          if (feature.properties?._turn_key) {
+            focusCoveragePoi(feature);
+            return;
+          }
           setSelectedAggregate(null);
           setSelectedPoi(feature);
           setRouteLandmarkSelection(null);
@@ -1367,6 +1389,16 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
           setSelectedManeuverIndex(null);
           setSelectedOsrmStepIndex(null);
           setRouteLandmarkSelection({ kind: 'pass-by', eventKey: key });
+          setInspectorTab('inspect');
+          setLayout((current) => ({ ...current, rightCollapsed: false }));
+        },
+        onTurnCoverageSelected: (stepIndex) => {
+          setSelectedAggregate(null);
+          setSelectedPoi(null);
+          setSelectedManeuverIndex(null);
+          setSelectedOsrmStepIndex(stepIndex);
+          setSelectedOsrmPassByKey(null);
+          setRouteLandmarkSelection(null);
           setInspectorTab('inspect');
           setLayout((current) => ({ ...current, rightCollapsed: false }));
         },
@@ -1452,6 +1484,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
     clusterMemberControllerRef.current?.abort();
     diagnosticRequestRef.current?.controller.abort();
     routeRequestRef.current?.abort();
+    turnCoverageRequestRef.current?.abort();
   }, []);
 
   useEffect(() => {
@@ -1804,6 +1837,101 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
   }, [selectedOsrmStepIndex, osrmStepViews]);
 
   useEffect(() => {
+    turnCoverageRequestRef.current?.abort();
+    if (busy) {
+      setTurnCoveragePois({});
+      setTurnCoverageStatus('idle');
+      setTurnCoverageMessage('Waiting for the current route response.');
+      return;
+    }
+    const datasetId = datasetRegistry?.active_dataset ?? '';
+    if (!selectedTurnOccurrence || !datasetId) {
+      setTurnCoveragePois({});
+      setTurnCoverageStatus(selectedOsrmStepView && !selectedTurnOccurrence ? 'unavailable' : 'idle');
+      setTurnCoverageMessage(selectedOsrmStepView && !selectedTurnOccurrence ? 'This OSRM step has no authoritative turn ID and no coverage dome is shown.' : '');
+      return;
+    }
+    if (!selectedTurnOccurrence.incoming) {
+      setTurnCoveragePois({});
+      setTurnCoverageStatus('unavailable');
+      setTurnCoverageMessage(selectedTurnOccurrence.directionStatus);
+      return;
+    }
+    const cacheKey = [datasetId, activeDataset?.loaded_at ?? '', selectedTurnOccurrence.key, ...selectedTurnOccurrence.origin].join('|');
+    const cached = turnCoverageCacheRef.current.get(cacheKey);
+    if (cached) {
+      setTurnCoveragePois({ [selectedTurnOccurrence.key]: cached.pois });
+      setTurnCoverageStatus(cached.status);
+      setTurnCoverageMessage(cached.message);
+      return;
+    }
+    const controller = new AbortController();
+    turnCoverageRequestRef.current = controller;
+    setTurnCoveragePois({});
+    setTurnCoverageStatus('loading');
+    setTurnCoverageMessage('');
+    fetchDiagnosticPois(datasetId, [selectedTurnOccurrence.origin], TURN_COVERAGE_RADIUS_M, controller.signal).then((response) => {
+      if (controller.signal.aborted || activeDatasetIdRef.current !== datasetId) return;
+      const analysis = osrmCandidateAnalysis?.maneuvers.find((item) =>
+        item.leg_index === selectedTurnOccurrence.legIndex && item.step_index === selectedTurnOccurrence.stepIndex &&
+        (item.identity?.turn_id === undefined || item.identity.turn_id === selectedTurnOccurrence.turnId),
+      ) ?? null;
+      const pois = response.features
+        .map((feature) => classifyCoveragePoi(selectedTurnOccurrence, feature, analysis))
+        .filter((poi): poi is CoveragePoi => poi !== null)
+        .sort((a, b) => a.distanceM - b.distanceM);
+      const status = response.complete ? 'complete' as const : 'incomplete' as const;
+      const message = response.complete ? '' : `Source retrieval incomplete (${response.incomplete_reason ?? 'server limit'}); unseen POIs are unknown.`;
+      turnCoverageCacheRef.current.set(cacheKey, { pois, status, message });
+      setTurnCoveragePois({ [selectedTurnOccurrence.key]: pois });
+      setTurnCoverageStatus(status);
+      setTurnCoverageMessage(message);
+    }).catch((err) => {
+      if (controller.signal.aborted) return;
+      setTurnCoveragePois({});
+      setTurnCoverageStatus('unavailable');
+      setTurnCoverageMessage(err instanceof Error ? err.message : String(err));
+    }).finally(() => {
+      if (turnCoverageRequestRef.current === controller) turnCoverageRequestRef.current = null;
+    });
+    return () => controller.abort();
+  }, [selectedTurnOccurrence, selectedOsrmStepView, datasetRegistry?.active_dataset, activeDataset?.loaded_at, osrmCandidateAnalysis, busy]);
+
+  useEffect(() => {
+    const displayed: TurnOccurrence[] = !busy && selectedTurnOccurrence?.incoming ? [selectedTurnOccurrence] : [];
+    const features: GeoJSON.Feature[] = [];
+    for (const turn of displayed) {
+      const incoming = turn.incoming!;
+      const arc: LngLat[] = [];
+      for (let index = 0; index <= 32; index += 1) {
+        const angle = Math.PI / 2 + Math.PI * index / 32;
+        const along = TURN_COVERAGE_RADIUS_M * Math.cos(angle);
+        const lateral = TURN_COVERAGE_RADIUS_M * Math.sin(angle);
+        arc.push(offsetLngLat(turn.origin, incoming.east * along - incoming.north * lateral, incoming.north * along + incoming.east * lateral));
+      }
+      features.push({ type: 'Feature', geometry: { type: 'Polygon', coordinates: [[turn.origin, ...arc, turn.origin]] }, properties: { kind: 'footprint', turn_key: turn.key } });
+      const tail = offsetLngLat(turn.origin, -incoming.east * 42, -incoming.north * 42);
+      const tip = offsetLngLat(turn.origin, -incoming.east * 5, -incoming.north * 5);
+      const left = offsetLngLat(tip, -incoming.east * 8 - incoming.north * 5, -incoming.north * 8 + incoming.east * 5);
+      const right = offsetLngLat(tip, -incoming.east * 8 + incoming.north * 5, -incoming.north * 8 - incoming.east * 5);
+      for (const coordinates of [[tail, tip], [left, tip], [right, tip]]) features.push({ type: 'Feature', geometry: { type: 'LineString', coordinates }, properties: { kind: 'arrow', turn_key: turn.key } });
+    }
+    for (const turn of displayed) features.push({ type: 'Feature', geometry: { type: 'Point', coordinates: turn.origin }, properties: { kind: 'origin', turn_key: turn.key, step_view_index: turn.index, turn_id: turn.turnId } });
+    syncGeoJsonSource('turn-poi-coverage', { type: 'FeatureCollection', features });
+
+    const poiFeatures: GeoJSON.Feature<GeoJSON.Point>[] = displayed.flatMap((turn) =>
+      (turnCoveragePois[turn.key] ?? []).filter((poi) => poi.inside).map((poi) => ({
+        ...poi.feature,
+        properties: { ...(poi.feature.properties ?? {}), _turn_key: turn.key, distance_m: poi.distanceM, lateral: poi.lateral, boundary: poi.boundary, engine_evidence: poi.engineEvidence },
+      })),
+    );
+    syncGeoJsonSource('turn-poi-coverage-pois', { type: 'FeatureCollection', features: poiFeatures });
+    turnCoverageLayerRef.current.setTurns(displayed, map3D);
+    const map = mapRef.current;
+    if (map?.getLayer('turn-poi-coverage-footprint')) map.setLayoutProperty('turn-poi-coverage-footprint', 'visibility', !busy && displayed.length > 0 && !map3D ? 'visible' : 'none');
+  }, [selectedTurnOccurrence, turnCoveragePois, busy, map3D, config]);
+
+  useEffect(() => {
     const features: GeoJSON.Feature<GeoJSON.Point>[] = osrmGuidance.passByEvents.flatMap((event) => event.coordinate ? [{
       type: 'Feature' as const,
       geometry: { type: 'Point' as const, coordinates: event.coordinate },
@@ -1913,6 +2041,11 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
     diagnosticRequestRef.current?.controller.abort();
     diagnosticRequestRef.current = null;
     completedDiagnosticKeyRef.current = '';
+    turnCoverageRequestRef.current?.abort();
+    turnCoverageCacheRef.current.clear();
+    setTurnCoveragePois({});
+    setTurnCoverageStatus('idle');
+    setTurnCoverageMessage('');
     setRouteLandmarkSelection(null);
     setSelectedManeuverIndex(null);
     setSelectedOsrmStepIndex(null);
@@ -1961,6 +2094,11 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
     diagnosticRequestRef.current?.controller.abort();
     loadMoreControllerRef.current?.abort();
     routeRequestRef.current?.abort();
+    turnCoverageRequestRef.current?.abort();
+    turnCoverageCacheRef.current.clear();
+    setTurnCoveragePois({});
+    setTurnCoverageStatus('idle');
+    setTurnCoverageMessage('');
     try {
       await updatePreferences({ selected_dataset_id: datasetId });
       await refreshActiveDataset(`Selected ${datasetId}.`, false);
@@ -2003,6 +2141,11 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
     const datasetId = activeDatasetIdRef.current;
     if (!datasetId) return null;
     routeRequestRef.current?.abort();
+    turnCoverageRequestRef.current?.abort();
+    turnCoverageCacheRef.current.clear();
+    setTurnCoveragePois({});
+    setTurnCoverageStatus('idle');
+    setTurnCoverageMessage('');
     const controller = new AbortController();
     routeRequestRef.current = controller;
     setBusy(true);
@@ -2435,6 +2578,19 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
       coordinate,
       properties,
     );
+  }
+
+  function focusCoveragePoi(feature: GeoJSON.Feature<GeoJSON.Point>) {
+    setSelectedAggregate(null);
+    setSelectedPoi(feature);
+    setRouteLandmarkSelection(null);
+    setSelectedManeuverIndex(null);
+    setSelectedOsrmPassByKey(null);
+    openInspector('inspect');
+    closeActivePoiPopup();
+    const map = mapRef.current;
+    if (!map) return;
+    map.flyTo({ center: feature.geometry.coordinates as LngLat, zoom: Math.max(map.getZoom(), 18), essential: true });
   }
 
   async function requestClusterMemberPage(aggregate: SelectedViewportAggregate, cursor?: string) {
@@ -3147,7 +3303,18 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
 
           <div className="inspector-content" role="tabpanel">
           {inspectorTab === 'inspect' && (selectedPoiGuidance || selectedPoi
-            ? <SelectedPoiDetails poi={selectedPoi} guidance={selectedPoiGuidance} />
+            ? <>
+                <SelectedPoiDetails poi={selectedPoi} guidance={selectedPoiGuidance} />
+                {selectedTurnOccurrence && <TurnPoiCoverageDetails
+                  turn={selectedTurnOccurrence}
+                  pois={turnCoveragePois[selectedTurnOccurrence.key] ?? []}
+                  status={turnCoverageStatus}
+                  message={turnCoverageMessage}
+                  dataset={activeDataset}
+                  selectedLandmark={selectedPoiGuidance?.kind === 'osrm-step' ? selectedPoiGuidance.evidence.feature : selectedPoi}
+                  onSelectPoi={focusCoveragePoi}
+                />}
+              </>
             : selectedAggregate
               ? <ClusterMemberDetails aggregate={selectedAggregate} response={clusterMemberResponse} members={clusterMembers} loading={clusterMemberState.loading} loadingMore={clusterMemberState.loadingMore} error={clusterMemberState.error} onSelect={focusPoiFeature} onLoadMore={loadMoreClusterMembers} />
               : selectedManeuver || selectedOsrmStepView
@@ -3175,6 +3342,15 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
                     onFocusNarrationEvidence={focusNarrationEvidence}
                     onFocusPoi={focusPoi}
                   />
+                  {selectedTurnOccurrence && <TurnPoiCoverageDetails
+                    turn={selectedTurnOccurrence}
+                    pois={turnCoveragePois[selectedTurnOccurrence.key] ?? []}
+                    status={turnCoverageStatus}
+                    message={turnCoverageMessage}
+                    dataset={activeDataset}
+                    onSelectPoi={focusCoveragePoi}
+                  />}
+                  {selectedOsrmStepView && !selectedTurnOccurrence && <section className="turn-coverage-details"><div className="maneuver-heading"><h2>Turn coverage details</h2><span>Unavailable</span></div><div className="dataset-warning">This OSRM step has no authoritative turn ID. No speculative dome or nearest-intersection association is shown.</div></section>}
                   <div className="inspector-analysis-actions">
                     <button type="button" onClick={() => setLayout((current) => selectAnalysisTab(current, 'maneuvers'))}>Open maneuver lists</button>
                     <button type="button" onClick={() => setLayout((current) => selectAnalysisTab(current, 'candidates'))}>Open candidate evidence</button>

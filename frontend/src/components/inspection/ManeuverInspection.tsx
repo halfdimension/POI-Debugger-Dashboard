@@ -151,7 +151,7 @@ export function ManeuverInspection({
   
       <section className="card inspection-card">
         <div className="maneuver-heading">
-          <h2>Landmark Details</h2>
+          <h2>Maneuver details</h2>
           <span>{NEARBY_POI_RADIUS_M} m radius</span>
         </div>
         {!selectedManeuver && !selectedOsrmStep && !selectedPassBy ? (
@@ -187,12 +187,20 @@ export function ManeuverInspection({
             <strong>OSRM step #{selectedOsrmStep.index + 1}</strong>
             <span>{osrmInstructionText(selectedOsrmStep.step)}</span>
             <code>{selectedOsrmStep.step.maneuver?.type ?? 'maneuver'}{selectedOsrmStep.step.maneuver?.modifier ? ` / ${selectedOsrmStep.step.maneuver.modifier}` : ''}</code>
-            <small>{typeof selectedOsrmStep.step.distance === 'number' ? `${selectedOsrmStep.step.distance.toFixed(1)} m` : ''}{typeof selectedOsrmStep.step.duration === 'number' ? ` · ${Math.round(selectedOsrmStep.step.duration)} s` : ''}</small>
+            <small>Leg {selectedOsrmStep.legIndex + 1} · leg step {selectedOsrmStep.stepIndex + 1}{typeof selectedOsrmStep.step.distance === 'number' ? ` · ${selectedOsrmStep.step.distance.toFixed(1)} m` : ''}{typeof selectedOsrmStep.step.duration === 'number' ? ` · ${selectedOsrmStep.step.duration.toFixed(1)} s` : ''}</small>
+            {selectedOsrmStep.coordinate && <small>{selectedOsrmStep.coordinate[1].toFixed(6)}, {selectedOsrmStep.coordinate[0].toFixed(6)}</small>}
+            {(selectedOsrmStep.step.maneuver?.maneuver_id !== undefined || selectedOsrmStep.step.maneuver?.turn_id !== undefined) && <small>
+              {selectedOsrmStep.step.maneuver?.maneuver_id !== undefined ? `Maneuver ID ${selectedOsrmStep.step.maneuver.maneuver_id}` : ''}
+              {selectedOsrmStep.step.maneuver?.maneuver_id !== undefined && selectedOsrmStep.step.maneuver?.turn_id !== undefined ? ' · ' : ''}
+              {selectedOsrmStep.step.maneuver?.turn_id !== undefined ? `Turn ID ${selectedOsrmStep.step.maneuver.turn_id}` : ''}
+            </small>}
           </div>
         ) : (
           <>
             <div className="selected-maneuver-summary">
               <strong>#{selectedManeuver!.index + 1} {selectedManeuver!.maneuver.instruction ?? 'Unnamed maneuver'}</strong>
+              <code>Type {selectedManeuver!.maneuver.type ?? 'unavailable'} · leg {selectedManeuver!.legIndex + 1} · leg maneuver {selectedManeuver!.maneuverIndex + 1}</code>
+              <small>{typeof selectedManeuver!.maneuver.length === 'number' ? `${selectedManeuver!.maneuver.length.toFixed(2)} km` : 'Distance unavailable'}{typeof selectedManeuver!.maneuver.time === 'number' ? ` · ${selectedManeuver!.maneuver.time.toFixed(1)} s` : ' · duration unavailable'}</small>
               <span>
                 {selectedManeuver!.coordinate
                   ? `${selectedManeuver!.coordinate![1].toFixed(6)}, ${selectedManeuver!.coordinate![0].toFixed(6)}`

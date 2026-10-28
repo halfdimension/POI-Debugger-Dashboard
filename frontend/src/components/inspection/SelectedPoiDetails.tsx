@@ -4,7 +4,7 @@ import type { ManeuverView, NarrationPoiEvidence, OsrmPassByLandmark, OsrmStepVi
 
 export type PoiGuidanceContext =
   | { kind: 'osrm-step'; category: 'AT' | 'AFTER' | 'PREFIX'; selectedStep: OsrmStepView; relatedSteps: OsrmStepView[]; evidence: NarrationPoiEvidence }
-  | { kind: 'valhalla-maneuver'; selectedManeuver: ManeuverView; relatedManeuvers: ManeuverView[]; evidence: NarrationPoiEvidence }
+  | { kind: 'valhalla-maneuver'; category: 'AT'; selectedManeuver: ManeuverView; relatedManeuvers: ManeuverView[]; evidence: NarrationPoiEvidence }
   | { kind: 'pass-by'; landmark: OsrmPassByLandmark };
 
 export interface SelectedPoiDetailsProps {
@@ -75,14 +75,20 @@ export function SelectedPoiDetails({ poi, guidance = null }: SelectedPoiDetailsP
       </section>}
 
       {guidance?.kind === 'valhalla-maneuver' && <section className="landmark-inspector-section">
-        <div className="landmark-section-heading"><strong>Related guidance</strong><b className="engine-match-badge valhalla">VALHALLA</b></div>
+        <div className="landmark-section-heading"><strong>Related guidance</strong><b className="guidance-kind-badge at">{guidance.category}</b></div>
         <p className="landmark-instruction">{guidance.selectedManeuver.maneuver.instruction ?? guidance.evidence.matchedInstruction}</p>
         <div className="property-grid compact-property-grid">
-          <DetailRow label="Occurrence" value={`Maneuver ${guidance.selectedManeuver.index + 1} · leg ${guidance.selectedManeuver.legIndex + 1}`} />
+          <DetailRow label="Maneuver type" value={guidance.selectedManeuver.maneuver.type} />
+          <DetailRow label="Occurrence" value={`Maneuver ${guidance.selectedManeuver.index + 1} · leg ${guidance.selectedManeuver.legIndex + 1} · leg maneuver ${guidance.selectedManeuver.maneuverIndex + 1}`} />
           <DetailRow label="Distance" value={typeof guidance.selectedManeuver.maneuver.length === 'number' ? `${guidance.selectedManeuver.maneuver.length.toFixed(2)} km` : null} />
           <DetailRow label="Duration" value={typeof guidance.selectedManeuver.maneuver.time === 'number' ? `${guidance.selectedManeuver.maneuver.time.toFixed(1)} s` : null} />
         </div>
-        {guidance.relatedManeuvers.length > 1 && <p className="landmark-reference-note">Also referenced by maneuvers {guidance.relatedManeuvers.filter((item) => item.index !== guidance.selectedManeuver.index).map((item) => item.index + 1).join(', ')}.</p>}
+        {guidance.relatedManeuvers.length > 1 && <details className="landmark-related-occurrences">
+          <summary>{guidance.relatedManeuvers.length - 1} other instruction reference{guidance.relatedManeuvers.length === 2 ? '' : 's'}</summary>
+          {guidance.relatedManeuvers.filter((item) => item.index !== guidance.selectedManeuver.index).map((item) => (
+            <div key={item.index}><strong>Maneuver {item.index + 1} · leg {item.legIndex + 1}</strong><span>{item.maneuver.instruction ?? 'Unnamed maneuver'}</span></div>
+          ))}
+        </details>}
       </section>}
 
       {passBy && <section className="landmark-inspector-section">
@@ -90,6 +96,7 @@ export function SelectedPoiDetails({ poi, guidance = null }: SelectedPoiDetailsP
         <p className="landmark-instruction">{passBy.event.instruction}</p>
         <div className="property-grid compact-property-grid">
           <DetailRow label="Event location" value={coordinateText(passBy.event.coordinate)} />
+          <DetailRow label="Event identity" value={passBy.event.key} />
           <DetailRow label="Leg" value={passBy.event.legIndex + 1} />
           <DetailRow label="Along leg" value={passBy.event.legDistanceM === null ? null : `${passBy.event.legDistanceM.toFixed(1)} m`} />
           <DetailRow label="Along route" value={passBy.event.routeDistanceM === null ? null : `${passBy.event.routeDistanceM.toFixed(1)} m`} />

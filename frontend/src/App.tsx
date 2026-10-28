@@ -185,7 +185,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
   const [routePoiCardCollapsed, setRoutePoiCardCollapsed] = useState(true);
   const [layout, setLayout] = useState(initialDashboardLayout);
   const [preferredAnalysisHeight, setPreferredAnalysisHeight] = useState(storedAnalysisHeight);
-  const [inspectorTab, setInspectorTab] = useState<'poi' | 'route' | 'maneuver'>('route');
+  const [inspectorTab, setInspectorTab] = useState<'inspect' | 'route'>('route');
   const [map3D, setMap3D] = useState(false);
   const [showCandidateMap, setShowCandidateMap] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -248,7 +248,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
     setLayout((current) => togglePanel(current, panel));
   };
 
-  const openInspector = (tab: 'poi' | 'route' | 'maneuver') => {
+  const openInspector = (tab: 'inspect' | 'route') => {
     setInspectorTab(tab);
     setLayout((current) => ({ ...current, rightCollapsed: false }));
   };
@@ -1163,6 +1163,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
     if (!item || !selectedManeuver) return null;
     return {
       kind: 'valhalla-maneuver',
+      category: 'AT',
       selectedManeuver,
       relatedManeuvers: item.maneuverIndexes.flatMap((index) => {
         const maneuver = maneuverViews.find((candidate) => candidate.index === index);
@@ -1332,7 +1333,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
           setSelectedManeuverIndex(null);
           setSelectedOsrmStepIndex(null);
           setSelectedOsrmPassByKey(null);
-          setInspectorTab('poi');
+          setInspectorTab('inspect');
           setLayout((current) => ({ ...current, rightCollapsed: false }));
         },
         onRouteNarrationPoiSelected: (feature, engine, occurrenceIndex, landmarkKey) => {
@@ -1342,7 +1343,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
           setRouteLandmarkSelection({ kind: engine, key: landmarkKey, occurrenceIndex });
           setSelectedManeuverIndex(engine === 'valhalla' ? occurrenceIndex : null);
           setSelectedOsrmStepIndex(engine === 'osrm' ? occurrenceIndex : null);
-          setInspectorTab('poi');
+          setInspectorTab('inspect');
           setLayout((current) => ({ ...current, rightCollapsed: false }));
         },
         onManeuverScrollRequested: (maneuverIndex) => {
@@ -1350,19 +1351,23 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
             ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
         },
         onManeuverSelected: (maneuverIndex) => {
+          setSelectedAggregate(null);
+          setSelectedPoi(null);
           setSelectedManeuverIndex(maneuverIndex);
           setSelectedOsrmStepIndex(null);
           setSelectedOsrmPassByKey(null);
           setRouteLandmarkSelection(null);
-          setInspectorTab('maneuver');
+          setInspectorTab('inspect');
           setLayout((current) => ({ ...current, rightCollapsed: false }));
         },
         onPassBySelected: (key) => {
+          setSelectedAggregate(null);
+          setSelectedPoi(null);
           setSelectedOsrmPassByKey(key);
           setSelectedManeuverIndex(null);
           setSelectedOsrmStepIndex(null);
           setRouteLandmarkSelection({ kind: 'pass-by', eventKey: key });
-          setInspectorTab('poi');
+          setInspectorTab('inspect');
           setLayout((current) => ({ ...current, rightCollapsed: false }));
         },
         openPoiPopup: (coordinate, properties) => {
@@ -2332,11 +2337,15 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
   }
 
   function focusManeuver(item: ManeuverView) {
+    setSelectedAggregate(null);
+    setSelectedPoi(null);
     setSelectedManeuverIndex(item.index);
     setSelectedOsrmStepIndex(null);
     setSelectedOsrmPassByKey(null);
     setRouteLandmarkSelection(null);
-    openInspector('maneuver');
+    openInspector('inspect');
+    closeActivePoiPopup();
+    syncGeoJsonSource('poi-turn-inspection', EMPTY_FC);
 
     if (!item.coordinate || !mapRef.current) return;
 
@@ -2348,12 +2357,15 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
   }
 
   function focusOsrmStep(item: OsrmStepView) {
+    setSelectedAggregate(null);
+    setSelectedPoi(null);
     setSelectedOsrmStepIndex(item.index);
     setSelectedManeuverIndex(null);
     setSelectedOsrmPassByKey(null);
     setRouteLandmarkSelection(null);
-    openInspector('maneuver');
+    openInspector('inspect');
     closeActivePoiPopup();
+    syncGeoJsonSource('poi-turn-inspection', EMPTY_FC);
 
     if (!item.coordinate || !mapRef.current) return;
 
@@ -2379,7 +2391,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
     setRouteLandmarkSelection({ kind: 'pass-by', eventKey: item.event.key });
     setSelectedAggregate(null);
     setSelectedPoi(item.sourceEvidence?.feature ?? null);
-    openInspector('poi');
+    openInspector('inspect');
     closeActivePoiPopup();
     const map = mapRef.current;
     if (!map || !item.event.coordinate) return;
@@ -2393,7 +2405,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
     setSelectedManeuverIndex(null);
     setSelectedOsrmStepIndex(null);
     setSelectedOsrmPassByKey(null);
-    openInspector('poi');
+    openInspector('inspect');
 
     const map = mapRef.current;
     if (!map) return;
@@ -2490,7 +2502,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
     setSelectedAggregate(aggregate);
     setClusterMembers([]);
     setClusterMemberResponse(null);
-    openInspector('poi');
+    openInspector('inspect');
     void requestClusterMemberPage(aggregate);
   }
 
@@ -2519,7 +2531,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
     setSelectedOsrmStepIndex(null);
     setSelectedOsrmPassByKey(null);
     setRouteLandmarkSelection({ kind: 'valhalla', key: item.key, occurrenceIndex: item.primaryManeuverIndex });
-    openInspector('poi');
+    openInspector('inspect');
     focusRouteLandmarkFeature(item.evidence.feature);
 
     const maneuver =
@@ -2557,7 +2569,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
     setSelectedManeuverIndex(null);
     setSelectedOsrmPassByKey(null);
     setRouteLandmarkSelection({ kind: 'osrm', key: item.key, occurrenceIndex: item.primaryStepIndex });
-    openInspector('poi');
+    openInspector('inspect');
     focusRouteLandmarkFeature(item.evidence.feature);
 
     const step =
@@ -3129,17 +3141,46 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
           </section>
 
           <div className="inspector-tabs" role="tablist" aria-label="Inspector context">
-            <button type="button" role="tab" aria-selected={inspectorTab === 'poi'} className={inspectorTab === 'poi' ? 'is-active' : ''} onClick={() => setInspectorTab('poi')}>POI</button>
+            <button type="button" role="tab" aria-selected={inspectorTab === 'inspect'} className={inspectorTab === 'inspect' ? 'is-active' : ''} onClick={() => setInspectorTab('inspect')}>Inspect</button>
             <button type="button" role="tab" aria-selected={inspectorTab === 'route'} className={inspectorTab === 'route' ? 'is-active' : ''} onClick={() => setInspectorTab('route')}>Route</button>
-            <button type="button" role="tab" aria-selected={inspectorTab === 'maneuver'} className={inspectorTab === 'maneuver' ? 'is-active' : ''} onClick={() => setInspectorTab('maneuver')}>Maneuver</button>
           </div>
 
           <div className="inspector-content" role="tabpanel">
-          {inspectorTab === 'poi' && (selectedPoi || selectedPoiGuidance
+          {inspectorTab === 'inspect' && (selectedPoiGuidance || selectedPoi
             ? <SelectedPoiDetails poi={selectedPoi} guidance={selectedPoiGuidance} />
             : selectedAggregate
               ? <ClusterMemberDetails aggregate={selectedAggregate} response={clusterMemberResponse} members={clusterMembers} loading={clusterMemberState.loading} loadingMore={clusterMemberState.loadingMore} error={clusterMemberState.error} onSelect={focusPoiFeature} onLoadMore={loadMoreClusterMembers} />
-              : <div className="inspector-empty"><strong>No POI selected</strong><span>Select a POI or aggregate on the map, or choose a search result.</span></div>)}
+              : selectedManeuver || selectedOsrmStepView
+                ? <>
+                  <ManeuverInspection
+                    compact
+                    route={route}
+                    osrmRoute={osrmRoute}
+                    maneuverViews={maneuverViews}
+                    osrmStepViews={osrmStepViews}
+                    selectedManeuverIndex={selectedManeuverIndex}
+                    selectedOsrmStepIndex={selectedOsrmStepIndex}
+                    selectedManeuver={selectedManeuver}
+                    selectedOsrmStep={selectedOsrmStepView}
+                    narrationEvidenceByManeuver={narrationEvidenceByManeuver}
+                    osrmPoiNamesByStep={osrmPoiNamesByStep}
+                    primaryNarrationEvidence={primaryNarrationEvidence}
+                    selectedNarrationEvidence={selectedNarrationEvidence}
+                    nearbyPois={nearbyPois}
+                    diagnosticStatus={diagnosticStatus}
+                    diagnosticMessage={diagnosticWarning}
+                    getOsrmInstruction={osrmInstructionText}
+                    onFocusManeuver={focusManeuver}
+                    onFocusOsrmStep={focusOsrmStep}
+                    onFocusNarrationEvidence={focusNarrationEvidence}
+                    onFocusPoi={focusPoi}
+                  />
+                  <div className="inspector-analysis-actions">
+                    <button type="button" onClick={() => setLayout((current) => selectAnalysisTab(current, 'maneuvers'))}>Open maneuver lists</button>
+                    <button type="button" onClick={() => setLayout((current) => selectAnalysisTab(current, 'candidates'))}>Open candidate evidence</button>
+                  </div>
+                </>
+                : <div className="inspector-empty"><strong>Nothing selected</strong><span>Select a POI, landmark, pass-by event, aggregate, or maneuver.</span></div>)}
 
           {inspectorTab === 'route' && <>
             <RouteComparisonSummary
@@ -3157,38 +3198,6 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
             </details>
           </>}
 
-          {inspectorTab === 'maneuver' && <>
-            <ManeuverInspection
-            compact
-            route={route}
-            osrmRoute={osrmRoute}
-            maneuverViews={maneuverViews}
-            osrmStepViews={osrmStepViews}
-            selectedManeuverIndex={selectedManeuverIndex}
-            selectedOsrmStepIndex={selectedOsrmStepIndex}
-            selectedManeuver={selectedManeuver}
-            selectedOsrmStep={selectedOsrmStepView}
-            selectedPassBy={selectedOsrmPassBy}
-            selectedPassByLandmark={selectedOsrmPassByLandmark}
-            narrationEvidenceByManeuver={narrationEvidenceByManeuver}
-            osrmPoiNamesByStep={osrmPoiNamesByStep}
-            primaryNarrationEvidence={primaryNarrationEvidence}
-            selectedNarrationEvidence={selectedNarrationEvidence}
-            nearbyPois={nearbyPois}
-            diagnosticStatus={diagnosticStatus}
-            diagnosticMessage={diagnosticWarning}
-            getOsrmInstruction={osrmInstructionText}
-            onFocusManeuver={focusManeuver}
-            onFocusOsrmStep={focusOsrmStep}
-            onFocusNarrationEvidence={focusNarrationEvidence}
-            onFocusPoi={focusPoi}
-            onFocusPassBySource={focusNarrationEvidence}
-          />
-            <div className="inspector-analysis-actions">
-              <button type="button" onClick={() => setLayout((current) => selectAnalysisTab(current, 'maneuvers'))}>Open maneuver lists</button>
-              <button type="button" disabled={!selectedManeuver && !selectedOsrmStepView && !selectedOsrmPassBy} onClick={() => setLayout((current) => selectAnalysisTab(current, 'candidates'))}>Open candidate evidence</button>
-            </div>
-          </>}
           </div>
         </Sidebar>
 

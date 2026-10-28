@@ -159,7 +159,7 @@ describe('bindDashboardMapEvents', () => {
     expect(callbacks.onPoiSelected).not.toHaveBeenCalled();
     expect(callbacks.openPoiPopup).not.toHaveBeenCalled();
     expect(callbacks.closeActivePoiPopup).toHaveBeenCalledOnce();
-    expect(map.flyTo).toHaveBeenCalledWith({ center: [77.2, 28.6], zoom: 17, essential: true });
+    expect(map.flyTo).not.toHaveBeenCalled();
     vi.advanceTimersByTime(80);
     expect(callbacks.onManeuverScrollRequested).toHaveBeenCalledWith(4);
 
@@ -172,7 +172,7 @@ describe('bindDashboardMapEvents', () => {
     expect(callbacks.onPassBySelected).toHaveBeenCalledWith('pass-by:0:0');
     expect(callbacks.openPoiPopup).not.toHaveBeenCalled();
     expect(callbacks.closeActivePoiPopup).toHaveBeenCalledTimes(3);
-    expect(map.flyTo).toHaveBeenLastCalledWith({ center: [79, 30], zoom: 17, essential: true });
+    expect(map.flyTo).toHaveBeenCalledTimes(1);
 
     const highlightedRoutePoi = point({ _primary_osrm_step_index: 37, _route_landmark_key: 'bank-1' });
     emit('click', 'selected-poi', mapEvent(highlightedRoutePoi));

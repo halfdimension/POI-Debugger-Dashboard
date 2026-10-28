@@ -110,12 +110,89 @@ type PolylineProjection = {
   totalLengthM: number;
 };
 
+type RouteApproach = {
+  bearing: number;
+  routeCoordinate?: LngLat;
+};
+
+function routeSegmentBearing(from: LngLat, to: LngLat): number | null {
+  const latitudeRadians = from[1] * Math.PI / 180;
+  const east = (to[0] - from[0]) * Math.cos(latitudeRadians);
+  const north = to[1] - from[1];
+  if (Math.hypot(east, north) < 1e-9) return null;
+  return (Math.atan2(east, north) * 180 / Math.PI + 360) % 360;
+}
+
+function valhallaIncomingApproach(
+  response: ValhallaRouteResponse | null,
+  maneuver: ManeuverView,
+): RouteApproach | null {
+  const leg = response?.trip?.legs?.[maneuver.legIndex];
+  const shapeIndex = maneuver.maneuver.begin_shape_index;
+  if (!leg?.shape || typeof shapeIndex !== 'number' || shapeIndex <= 0) return null;
+  const coordinates = decodePolyline6(leg.shape);
+  const origin = coordinates[shapeIndex];
+  if (!origin || !maneuver.coordinate || haversineMeters(origin, maneuver.coordinate) > 2) return null;
+  for (let index = shapeIndex - 1; index >= 0; index -= 1) {
+    if (haversineMeters(coordinates[index], origin) < 0.5) continue;
+    const bearing = routeSegmentBearing(coordinates[index], origin);
+    return bearing === null ? null : { bearing };
+  }
+  return null;
+}
+
+function osrmLegCoordinates(response: OsrmRouteResponse | null, legIndex: number): LngLat[] {
+  const result: LngLat[] = [];
+  for (const step of response?.routes?.[0]?.legs?.[legIndex]?.steps ?? []) {
+    for (const rawCoordinate of step.geometry?.coordinates ?? []) {
+      const coordinate: LngLat = [Number(rawCoordinate[0]), Number(rawCoordinate[1])];
+      if (!Number.isFinite(coordinate[0]) || !Number.isFinite(coordinate[1])) continue;
+      const previous = result[result.length - 1];
+      if (!previous || haversineMeters(previous, coordinate) >= 0.05) result.push(coordinate);
+    }
+  }
+  return result;
+}
+
+function osrmPassByApproach(
+  response: OsrmRouteResponse | null,
+  event: OsrmPassByEventView,
+): RouteApproach | null {
+  if (event.legDistanceM === null || event.legDistanceM <= 0) return null;
+  const coordinates = osrmLegCoordinates(response, event.legIndex);
+  if (coordinates.length < 2) return null;
+  let distanceM = 0;
+  for (let index = 1; index < coordinates.length; index += 1) {
+    const segmentDistanceM = haversineMeters(coordinates[index - 1], coordinates[index]);
+    if (segmentDistanceM < 0.5) continue;
+    const segmentStartDistanceM = distanceM;
+    distanceM += segmentDistanceM;
+    if (event.legDistanceM <= distanceM + 1) {
+      const bearing = routeSegmentBearing(coordinates[index - 1], coordinates[index]);
+      const fraction = Math.max(0, Math.min(1, (event.legDistanceM - segmentStartDistanceM) / segmentDistanceM));
+      const routeCoordinate: LngLat = [
+        coordinates[index - 1][0] + (coordinates[index][0] - coordinates[index - 1][0]) * fraction,
+        coordinates[index - 1][1] + (coordinates[index][1] - coordinates[index - 1][1]) * fraction,
+      ];
+      return bearing === null ? null : { bearing, routeCoordinate };
+    }
+  }
+  return null;
+}
+
 type Basemap = 'openfreemap' | 'mapmyindia';
 
 function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () => Promise<void> }) {
   const mapContainer = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const mapSourceManagerRef = useRef<DashboardMapSourceManager | null>(null);
+  const routeLandmarkFocusRef = useRef<((
+    feature: GeoJSON.Feature<GeoJSON.Point>,
+    engine: 'valhalla' | 'osrm',
+    occurrenceIndex: number,
+    landmarkKey: string,
+  ) => void) | null>(null);
+  const passByFocusRef = useRef<((key: string) => void) | null>(null);
   const turnCoverageLayerRef = useRef(new TurnCoverageCustomLayer());
   const workspaceRef = useRef<HTMLElement | null>(null);
   const analysisWorkspaceRef = useRef<HTMLElement | null>(null);
@@ -1359,14 +1436,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
           setLayout((current) => ({ ...current, rightCollapsed: false }));
         },
         onRouteNarrationPoiSelected: (feature, engine, occurrenceIndex, landmarkKey) => {
-          setSelectedAggregate(null);
-          setSelectedPoi(feature);
-          setSelectedOsrmPassByKey(null);
-          setRouteLandmarkSelection({ kind: engine, key: landmarkKey, occurrenceIndex });
-          setSelectedManeuverIndex(engine === 'valhalla' ? occurrenceIndex : null);
-          setSelectedOsrmStepIndex(engine === 'osrm' ? occurrenceIndex : null);
-          setInspectorTab('inspect');
-          setLayout((current) => ({ ...current, rightCollapsed: false }));
+          routeLandmarkFocusRef.current?.(feature, engine, occurrenceIndex, landmarkKey);
         },
         onManeuverScrollRequested: (maneuverIndex) => {
           document.querySelector(`[data-maneuver-index="${maneuverIndex}"]`)
@@ -1383,14 +1453,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
           setLayout((current) => ({ ...current, rightCollapsed: false }));
         },
         onPassBySelected: (key) => {
-          setSelectedAggregate(null);
-          setSelectedPoi(null);
-          setSelectedOsrmPassByKey(key);
-          setSelectedManeuverIndex(null);
-          setSelectedOsrmStepIndex(null);
-          setRouteLandmarkSelection({ kind: 'pass-by', eventKey: key });
-          setInspectorTab('inspect');
-          setLayout((current) => ({ ...current, rightCollapsed: false }));
+          passByFocusRef.current?.(key);
         },
         onTurnCoverageSelected: (stepIndex) => {
           setSelectedAggregate(null);
@@ -2382,7 +2445,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
 
       map.easeTo({
         pitch: 60,
-        bearing: Math.abs(currentBearing) < 1 ? 25 : currentBearing,
+        bearing: routeLandmarkSelection ? currentBearing : Math.abs(currentBearing) < 1 ? 25 : currentBearing,
         duration: 700,
         essential: true,
       });
@@ -2390,12 +2453,9 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
       return;
     }
 
-    // Reset visual POI-turn relationship when returning to normal analysis.
-    syncGeoJsonSource('poi-turn-inspection', EMPTY_FC);
-
     map.easeTo({
       pitch: 0,
-      bearing: 0,
+      bearing: routeLandmarkSelection ? map.getBearing() : 0,
       duration: 700,
       essential: true,
     });
@@ -2447,21 +2507,46 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
     engine: 'valhalla' | 'osrm',
     poiCoordinate: LngLat,
     turnCoordinate: LngLat,
+    approachBearing: number | null = null,
   ) {
     const map = mapRef.current;
     if (!map) return;
 
     syncPoiTurnInspection(engine, poiCoordinate, turnCoordinate);
 
-    const center: LngLat = [
-      (poiCoordinate[0] + turnCoordinate[0]) / 2,
-      (poiCoordinate[1] + turnCoordinate[1]) / 2,
-    ];
+    focusDriverApproach(turnCoordinate, poiCoordinate, approachBearing);
+  }
+
+  function focusDriverApproach(
+    routeCoordinate: LngLat,
+    poiCoordinate: LngLat | null,
+    approachBearing: number | null,
+  ) {
+    const map = mapRef.current;
+    if (!map) return;
+    if (approachBearing === null || !Number.isFinite(approachBearing)) {
+      map.flyTo({ center: routeCoordinate, zoom: Math.max(map.getZoom(), 17), essential: true });
+      return;
+    }
+
+    const poiDistanceM = poiCoordinate ? haversineMeters(routeCoordinate, poiCoordinate) : 0;
+    const includePoi = Boolean(poiCoordinate && poiDistanceM <= 160);
+    const center: LngLat = includePoi && poiCoordinate
+      ? [
+          routeCoordinate[0] * 0.65 + poiCoordinate[0] * 0.35,
+          routeCoordinate[1] * 0.65 + poiCoordinate[1] * 0.35,
+        ]
+      : routeCoordinate;
+    const zoom = poiDistanceM > 100 && includePoi ? 17 : poiDistanceM > 55 && includePoi ? 17.5 : 18;
+    const canvasHeight = map.getCanvas().clientHeight;
 
     map.easeTo({
       center,
-      zoom: Math.max(map.getZoom(), 18),
-      duration: 850,
+      zoom,
+      bearing: approachBearing,
+      pitch: map3D ? 62 : 0,
+      offset: [0, Math.min(80, Math.max(35, canvasHeight * 0.08))],
+      duration: 950,
       essential: true,
     });
   }
@@ -2538,7 +2623,12 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
     closeActivePoiPopup();
     const map = mapRef.current;
     if (!map || !item.event.coordinate) return;
-    map.flyTo({ center: item.event.coordinate, zoom: Math.max(map.getZoom(), 17), essential: true });
+    const approach = osrmPassByApproach(osrmRoute, item.event);
+    focusDriverApproach(
+      approach?.routeCoordinate ?? item.event.coordinate,
+      item.sourceEvidence?.coordinate ?? item.event.coordinate,
+      approach?.bearing ?? null,
+    );
   }
 
   function focusPoiFeature(feature: GeoJSON.Feature<GeoJSON.Point>, debugDistanceM?: number) {
@@ -2697,10 +2787,12 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
       );
 
     if (maneuver?.coordinate) {
+      const approach = valhallaIncomingApproach(route, maneuver);
       inspectPoiTurn(
         'valhalla',
         item.evidence.coordinate,
         maneuver.coordinate,
+        approach?.bearing ?? null,
       );
     } else if (mapRef.current) {
       mapRef.current.flyTo({
@@ -2735,10 +2827,17 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
       );
 
     if (step?.coordinate) {
+      const occurrence = turnOccurrences.find((candidate) =>
+        candidate.index === item.primaryStepIndex &&
+        candidate.legIndex === step.legIndex &&
+        candidate.stepIndex === step.stepIndex &&
+        candidate.turnId === step.step.maneuver?.turn_id,
+      );
       inspectPoiTurn(
         'osrm',
         item.evidence.coordinate,
         step.coordinate,
+        occurrence?.incoming?.bearing ?? null,
       );
     } else if (mapRef.current) {
       mapRef.current.flyTo({
@@ -2757,6 +2856,33 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
       });
     }, 80);
   }
+
+  routeLandmarkFocusRef.current = (feature, engine, occurrenceIndex, landmarkKey) => {
+    if (engine === 'osrm') {
+      const item = osrmRouteNarrationPois.find((candidate) => candidate.key === landmarkKey)
+        ?? osrmRouteNarrationPois.find((candidate) => candidate.stepIndexes.includes(occurrenceIndex));
+      if (item) {
+        focusOsrmRouteNarrationPoi({ ...item, evidence: { ...item.evidence, feature } });
+        return;
+      }
+    } else {
+      const item = routeNarrationPois.find((candidate) => candidate.key === landmarkKey)
+        ?? routeNarrationPois.find((candidate) => candidate.maneuverIndexes.includes(occurrenceIndex));
+      if (item) {
+        focusRouteNarrationPoi({ ...item, evidence: { ...item.evidence, feature } });
+        return;
+      }
+    }
+    focusRouteLandmarkFeature(feature);
+    focusDriverApproach(feature.geometry.coordinates as LngLat, null, null);
+  };
+
+  passByFocusRef.current = (key) => {
+    const item = osrmPassByLandmarks.find((candidate) => candidate.event.key === key);
+    const event = item?.event ?? osrmGuidance.passByEvents.find((candidate) => candidate.key === key);
+    if (item) focusOsrmPassBy(item);
+    else if (event) focusOsrmPassBy(event);
+  };
 
   function resetPoiFilters() {
     setPoiSearch('');

@@ -89,7 +89,6 @@ export function bindDashboardMapEvents(
     if (passByKey) {
       callbacks.onPassBySelected(passByKey);
       callbacks.closeActivePoiPopup();
-      map.flyTo({ center: coordinates, zoom: Math.max(map.getZoom(), 17), essential: true });
       return;
     }
     if (Number.isFinite(maneuverIndex) || Number.isFinite(osrmStepIndex)) {
@@ -100,7 +99,6 @@ export function bindDashboardMapEvents(
         landmarkKey,
       );
       callbacks.closeActivePoiPopup();
-      map.flyTo({ center: coordinates, zoom: Math.max(map.getZoom(), 17), essential: true });
       return;
     }
     callbacks.onPoiSelected(feature);
@@ -121,7 +119,6 @@ export function bindDashboardMapEvents(
     if (!rawFeature || rawFeature.geometry.type !== 'Point') return;
 
     const feature = rawFeature as Feature<Point>;
-    const coordinates = feature.geometry.coordinates.slice() as LngLat;
     const maneuverIndex = Number(feature.properties?._primary_maneuver_index);
     const osrmStepIndex = Number(feature.properties?._primary_osrm_step_index);
     const landmarkKey = String(feature.properties?._route_landmark_key ?? '');
@@ -137,11 +134,6 @@ export function bindDashboardMapEvents(
     }
 
     callbacks.closeActivePoiPopup();
-    map.flyTo({
-      center: coordinates,
-      zoom: Math.max(map.getZoom(), 17),
-      essential: true,
-    });
   };
 
   const showCandidatePopup: DashboardLayerEventHandler = (event) => {
@@ -192,10 +184,8 @@ export function bindDashboardMapEvents(
     const feature = event.features?.[0];
     if (!feature || feature.geometry.type !== 'Point') return;
     const key = String(feature.properties?.event_key ?? '');
-    const coordinates = feature.geometry.coordinates.slice() as LngLat;
     if (key) callbacks.onPassBySelected(key);
     callbacks.closeActivePoiPopup();
-    map.flyTo({ center: coordinates, zoom: Math.max(map.getZoom(), 17), essential: true });
   };
 
   const selectTurnCoverage: DashboardLayerEventHandler = (event) => {

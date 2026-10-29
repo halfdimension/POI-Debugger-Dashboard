@@ -23,6 +23,11 @@ import { MapContextMenu, type MapContextMenuLocation } from './components/map/Ma
 import { bindDashboardMapEvents } from './components/map/dashboardMapEvents';
 import { POI_DENSITY_LAYER_ID, registerDashboardMapLayers, syncPoiLayerVisibility } from './components/map/dashboardMapLayers';
 import {
+  createBuildingLayerManager,
+  type BuildingLayerManager,
+  type BuildingLayerStatus,
+} from './components/map/geo/buildingLayerManager';
+import {
   createDashboardMapSourceManager,
   type DashboardGeoJsonSourceId,
   type DashboardMapSourceManager,
@@ -183,11 +188,19 @@ function osrmPassByApproach(
 }
 
 type Basemap = 'openfreemap' | 'mapmyindia';
+type MapmyindiaInstallation = {
+  map: MapLibreMap;
+  styleGeneration: number;
+  promise: Promise<void>;
+};
 
 function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () => Promise<void> }) {
   const mapContainer = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const mapSourceManagerRef = useRef<DashboardMapSourceManager | null>(null);
+  const buildingLayerManagerRef = useRef<BuildingLayerManager | null>(null);
+  const mapmyindiaInstallRef = useRef<MapmyindiaInstallation | null>(null);
+  const mapStyleGenerationRef = useRef(0);
   const routeLandmarkFocusRef = useRef<((
     feature: GeoJSON.Feature<GeoJSON.Point>,
     engine: 'valhalla' | 'osrm',
@@ -276,6 +289,12 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
     street_imagery_enabled: false,
     street_coverage_enabled: false,
     driver_perspective_sync_enabled: false,
+  });
+  const [buildingLayerStatus, setBuildingLayerStatus] = useState<BuildingLayerStatus>({
+    ready: false,
+    sourceAvailable: false,
+    effective: false,
+    mode: 'off',
   });
   const [showCandidateMap, setShowCandidateMap] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -518,43 +537,74 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
     ],
   );
 
-  async function installMapmyindiaBasemap(map: MapLibreMap) {
-    try {
-      const response = await fetch('/mapmyindia-style.json');
-
-      if (!response.ok) {
-        throw new Error(`Style HTTP ${response.status}`);
-      }
-
-      const style = await response.json();
-      const raster = style.sources?.mapmyindia;
-
-      if (raster?.type !== 'raster' || !Array.isArray(raster.tiles)) {
-        throw new Error('Invalid MapmyIndia raster source');
-      }
-
-      if (mapRef.current !== map) return;
-
-      map.addSource('mapmyindia-tiles', {
-        type: 'raster',
-        tiles: raster.tiles,
-        tileSize: raster.tileSize ?? 256,
-        attribution: raster.attribution ?? '© MapmyIndia',
-      });
-
-      map.addLayer(
-        {
-          id: 'mapmyindia-raster',
-          type: 'raster',
-          source: 'mapmyindia-tiles',
-          layout: {
-            visibility: basemapRef.current === 'mapmyindia' ? 'visible' : 'none',
-          },
-        },
-        map.getLayer(POI_DENSITY_LAYER_ID) ? POI_DENSITY_LAYER_ID : 'osrm-route',
+  async function installMapmyindiaBasemap(map: MapLibreMap, styleGeneration: number) {
+    if (mapRef.current !== map || mapStyleGenerationRef.current !== styleGeneration) return;
+    if (map.getSource('mapmyindia-tiles') && map.getLayer('mapmyindia-raster')) {
+      map.setLayoutProperty(
+        'mapmyindia-raster',
+        'visibility',
+        basemapRef.current === 'mapmyindia' ? 'visible' : 'none',
       );
-    } catch (error) {
-      console.error('MapmyIndia basemap failed:', error);
+      buildingLayerManagerRef.current?.refresh();
+      return;
+    }
+    const currentInstallation = mapmyindiaInstallRef.current;
+    if (currentInstallation?.map === map && currentInstallation.styleGeneration === styleGeneration) {
+      return currentInstallation.promise;
+    }
+
+    const installation = (async () => {
+      try {
+        const response = await fetch('/mapmyindia-style.json');
+
+        if (!response.ok) {
+          throw new Error(`Style HTTP ${response.status}`);
+        }
+
+        const style = await response.json();
+        const raster = style.sources?.mapmyindia;
+
+        if (raster?.type !== 'raster' || !Array.isArray(raster.tiles)) {
+          throw new Error('Invalid MapmyIndia raster source');
+        }
+
+        if (mapRef.current !== map || mapStyleGenerationRef.current !== styleGeneration) return;
+
+        if (!map.getSource('mapmyindia-tiles')) {
+          map.addSource('mapmyindia-tiles', {
+            type: 'raster',
+            tiles: raster.tiles,
+            tileSize: raster.tileSize ?? 256,
+            attribution: raster.attribution ?? '© MapmyIndia',
+          });
+        }
+
+        if (!map.getLayer('mapmyindia-raster')) {
+          map.addLayer(
+            {
+              id: 'mapmyindia-raster',
+              type: 'raster',
+              source: 'mapmyindia-tiles',
+              layout: {
+                visibility: basemapRef.current === 'mapmyindia' ? 'visible' : 'none',
+              },
+            },
+            map.getLayer(POI_DENSITY_LAYER_ID) ? POI_DENSITY_LAYER_ID : 'osrm-route',
+          );
+        }
+        buildingLayerManagerRef.current?.refresh();
+      } catch (error) {
+        console.error('MapmyIndia basemap failed:', error);
+      }
+    })();
+    const installationState = { map, styleGeneration, promise: installation };
+    mapmyindiaInstallRef.current = installationState;
+    try {
+      await installation;
+    } finally {
+      if (mapmyindiaInstallRef.current === installationState) {
+        mapmyindiaInstallRef.current = null;
+      }
     }
   }
 
@@ -1408,6 +1458,10 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
   }, [basemap, map3D, routeView, layout, showPois, poiVisualizationMode, mapPerspectivePreferences]);
 
   useEffect(() => {
+    buildingLayerManagerRef.current?.setEnabled(mapPerspectivePreferences.show_3d_buildings);
+  }, [mapPerspectivePreferences.show_3d_buildings]);
+
+  useEffect(() => {
     if (!config || !mapContainer.current || mapRef.current) return;
 
     const map = new maplibregl.Map({
@@ -1423,8 +1477,13 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
 
     let disposed = false;
     let disposeDashboardMapEvents: (() => void) | null = null;
+    let buildingManager: BuildingLayerManager | null = null;
+    const handleMapStyleLoading = () => {
+      mapStyleGenerationRef.current += 1;
+    };
     const handleMapStyleLoad = () => {
       if (disposed) return;
+      const styleGeneration = ++mapStyleGenerationRef.current;
       if (!map.getSource('route')) {
         registerDashboardMapLayers(map, {
           initialPois: filteredPois,
@@ -1493,13 +1552,26 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
       if (map3D) {
         map.jumpTo({ pitch: 60, bearing: 25 });
       }
-      if (!map.getSource('mapmyindia-tiles')) void installMapmyindiaBasemap(map);
+      void installMapmyindiaBasemap(map, styleGeneration);
     };
+    map.on('styledataloading', handleMapStyleLoading);
     map.on('style.load', handleMapStyleLoad);
+    buildingManager = createBuildingLayerManager(map, {
+      enabled: mapPerspectivePreferences.show_3d_buildings,
+      basemap: basemapRef.current,
+      onStatusChange: setBuildingLayerStatus,
+    });
+    buildingLayerManagerRef.current = buildingManager;
 
     return () => {
       disposed = true;
+      mapStyleGenerationRef.current += 1;
+      map.off('styledataloading', handleMapStyleLoading);
       map.off('style.load', handleMapStyleLoad);
+      buildingManager?.dispose();
+      if (buildingLayerManagerRef.current === buildingManager) {
+        buildingLayerManagerRef.current = null;
+      }
       disposeDashboardMapEvents?.();
       sourceManager.dispose();
       if (mapSourceManagerRef.current === sourceManager) {
@@ -3449,6 +3521,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
 
                 basemapRef.current = next;
                 setBasemap(next);
+                buildingLayerManagerRef.current?.setBasemap(next);
 
                 const map = mapRef.current;
 
@@ -3471,7 +3544,16 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
             </div>
           </section>
 
-          <MapPerspectiveMenu preferences={mapPerspectivePreferences} />
+          <MapPerspectiveMenu
+            preferences={mapPerspectivePreferences}
+            buildingStatus={buildingLayerStatus}
+            onShow3DBuildingsChange={(enabled) => {
+              setMapPerspectivePreferences((current) => ({
+                ...current,
+                show_3d_buildings: enabled,
+              }));
+            }}
+          />
 
           <div className="inspector-tabs" role="tablist" aria-label="Inspector context">
             <button type="button" role="tab" aria-selected={inspectorTab === 'inspect'} className={inspectorTab === 'inspect' ? 'is-active' : ''} onClick={() => setInspectorTab('inspect')}>Inspect</button>

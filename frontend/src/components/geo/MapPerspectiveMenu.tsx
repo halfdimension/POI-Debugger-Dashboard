@@ -1,4 +1,5 @@
 import type { UserPreferences } from '../../types';
+import type { BuildingLayerStatus } from '../map/geo/buildingLayerManager';
 
 export type MapPerspectivePreferences = Pick<
   UserPreferences,
@@ -9,20 +10,37 @@ export type MapPerspectivePreferences = Pick<
   | 'driver_perspective_sync_enabled'
 >;
 
-function savedPreferenceSummary(preferences: MapPerspectivePreferences): string {
+function savedPreferenceSummary(
+  preferences: MapPerspectivePreferences,
+  buildingStatus: BuildingLayerStatus,
+): string {
   const saved: string[] = [];
-  if (preferences.show_3d_buildings) saved.push('3D Buildings');
   if (preferences.imagery_mode !== 'standard') saved.push(`${preferences.imagery_mode[0].toUpperCase()}${preferences.imagery_mode.slice(1)} imagery`);
   if (preferences.street_imagery_enabled) saved.push('Street Imagery');
   if (preferences.street_coverage_enabled) saved.push('Street Imagery Coverage');
   if (preferences.driver_perspective_sync_enabled) saved.push('Driver Perspective Sync');
 
+  const buildingSummary = !buildingStatus.ready
+    ? 'Building data is loading.'
+    : preferences.show_3d_buildings && buildingStatus.effective
+      ? '3D buildings are active where height data is available.'
+      : preferences.show_3d_buildings && !buildingStatus.sourceAvailable
+        ? '3D buildings are saved but vector building data is unavailable in this map style.'
+        : 'Additional 3D buildings are off; provider styling is unchanged.';
   return saved.length > 0
-    ? `Saved for future availability: ${saved.join(', ')}. Standard imagery remains active.`
-    : 'Standard imagery is active. Additional visualization providers are not available yet.';
+    ? `${buildingSummary} Saved for future availability: ${saved.join(', ')}. Standard imagery remains active.`
+    : `${buildingSummary} Standard imagery is active.`;
 }
 
-export function MapPerspectiveMenu({ preferences }: { preferences: MapPerspectivePreferences }) {
+export function MapPerspectiveMenu({
+  preferences,
+  buildingStatus,
+  onShow3DBuildingsChange,
+}: {
+  preferences: MapPerspectivePreferences;
+  buildingStatus: BuildingLayerStatus;
+  onShow3DBuildingsChange: (enabled: boolean) => void;
+}) {
   return (
     <details className="map-perspective-menu">
       <summary>
@@ -32,9 +50,15 @@ export function MapPerspectiveMenu({ preferences }: { preferences: MapPerspectiv
       <div className="map-perspective-menu__body">
         <fieldset>
           <legend>Building visualization</legend>
-          <label className="map-perspective-option is-unavailable">
-            <input type="checkbox" checked={false} disabled readOnly />
-            <span>3D Buildings <small>Available in Stage 1C</small></span>
+          <label className="map-perspective-option">
+            <input
+              type="checkbox"
+              checked={preferences.show_3d_buildings}
+              onChange={(event) => onShow3DBuildingsChange(event.target.checked)}
+            />
+            <span>3D Buildings <small>{buildingStatus.ready && !buildingStatus.sourceAvailable
+              ? 'Vector building data unavailable'
+              : 'Uses available building height data'}</small></span>
           </label>
         </fieldset>
 
@@ -71,7 +95,7 @@ export function MapPerspectiveMenu({ preferences }: { preferences: MapPerspectiv
         </fieldset>
 
         <p className="map-perspective-menu__availability" role="status">
-          {savedPreferenceSummary(preferences)}
+          {savedPreferenceSummary(preferences, buildingStatus)}
         </p>
       </div>
     </details>

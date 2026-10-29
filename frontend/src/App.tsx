@@ -18,6 +18,7 @@ import { ManeuverInspection } from './components/inspection/ManeuverInspection';
 import { SelectedPoiDetails, type PoiGuidanceContext } from './components/inspection/SelectedPoiDetails';
 import { ClusterMemberDetails } from './components/inspection/ClusterMemberDetails';
 import { TurnPoiCoverageDetails } from './components/inspection/TurnPoiCoverageDetails';
+import { MapPerspectiveMenu, type MapPerspectivePreferences } from './components/geo/MapPerspectiveMenu';
 import { MapContextMenu, type MapContextMenuLocation } from './components/map/MapContextMenu';
 import { bindDashboardMapEvents } from './components/map/dashboardMapEvents';
 import { POI_DENSITY_LAYER_ID, registerDashboardMapLayers, syncPoiLayerVisibility } from './components/map/dashboardMapLayers';
@@ -269,6 +270,13 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
   const [preferredAnalysisHeight, setPreferredAnalysisHeight] = useState(storedAnalysisHeight);
   const [inspectorTab, setInspectorTab] = useState<'inspect' | 'route'>('route');
   const [map3D, setMap3D] = useState(false);
+  const [mapPerspectivePreferences, setMapPerspectivePreferences] = useState<MapPerspectivePreferences>({
+    show_3d_buildings: false,
+    imagery_mode: 'standard',
+    street_imagery_enabled: false,
+    street_coverage_enabled: false,
+    driver_perspective_sync_enabled: false,
+  });
   const [showCandidateMap, setShowCandidateMap] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>('');
@@ -1335,6 +1343,14 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
         setLayout(initial.preferences.layout);
         setShowPois(initial.preferences.show_pois_on_map ?? true);
         setPoiVisualizationMode(initial.preferences.poi_visualization_mode ?? 'auto');
+        const initialMapPerspectivePreferences: MapPerspectivePreferences = {
+          show_3d_buildings: initial.preferences.show_3d_buildings,
+          imagery_mode: initial.preferences.imagery_mode,
+          street_imagery_enabled: initial.preferences.street_imagery_enabled,
+          street_coverage_enabled: initial.preferences.street_coverage_enabled,
+          driver_perspective_sync_enabled: initial.preferences.driver_perspective_sync_enabled,
+        };
+        setMapPerspectivePreferences(initialMapPerspectivePreferences);
         lastSavedPreferencesRef.current = JSON.stringify({
           preferred_basemap: initial.preferences.preferred_basemap,
           map_display_mode: initial.preferences.map_display_mode,
@@ -1342,6 +1358,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
           layout: initial.preferences.layout,
           show_pois_on_map: initial.preferences.show_pois_on_map ?? true,
           poi_visualization_mode: initial.preferences.poi_visualization_mode ?? 'auto',
+          ...initialMapPerspectivePreferences,
         });
         preferencesReadyRef.current = true;
         if (initial.preferences.dataset_selection_fallback) {
@@ -1376,6 +1393,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
       layout,
       show_pois_on_map: showPois,
       poi_visualization_mode: poiVisualizationMode,
+      ...mapPerspectivePreferences,
     };
     const serialized = JSON.stringify(payload);
     if (serialized === lastSavedPreferencesRef.current) return;
@@ -1387,7 +1405,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
       });
     }, 500);
     return () => window.clearTimeout(timer);
-  }, [basemap, map3D, routeView, layout, showPois, poiVisualizationMode]);
+  }, [basemap, map3D, routeView, layout, showPois, poiVisualizationMode, mapPerspectivePreferences]);
 
   useEffect(() => {
     if (!config || !mapContainer.current || mapRef.current) return;
@@ -3452,6 +3470,8 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
               <button type="button" className={map3D ? 'is-active' : ''} aria-pressed={map3D} onClick={() => set3DView(true)}>3D</button>
             </div>
           </section>
+
+          <MapPerspectiveMenu preferences={mapPerspectivePreferences} />
 
           <div className="inspector-tabs" role="tablist" aria-label="Inspector context">
             <button type="button" role="tab" aria-selected={inspectorTab === 'inspect'} className={inspectorTab === 'inspect' ? 'is-active' : ''} onClick={() => setInspectorTab('inspect')}>Inspect</button>

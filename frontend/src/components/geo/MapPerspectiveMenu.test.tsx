@@ -6,10 +6,6 @@ import { MapPerspectiveMenu, type MapPerspectivePreferences } from './MapPerspec
 
 const defaults: MapPerspectivePreferences = {
   show_3d_buildings: false,
-  imagery_mode: 'standard',
-  street_imagery_enabled: false,
-  street_coverage_enabled: false,
-  driver_perspective_sync_enabled: false,
 };
 
 const available: BuildingLayerStatus = {
@@ -38,28 +34,23 @@ function enabledCheckbox(node: ReactNode): ReactElement<CheckboxProps> | null {
 }
 
 describe('MapPerspectiveMenu', () => {
-  it('is closed by default with Standard as the only effective imagery mode', () => {
+  it('is closed by default and contains only the building control', () => {
     const markup = renderToStaticMarkup(<MapPerspectiveMenu preferences={defaults} buildingStatus={available} onShow3DBuildingsChange={() => {}} />);
 
     expect(markup).toContain('<details class="map-perspective-menu">');
     expect(markup).not.toContain('<details class="map-perspective-menu" open=""');
-    expect(markup).toMatch(/type="radio"[^>]*checked=""/);
-    expect(markup.match(/disabled=""/g)).toHaveLength(5);
-    expect(markup).toContain('3D building extrusions are off; 2D map detail remains visible. Standard imagery is active.');
+    expect(markup).toContain('3D buildings off');
+    expect(markup).not.toContain('type="radio"');
+    expect(markup.match(/type="checkbox"/g)).toHaveLength(1);
   });
 
   it('renders the saved building preference as a controlled, enabled checkbox', () => {
     const markup = renderToStaticMarkup(<MapPerspectiveMenu preferences={{
       show_3d_buildings: true,
-      imagery_mode: 'hybrid',
-      street_imagery_enabled: true,
-      street_coverage_enabled: true,
-      driver_perspective_sync_enabled: true,
     }} buildingStatus={{ ...available, effective: true, mode: 'provider' }} onShow3DBuildingsChange={() => {}} />);
 
-    expect(markup).toContain('3D buildings are active where height data is available. Saved for future availability: Hybrid imagery, Street Imagery, Street Imagery Coverage, Driver Perspective Sync. Standard imagery remains active.');
+    expect(markup).toContain('3D buildings on');
     expect(markup.match(/type="checkbox"[^>]*checked=""/g)).toHaveLength(1);
-    expect(markup.match(/type="radio"[^>]*checked=""/g)).toHaveLength(1);
   });
 
   it('reports unavailable vector data without clearing the saved preference', () => {
@@ -70,7 +61,6 @@ describe('MapPerspectiveMenu', () => {
     />);
 
     expect(markup).toContain('Vector building data unavailable');
-    expect(markup).toContain('3D buildings are saved but vector building data is unavailable in this map style.');
     expect(markup.match(/type="checkbox"[^>]*checked=""/g)).toHaveLength(1);
   });
 

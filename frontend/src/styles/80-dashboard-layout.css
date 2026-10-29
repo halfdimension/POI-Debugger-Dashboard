@@ -239,9 +239,6 @@
 .map-perspective-option input { margin: 1px 0 0; accent-color: var(--accent); }
 .map-perspective-option span { display: grid; gap: 1px; }
 .map-perspective-option small { color: var(--text-muted); font-size: 10px; font-weight: 500; }
-.map-perspective-option.is-unavailable { color: #7c8798; }
-.map-perspective-option.is-unavailable input { cursor: not-allowed; }
-.map-perspective-menu__availability { margin: 0; border-top: 1px solid var(--border); padding-top: 8px; color: var(--text-muted); font-size: 10px; line-height: 1.45; }
 .inspector-tabs { display: grid; grid-template-columns: repeat(2, 1fr); gap: 2px; margin: 10px 2px 0; padding: 2px; border: 1px solid var(--border); border-radius: 7px; background: #eef2f6; }
 .inspector-tabs button { border: 0; border-radius: 5px; padding: 7px 5px; background: transparent; color: #667085; font-size: 10px; font-weight: 750; }
 .inspector-tabs button.is-active { background: white; color: #1d55c5; box-shadow: 0 1px 3px rgba(16, 24, 40, .1); }

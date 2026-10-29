@@ -55,19 +55,63 @@ def _create_v2_database(path: Path) -> None:
         connection.execute("PRAGMA user_version = 2")
 
 
-def test_fresh_database_uses_schema_version_3_and_geo_defaults() -> None:
+def _create_v3_database(path: Path) -> None:
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE user_preferences (
+                user_id TEXT PRIMARY KEY NOT NULL,
+                selected_dataset_id TEXT NOT NULL,
+                preferred_basemap TEXT NOT NULL,
+                map_display_mode TEXT NOT NULL,
+                route_view TEXT NOT NULL,
+                layout_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                show_pois_on_map INTEGER NOT NULL DEFAULT 1,
+                poi_visualization_mode TEXT NOT NULL DEFAULT 'auto',
+                show_3d_buildings INTEGER NOT NULL DEFAULT 0,
+                imagery_mode TEXT NOT NULL DEFAULT 'standard',
+                street_imagery_enabled INTEGER NOT NULL DEFAULT 0,
+                street_coverage_enabled INTEGER NOT NULL DEFAULT 0,
+                driver_perspective_sync_enabled INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
+        for user_id, buildings in (("buildings-on", 1), ("buildings-off", 0)):
+            connection.execute(
+                """
+                INSERT INTO user_preferences VALUES (
+                    ?, 'example', 'mapmyindia', '2d', 'both', ?,
+                    '2026-01-01T00:00:00+00:00', 1, 'auto', ?,
+                    'hybrid', 1, 1, 1
+                )
+                """,
+                (user_id, json.dumps({
+                    "leftCollapsed": False,
+                    "rightCollapsed": False,
+                    "analysisCollapsed": True,
+                    "activeAnalysisTab": "comparison",
+                }), buildings),
+            )
+        connection.execute("PRAGMA user_version = 3")
+
+
+def test_fresh_database_uses_schema_version_4_and_buildings_default_on() -> None:
     with tempfile.TemporaryDirectory() as directory:
         path = Path(directory) / "preferences.sqlite3"
         store = UserPreferenceStore(path, ["example"], "example")
 
         preferences = store.get("new-user")
-        assert preferences["show_3d_buildings"] is False
-        assert preferences["imagery_mode"] == "standard"
-        assert preferences["street_imagery_enabled"] is False
-        assert preferences["street_coverage_enabled"] is False
-        assert preferences["driver_perspective_sync_enabled"] is False
+        assert preferences["show_3d_buildings"] is True
         with sqlite3.connect(path) as connection:
-            assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+            assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(user_preferences)")}
+            assert columns.isdisjoint({
+                "imagery_mode",
+                "street_imagery_enabled",
+                "street_coverage_enabled",
+                "driver_perspective_sync_enabled",
+            })
 
 
 def test_schema_version_2_migration_preserves_existing_preferences() -> None:
@@ -86,10 +130,20 @@ def test_schema_version_2_migration_preserves_existing_preferences() -> None:
         assert preferences["poi_visualization_mode"] == "clusters"
         assert preferences["layout"]["activeAnalysisTab"] == "raw"
         assert preferences["show_3d_buildings"] is False
-        assert preferences["imagery_mode"] == "standard"
-        assert preferences["street_imagery_enabled"] is False
-        assert preferences["street_coverage_enabled"] is False
-        assert preferences["driver_perspective_sync_enabled"] is False
+
+
+def test_schema_version_3_migration_preserves_saved_building_values_and_users() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "preferences.sqlite3"
+        _create_v3_database(path)
+
+        store = UserPreferenceStore(path, ["example"], "example")
+
+        assert store.get("buildings-on")["show_3d_buildings"] is True
+        assert store.get("buildings-off")["show_3d_buildings"] is False
+        with sqlite3.connect(path) as connection:
+            assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
+            assert connection.execute("SELECT count(*) FROM user_preferences").fetchone()[0] == 2
 
 
 def test_two_users_keep_independent_dataset_preferences_across_reopen() -> None:
@@ -98,18 +152,14 @@ def test_two_users_keep_independent_dataset_preferences_across_reopen() -> None:
         store = UserPreferenceStore(path, ["example", "rohtak_lmg"], "example")
         store.update("stable-user-a", {"selected_dataset_id": "rohtak_lmg"})
         store.update("stable-user-b", {"selected_dataset_id": "example"})
-        store.update("stable-user-a", {"imagery_mode": "hybrid", "show_3d_buildings": True})
-        store.update("stable-user-b", {"street_coverage_enabled": True})
+        store.update("stable-user-a", {"show_3d_buildings": True})
+        store.update("stable-user-b", {"show_3d_buildings": False})
 
         reopened = UserPreferenceStore(path, ["example", "rohtak_lmg"], "example")
         assert reopened.get("stable-user-a")["selected_dataset_id"] == "rohtak_lmg"
         assert reopened.get("stable-user-b")["selected_dataset_id"] == "example"
-        assert reopened.get("stable-user-a")["imagery_mode"] == "hybrid"
         assert reopened.get("stable-user-a")["show_3d_buildings"] is True
-        assert reopened.get("stable-user-a")["street_coverage_enabled"] is False
-        assert reopened.get("stable-user-b")["imagery_mode"] == "standard"
         assert reopened.get("stable-user-b")["show_3d_buildings"] is False
-        assert reopened.get("stable-user-b")["street_coverage_enabled"] is True
 
 
 def test_reopening_migrated_database_is_idempotent() -> None:
@@ -117,53 +167,43 @@ def test_reopening_migrated_database_is_idempotent() -> None:
         path = Path(directory) / "preferences.sqlite3"
         _create_v2_database(path)
         migrated = UserPreferenceStore(path, ["example", "rohtak_lmg"], "example")
-        migrated.update("stable-user", {"street_imagery_enabled": True})
+        migrated.update("stable-user", {"show_3d_buildings": True})
 
         reopened = UserPreferenceStore(path, ["example", "rohtak_lmg"], "example")
-        assert reopened.get("stable-user")["street_imagery_enabled"] is True
+        assert reopened.get("stable-user")["show_3d_buildings"] is True
         with sqlite3.connect(path) as connection:
-            assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+            assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
 
 
-def test_partial_update_preserves_other_geo_preferences() -> None:
+def test_partial_update_preserves_building_preference() -> None:
     with tempfile.TemporaryDirectory() as directory:
         store = UserPreferenceStore(Path(directory) / "preferences.sqlite3", ["example"], "example")
-        store.update("stable-user", {
-            "show_3d_buildings": True,
-            "street_imagery_enabled": True,
-            "street_coverage_enabled": True,
-            "driver_perspective_sync_enabled": True,
-        })
+        store.update("stable-user", {"show_3d_buildings": False})
 
-        result = store.update("stable-user", {"imagery_mode": "satellite"})
+        result = store.update("stable-user", {"route_view": "osrm"})
 
-        assert result["imagery_mode"] == "satellite"
-        assert result["show_3d_buildings"] is True
-        assert result["street_imagery_enabled"] is True
-        assert result["street_coverage_enabled"] is True
-        assert result["driver_perspective_sync_enabled"] is True
+        assert result["show_3d_buildings"] is False
+
+
+@pytest.mark.parametrize("value", [0, 1, "true", None])
+def test_building_preference_rejects_non_booleans(value: object) -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        store = UserPreferenceStore(Path(directory) / "preferences.sqlite3", ["example"], "example")
+        with pytest.raises(PreferenceValidationError, match="show_3d_buildings must be a boolean"):
+            store.update("stable-user", {"show_3d_buildings": value})
 
 
 @pytest.mark.parametrize("field", [
-    "show_3d_buildings",
+    "imagery_mode",
     "street_imagery_enabled",
     "street_coverage_enabled",
     "driver_perspective_sync_enabled",
 ])
-@pytest.mark.parametrize("value", [0, 1, "true", None])
-def test_geo_boolean_preferences_reject_non_booleans(field: str, value: object) -> None:
+def test_removed_imagery_preferences_are_rejected(field: str) -> None:
     with tempfile.TemporaryDirectory() as directory:
         store = UserPreferenceStore(Path(directory) / "preferences.sqlite3", ["example"], "example")
-        with pytest.raises(PreferenceValidationError, match=f"{field} must be a boolean"):
-            store.update("stable-user", {field: value})
-
-
-@pytest.mark.parametrize("value", ["Standard", "terrain", "", 1, None, [], {}])
-def test_imagery_mode_rejects_unsupported_values(value: object) -> None:
-    with tempfile.TemporaryDirectory() as directory:
-        store = UserPreferenceStore(Path(directory) / "preferences.sqlite3", ["example"], "example")
-        with pytest.raises(PreferenceValidationError, match="imagery_mode is invalid"):
-            store.update("stable-user", {"imagery_mode": value})
+        with pytest.raises(PreferenceValidationError, match=f"Unknown preference fields: {field}"):
+            store.update("stable-user", {field: True})
 
 
 def test_user_identity_cannot_be_supplied_as_a_preference_field() -> None:

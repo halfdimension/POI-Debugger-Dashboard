@@ -20,7 +20,9 @@ This mode creates an ephemeral local-developer session and accepts development l
 
 All dashboard APIs except `/api/health` and authentication initiation/callback/configuration require a valid signed, HttpOnly session cookie. Local registration and password login also require the pre-authentication CSRF token returned by `/api/auth/config`. Mutating APIs require the authenticated session CSRF token. Browser storage never receives OIDC access tokens.
 
-Stage 3B stores each authenticated user's selected dataset, basemap, map mode, route view, and panel layout in a separate SQLite preference database. Dataset-dependent requests are explicitly scoped or resolve the authenticated user's persisted selection; changing one user's dataset does not alter another user's dashboard. If a saved dataset is removed, the API repairs the preference to the configured default and reports the fallback to the UI.
+The dashboard stores each authenticated user's selected dataset, basemap, map mode, route view, panel layout, and 3D Buildings setting in a separate SQLite preference database. New users start with 3D Buildings enabled; existing users keep their explicitly saved setting. Dataset-dependent requests are explicitly scoped or resolve the authenticated user's persisted selection; changing one user's dataset does not alter another user's dashboard. If a saved dataset is removed, the API repairs the preference to the configured default and reports the fallback to the UI.
+
+Map rendering uses the standard MapmyIndia and OpenFreeMap basemaps without external imagery-provider integrations. Driver-oriented inspection continues to use MapLibre with existing route and maneuver geometry.
 
 Local preference owners use a stable `local:<UUID>` key. Existing OIDC owner keys retain their issuer/subject-derived hashes, so enabling local accounts does not migrate, overwrite, or email-merge existing preferences. Shared rate-limit buckets live in the users database and work across backend workers using the same SQLite file.
 

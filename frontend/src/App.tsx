@@ -284,11 +284,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
   const [inspectorTab, setInspectorTab] = useState<'inspect' | 'route'>('route');
   const [map3D, setMap3D] = useState(false);
   const [mapPerspectivePreferences, setMapPerspectivePreferences] = useState<MapPerspectivePreferences>({
-    show_3d_buildings: false,
-    imagery_mode: 'standard',
-    street_imagery_enabled: false,
-    street_coverage_enabled: false,
-    driver_perspective_sync_enabled: false,
+    show_3d_buildings: true,
   });
   const [buildingLayerStatus, setBuildingLayerStatus] = useState<BuildingLayerStatus>({
     ready: false,
@@ -1395,10 +1391,6 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
         setPoiVisualizationMode(initial.preferences.poi_visualization_mode ?? 'auto');
         const initialMapPerspectivePreferences: MapPerspectivePreferences = {
           show_3d_buildings: initial.preferences.show_3d_buildings,
-          imagery_mode: initial.preferences.imagery_mode,
-          street_imagery_enabled: initial.preferences.street_imagery_enabled,
-          street_coverage_enabled: initial.preferences.street_coverage_enabled,
-          driver_perspective_sync_enabled: initial.preferences.driver_perspective_sync_enabled,
         };
         setMapPerspectivePreferences(initialMapPerspectivePreferences);
         lastSavedPreferencesRef.current = JSON.stringify({

@@ -45,7 +45,7 @@ describe('MapPerspectiveMenu', () => {
     expect(markup).not.toContain('<details class="map-perspective-menu" open=""');
     expect(markup).toMatch(/type="radio"[^>]*checked=""/);
     expect(markup.match(/disabled=""/g)).toHaveLength(5);
-    expect(markup).toContain('Additional 3D buildings are off; provider styling is unchanged. Standard imagery is active.');
+    expect(markup).toContain('3D building extrusions are off; 2D map detail remains visible. Standard imagery is active.');
   });
 
   it('renders the saved building preference as a controlled, enabled checkbox', () => {

@@ -49,14 +49,12 @@ function hasInitializedStyle(map: maplibregl.Map): boolean {
   }
 }
 
-function visibleProviderExtrusion(map: maplibregl.Map): string | null {
-  const layer = map.getStyle().layers?.find((candidate) =>
+function providerExtrusions(map: maplibregl.Map) {
+  return (map.getStyle().layers ?? []).filter((candidate) =>
     candidate.id !== DASHBOARD_BUILDING_LAYER_ID &&
     candidate.type === 'fill-extrusion' &&
     candidate.source === OPENMAPTILES_SOURCE_ID &&
-    candidate['source-layer'] === OPENMAPTILES_BUILDING_SOURCE_LAYER &&
-    candidate.layout?.visibility !== 'none');
-  return layer?.id ?? null;
+    candidate['source-layer'] === OPENMAPTILES_BUILDING_SOURCE_LAYER);
 }
 
 function firstDashboardOverlay(map: maplibregl.Map): string | undefined {
@@ -78,7 +76,11 @@ export function createBuildingLayerManager(
   let basemap = options.basemap;
   let disposed = false;
   let lastStatus: BuildingLayerStatus | null = null;
-  let movedProviderLayer: { id: string; beforeId?: string } | null = null;
+  let providerState = new Map<string, {
+    visibility: 'visible' | 'none';
+    beforeId?: string;
+    index: number;
+  }>();
 
   const publish = (status: BuildingLayerStatus) => {
     if (disposed || statusEquals(lastStatus, status)) return;
@@ -92,16 +94,34 @@ export function createBuildingLayerManager(
     }
   };
 
-  const restoreProviderPlacement = () => {
-    if (!movedProviderLayer || !map.getLayer(movedProviderLayer.id)) {
-      movedProviderLayer = null;
-      return;
+  const captureProviderState = () => {
+    const layers = map.getStyle().layers ?? [];
+    for (const layer of providerExtrusions(map)) {
+      if (providerState.has(layer.id)) continue;
+      const index = layers.findIndex((candidate) => candidate.id === layer.id);
+      providerState.set(layer.id, {
+        visibility: layer.layout?.visibility === 'none' ? 'none' : 'visible',
+        beforeId: index >= 0 ? layers[index + 1]?.id : undefined,
+        index,
+      });
     }
-    const beforeId = movedProviderLayer.beforeId && map.getLayer(movedProviderLayer.beforeId)
-      ? movedProviderLayer.beforeId
-      : undefined;
-    map.moveLayer(movedProviderLayer.id, beforeId);
-    movedProviderLayer = null;
+  };
+
+  const setProviderVisibility = (layerId: string, visibility: 'visible' | 'none') => {
+    if (map.getLayer(layerId)) map.setLayoutProperty(layerId, 'visibility', visibility);
+  };
+
+  const restoreProviderState = () => {
+    const states = [...providerState.entries()];
+    for (const [layerId, state] of states) {
+      setProviderVisibility(layerId, state.visibility);
+    }
+    for (const [layerId, state] of states.sort((left, right) => right[1].index - left[1].index)) {
+      if (!map.getLayer(layerId)) continue;
+      const beforeId = state.beforeId && map.getLayer(state.beforeId) ? state.beforeId : undefined;
+      map.moveLayer(layerId, beforeId);
+    }
+    providerState.clear();
   };
 
   const sync = () => {
@@ -112,38 +132,40 @@ export function createBuildingLayerManager(
     }
 
     const available = sourceIsAvailable(map);
+    captureProviderState();
+    const providerLayers = providerExtrusions(map);
     if (!enabled) {
-      restoreProviderPlacement();
       removeDashboardLayer();
+      for (const layer of providerLayers) setProviderVisibility(layer.id, 'none');
       publish({ ready: true, sourceAvailable: available, effective: false, mode: 'off' });
       return;
     }
 
     if (!available) {
-      restoreProviderPlacement();
       removeDashboardLayer();
+      for (const layer of providerLayers) setProviderVisibility(layer.id, 'none');
       publish({ ready: true, sourceAvailable: false, effective: false, mode: 'unavailable' });
       return;
     }
 
-    const providerLayer = visibleProviderExtrusion(map);
-    if (basemap === 'openfreemap' && providerLayer) {
+    const providerLayer = providerLayers
+      .map((layer) => ({ layer, state: providerState.get(layer.id) }))
+      .sort((left, right) => {
+        const visibilityDifference = Number(right.state?.visibility === 'visible') -
+          Number(left.state?.visibility === 'visible');
+        return visibilityDifference || (left.state?.index ?? 0) - (right.state?.index ?? 0);
+      })[0]?.layer;
+    if (providerLayer) {
       removeDashboardLayer();
-      const beforeId = firstDashboardOverlay(map);
-      if (!movedProviderLayer) {
-        const layers = map.getStyle().layers ?? [];
-        const providerIndex = layers.findIndex((layer) => layer.id === providerLayer);
-        movedProviderLayer = {
-          id: providerLayer,
-          beforeId: providerIndex >= 0 ? layers[providerIndex + 1]?.id : undefined,
-        };
+      for (const layer of providerLayers) {
+        setProviderVisibility(layer.id, layer.id === providerLayer.id ? 'visible' : 'none');
       }
-      if (beforeId) map.moveLayer(providerLayer, beforeId);
+      const beforeId = firstDashboardOverlay(map);
+      if (beforeId) map.moveLayer(providerLayer.id, beforeId);
       publish({ ready: true, sourceAvailable: true, effective: true, mode: 'provider' });
       return;
     }
 
-    restoreProviderPlacement();
     const beforeId = firstDashboardOverlay(map);
     if (!map.getLayer(DASHBOARD_BUILDING_LAYER_ID)) {
       map.addLayer({
@@ -175,7 +197,7 @@ export function createBuildingLayerManager(
 
   const handleStyleLoad = () => {
     // A new style has already restored provider-owned ordering by definition.
-    movedProviderLayer = null;
+    providerState = new Map();
     sync();
   };
   map.on('style.load', handleStyleLoad);
@@ -196,8 +218,8 @@ export function createBuildingLayerManager(
     dispose() {
       if (disposed) return;
       map.off('style.load', handleStyleLoad);
-      restoreProviderPlacement();
       removeDashboardLayer();
+      restoreProviderState();
       disposed = true;
     },
   };

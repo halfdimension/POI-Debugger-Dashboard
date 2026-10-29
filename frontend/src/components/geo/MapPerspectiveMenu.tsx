@@ -26,7 +26,7 @@ function savedPreferenceSummary(
       ? '3D buildings are active where height data is available.'
       : preferences.show_3d_buildings && !buildingStatus.sourceAvailable
         ? '3D buildings are saved but vector building data is unavailable in this map style.'
-        : 'Additional 3D buildings are off; provider styling is unchanged.';
+        : '3D building extrusions are off; 2D map detail remains visible.';
   return saved.length > 0
     ? `${buildingSummary} Saved for future availability: ${saved.join(', ')}. Standard imagery remains active.`
     : `${buildingSummary} Standard imagery is active.`;

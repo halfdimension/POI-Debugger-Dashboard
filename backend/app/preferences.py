@@ -26,12 +26,18 @@ ALLOWED_FIELDS = {
     "layout",
     "show_pois_on_map",
     "poi_visualization_mode",
+    "show_3d_buildings",
+    "imagery_mode",
+    "street_imagery_enabled",
+    "street_coverage_enabled",
+    "driver_perspective_sync_enabled",
 }
 BASEMAPS = {"mapmyindia", "openfreemap"}
 MAP_DISPLAY_MODES = {"2d", "3d"}
 ROUTE_VIEWS = {"both", "valhalla", "osrm"}
 ANALYSIS_TABS = {"comparison", "maneuvers", "candidates", "scenarios", "raw"}
 POI_VISUALIZATION_MODES = {"auto", "density", "clusters", "points"}
+IMAGERY_MODES = {"standard", "satellite", "hybrid"}
 
 
 class UserPreferenceStore:
@@ -56,7 +62,7 @@ class UserPreferenceStore:
     def _initialize(self) -> None:
         with self._schema_lock, self._connect() as connection:
             version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-            if version > 2:
+            if version > 3:
                 raise RuntimeError(f"Preference database schema {version} is newer than this application supports")
             connection.execute(
                 """
@@ -87,6 +93,26 @@ class UserPreferenceStore:
                         "ALTER TABLE user_preferences ADD COLUMN poi_visualization_mode TEXT NOT NULL DEFAULT 'auto'"
                     )
                 connection.execute("PRAGMA user_version = 2")
+            if version < 3:
+                columns = {
+                    str(row[1])
+                    for row in connection.execute("PRAGMA table_info(user_preferences)")
+                }
+                additions = {
+                    "show_3d_buildings": "INTEGER NOT NULL DEFAULT 0",
+                    "imagery_mode": "TEXT NOT NULL DEFAULT 'standard'",
+                    "street_imagery_enabled": "INTEGER NOT NULL DEFAULT 0",
+                    "street_coverage_enabled": "INTEGER NOT NULL DEFAULT 0",
+                    "driver_perspective_sync_enabled": "INTEGER NOT NULL DEFAULT 0",
+                }
+                for name, definition in additions.items():
+                    if name not in columns:
+                        connection.execute(
+                            f"ALTER TABLE user_preferences ADD COLUMN {name} {definition}"
+                        )
+                # Version 3 databases cannot be opened by the version 2 application;
+                # no downgrade migration is supported.
+                connection.execute("PRAGMA user_version = 3")
 
     def _defaults(self) -> dict[str, Any]:
         return {
@@ -97,6 +123,11 @@ class UserPreferenceStore:
             "layout": dict(DEFAULT_LAYOUT),
             "show_pois_on_map": True,
             "poi_visualization_mode": "auto",
+            "show_3d_buildings": False,
+            "imagery_mode": "standard",
+            "street_imagery_enabled": False,
+            "street_coverage_enabled": False,
+            "driver_perspective_sync_enabled": False,
         }
 
     @staticmethod
@@ -128,6 +159,18 @@ class UserPreferenceStore:
             raise PreferenceValidationError("show_pois_on_map must be a boolean")
         if "poi_visualization_mode" in result and result["poi_visualization_mode"] not in POI_VISUALIZATION_MODES:
             raise PreferenceValidationError("poi_visualization_mode is invalid")
+        for field in (
+            "show_3d_buildings",
+            "street_imagery_enabled",
+            "street_coverage_enabled",
+            "driver_perspective_sync_enabled",
+        ):
+            if field in result and not isinstance(result[field], bool):
+                raise PreferenceValidationError(f"{field} must be a boolean")
+        if "imagery_mode" in result:
+            imagery_mode = result["imagery_mode"]
+            if not isinstance(imagery_mode, str) or imagery_mode not in IMAGERY_MODES:
+                raise PreferenceValidationError("imagery_mode is invalid")
         if "layout" in result:
             result["layout"] = self._validate_layout(result["layout"])
         return result
@@ -148,6 +191,11 @@ class UserPreferenceStore:
                 "layout": json.loads(row["layout_json"]),
                 "show_pois_on_map": bool(row["show_pois_on_map"]),
                 "poi_visualization_mode": row["poi_visualization_mode"],
+                "show_3d_buildings": bool(row["show_3d_buildings"]),
+                "imagery_mode": row["imagery_mode"],
+                "street_imagery_enabled": bool(row["street_imagery_enabled"]),
+                "street_coverage_enabled": bool(row["street_coverage_enabled"]),
+                "driver_perspective_sync_enabled": bool(row["driver_perspective_sync_enabled"]),
             })
         if values["selected_dataset_id"] not in self._dataset_ids:
             fallback_from = values["selected_dataset_id"]
@@ -178,6 +226,11 @@ class UserPreferenceStore:
                     "layout": json.loads(row["layout_json"]),
                     "show_pois_on_map": bool(row["show_pois_on_map"]),
                     "poi_visualization_mode": row["poi_visualization_mode"],
+                    "show_3d_buildings": bool(row["show_3d_buildings"]),
+                    "imagery_mode": row["imagery_mode"],
+                    "street_imagery_enabled": bool(row["street_imagery_enabled"]),
+                    "street_coverage_enabled": bool(row["street_coverage_enabled"]),
+                    "driver_perspective_sync_enabled": bool(row["driver_perspective_sync_enabled"]),
                 })
             if values["selected_dataset_id"] not in self._dataset_ids:
                 values["selected_dataset_id"] = self._default_dataset_id
@@ -198,8 +251,11 @@ class UserPreferenceStore:
                 INSERT INTO user_preferences (
                     user_id, selected_dataset_id, preferred_basemap,
                     map_display_mode, route_view, layout_json,
-                    show_pois_on_map, poi_visualization_mode, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    show_pois_on_map, poi_visualization_mode,
+                    show_3d_buildings, imagery_mode, street_imagery_enabled,
+                    street_coverage_enabled, driver_perspective_sync_enabled,
+                    updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(user_id) DO UPDATE SET
                     selected_dataset_id = excluded.selected_dataset_id,
                     preferred_basemap = excluded.preferred_basemap,
@@ -208,6 +264,11 @@ class UserPreferenceStore:
                     layout_json = excluded.layout_json,
                     show_pois_on_map = excluded.show_pois_on_map,
                     poi_visualization_mode = excluded.poi_visualization_mode,
+                    show_3d_buildings = excluded.show_3d_buildings,
+                    imagery_mode = excluded.imagery_mode,
+                    street_imagery_enabled = excluded.street_imagery_enabled,
+                    street_coverage_enabled = excluded.street_coverage_enabled,
+                    driver_perspective_sync_enabled = excluded.driver_perspective_sync_enabled,
                     updated_at = excluded.updated_at
             """,
             (
@@ -219,6 +280,11 @@ class UserPreferenceStore:
                 json.dumps(values["layout"], separators=(",", ":"), sort_keys=True),
                 int(values["show_pois_on_map"]),
                 values["poi_visualization_mode"],
+                int(values["show_3d_buildings"]),
+                values["imagery_mode"],
+                int(values["street_imagery_enabled"]),
+                int(values["street_coverage_enabled"]),
+                int(values["driver_perspective_sync_enabled"]),
                 datetime.now(timezone.utc).isoformat(),
             ),
         )

@@ -51,6 +51,11 @@ export interface UserPreferences {
   route_view: 'both' | 'valhalla' | 'osrm';
   show_pois_on_map?: boolean;
   poi_visualization_mode?: 'auto' | 'density' | 'clusters' | 'points';
+  show_3d_buildings: boolean;
+  imagery_mode: 'standard' | 'satellite' | 'hybrid';
+  street_imagery_enabled: boolean;
+  street_coverage_enabled: boolean;
+  driver_perspective_sync_enabled: boolean;
   layout: import('./layoutState').DashboardLayoutState;
   dataset_selection_fallback: boolean;
   unavailable_dataset_id: string | null;
@@ -59,6 +64,8 @@ export interface UserPreferences {
 export type UserPreferencesPatch = Partial<Pick<UserPreferences,
   'selected_dataset_id' | 'preferred_basemap' | 'map_display_mode' | 'route_view' | 'layout' |
   'show_pois_on_map' | 'poi_visualization_mode'
+  | 'show_3d_buildings' | 'imagery_mode' | 'street_imagery_enabled'
+  | 'street_coverage_enabled' | 'driver_perspective_sync_enabled'
 >>;
 
 export interface DebuggerConfig {

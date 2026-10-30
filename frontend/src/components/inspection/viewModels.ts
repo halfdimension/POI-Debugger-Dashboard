@@ -1,4 +1,5 @@
-import { osrmInstructionText, parseOsrmLandmarkInstruction, type OsrmLandmarkCue } from '../../narration';
+import { osrmInstructionText, parseOsrmLandmarkInstruction, type OsrmLandmarkMatch } from '../../narration';
+import { haversineMeters } from '../../coordinates';
 import type { LngLat, Maneuver, OsrmPassByEvent, OsrmRouteResponse, OsrmStep } from '../../types';
 
 export type ManeuverView = {
@@ -51,8 +52,19 @@ export type OsrmRouteNarrationPoi = {
   evidence: NarrationPoiEvidence;
   stepIndexes: number[];
   primaryStepIndex: number;
-  cue: OsrmLandmarkCue;
+  matchesByStep: Record<number, OsrmLandmarkMatch>;
 };
+
+export function narrationEvidenceForOsrmOccurrence(
+  evidence: NarrationPoiEvidence,
+  step: OsrmStepView,
+): NarrationPoiEvidence {
+  return {
+    ...evidence,
+    distanceM: step.coordinate ? haversineMeters(step.coordinate, evidence.coordinate) : null,
+    matchedInstruction: osrmInstructionText(step.step),
+  };
+}
 
 export type OsrmPassByEventView = {
   key: string;
@@ -77,7 +89,8 @@ export type OsrmPassByLandmark = {
 export type OsrmGuidanceEntry = {
   key: string;
   kind: 'maneuver' | 'pass-by';
-  category: 'maneuver' | 'landmark-at' | 'landmark-after' | 'landmark-prefix' | 'pass-by';
+  category: 'maneuver' | 'landmark-at' | 'landmark-after' | 'landmark-before' | 'pass-by';
+  landmark?: OsrmLandmarkMatch;
   instruction: string;
   legIndex: number;
   routeDistanceM: number | null;
@@ -123,9 +136,8 @@ export function buildOsrmGuidance(
       entries.push({
         key: `step:${legIndex}:${stepIndex}`,
         kind: 'maneuver',
-        category: landmark?.cue === 'at' ? 'landmark-at'
-          : landmark?.cue === 'after' ? 'landmark-after'
-            : landmark?.cue === 'prefix-after' ? 'landmark-prefix' : 'maneuver',
+        category: landmark ? `landmark-${landmark.relation}` : 'maneuver',
+        landmark: landmark ?? undefined,
         instruction: osrmInstructionText(step),
         legIndex,
         routeDistanceM: legOffsetM !== null && stepOffsetM !== null ? legOffsetM + stepOffsetM : null,

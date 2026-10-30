@@ -36,7 +36,7 @@ describe('SelectedPoiDetails', () => {
       step: { distance: 82.5, duration: 14, maneuver: { type: 'turn', modifier: 'right', instruction: 'Keep right after Union Bank of India' }, name: '' },
     };
     const markup = renderToStaticMarkup(<SelectedPoiDetails poi={feature} guidance={{
-      kind: 'osrm-step', category: 'AFTER', selectedStep: step, relatedSteps: [step],
+      kind: 'osrm-step', category: 'AFTER', placement: 'inline', selectedStep: step, relatedSteps: [step],
       evidence: { feature, coordinate: [77.2, 28.6], distanceM: 12, priority: 4, name: 'Union Bank of India', landmarkType: 'bank', poiId: 'bank-1', sourceNodeId: 'node-1', evidence: 'strong', matchedInstruction: 'Keep right after Union Bank of India' },
     }} />);
 
@@ -66,5 +66,19 @@ describe('SelectedPoiDetails', () => {
     expect(markup).toContain('28.600000, 77.200000');
     expect(markup).toContain('150.0 m');
     expect(markup).not.toContain('OSRM occurrence');
+  });
+
+  it('shows the selected BEFORE relation for a prefixed OSRM occurrence', () => {
+    const feature: GeoJSON.Feature<GeoJSON.Point> = {
+      type: 'Feature', geometry: { type: 'Point', coordinates: [77.2, 28.6] }, properties: { name: 'RBL Bank' },
+    };
+    const step = { index: 11, legIndex: 1, stepIndex: 3, coordinate: [77.21, 28.61] as [number, number], step: { maneuver: { instruction: 'Before RBL Bank: Enter the roundabout and take the 1st exit' } } };
+    const markup = renderToStaticMarkup(<SelectedPoiDetails poi={feature} guidance={{
+      kind: 'osrm-step', category: 'BEFORE', placement: 'prefix', selectedStep: step, relatedSteps: [step],
+      evidence: { feature, coordinate: [77.2, 28.6], distanceM: 20, priority: 2, name: 'RBL Bank', landmarkType: 'bank', poiId: '', sourceNodeId: '', evidence: 'strong', matchedInstruction: 'Before RBL Bank: Enter the roundabout and take the 1st exit' },
+    }} />);
+    expect(markup).toContain('BEFORE');
+    expect(markup).toContain('Relation prefix');
+    expect(markup).toContain('Step 12 · leg 2 · leg step 4');
   });
 });

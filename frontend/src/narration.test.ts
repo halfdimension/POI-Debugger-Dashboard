@@ -9,7 +9,7 @@ import {
   normalizeNarrationText,
   osrmInstructionText,
 } from './narration';
-import { buildOsrmGuidance } from './components/inspection/viewModels';
+import { buildOsrmGuidance, narrationEvidenceForOsrmOccurrence } from './components/inspection/viewModels';
 
 describe('narration text matching', () => {
   it('normalizes accents, punctuation, case, and repeated whitespace', () => {
@@ -36,15 +36,20 @@ describe('narration text matching', () => {
     expect(hasStrongLandmarkCue('Continue past Clock Tower', 'Clock Tower')).toBe(false);
   });
 
-  it('recognizes OSRM at, after, and prefix landmark grammar without substring inference', () => {
-    const names = ['Bank', 'Yes Bank', 'Indian Oil Petrol Pump', 'RBL Bank', 'Main'];
-    expect(matchOsrmLandmarkInstruction('Keep right after Yes Bank', names)).toEqual({ name: 'Yes Bank', cue: 'after' });
-    expect(matchOsrmLandmarkInstruction('Turn right at the Indian Oil Petrol Pump.', names)).toEqual({ name: 'Indian Oil Petrol Pump', cue: 'at' });
-    expect(matchOsrmLandmarkInstruction('After RBL Bank: Enter the roundabout', names)).toEqual({ name: 'RBL Bank', cue: 'prefix-after' });
+  it('recognizes all inline and prefix OSRM landmark relations without substring inference', () => {
+    const names = ['Bank', 'Yes Bank', 'Indian Oil Petrol Pump', 'RBL Bank', 'Coffee House', 'The Coffee House', 'Main'];
+    expect(matchOsrmLandmarkInstruction('Keep right after Yes Bank', names)).toEqual({ name: 'Yes Bank', relation: 'after', placement: 'inline' });
+    expect(matchOsrmLandmarkInstruction('Turn right at the Indian Oil Petrol Pump.', names)).toEqual({ name: 'Indian Oil Petrol Pump', relation: 'at', placement: 'inline' });
+    expect(matchOsrmLandmarkInstruction('Turn right before Yes Bank', names)).toEqual({ name: 'Yes Bank', relation: 'before', placement: 'inline' });
+    expect(matchOsrmLandmarkInstruction('Before RBL Bank: Enter the roundabout', names)).toEqual({ name: 'RBL Bank', relation: 'before', placement: 'prefix' });
+    expect(matchOsrmLandmarkInstruction('At RBL Bank: Enter the roundabout', names)).toEqual({ name: 'RBL Bank', relation: 'at', placement: 'prefix' });
+    expect(matchOsrmLandmarkInstruction('After RBL Bank: Enter the roundabout', names)).toEqual({ name: 'RBL Bank', relation: 'after', placement: 'prefix' });
+    expect(matchOsrmLandmarkInstruction('Turn right before The Coffee House', names)).toEqual({ name: 'The Coffee House', relation: 'before', placement: 'inline' });
+    expect(matchOsrmLandmarkInstruction('Before The Coffee House: Enter the roundabout', names)).toEqual({ name: 'The Coffee House', relation: 'before', placement: 'prefix' });
     expect(matchOsrmLandmarkInstruction('Continue on Yes Bank Road', names)).toBeNull();
     expect(matchOsrmLandmarkInstruction('Turn right at Bank', names)).toBeNull();
-    expect(parseOsrmLandmarkInstruction('Merge left after Dev College')).toEqual({ name: 'Dev College', cue: 'after' });
-    expect(parseOsrmLandmarkInstruction('After the RBL Bank: Enter the roundabout')).toEqual({ name: 'RBL Bank', cue: 'prefix-after' });
+    expect(parseOsrmLandmarkInstruction('Merge left after Dev College')).toEqual({ name: 'Dev College', relation: 'after', placement: 'inline' });
+    expect(parseOsrmLandmarkInstruction('After the RBL Bank: Enter the roundabout')).toEqual({ name: 'the RBL Bank', relation: 'after', placement: 'prefix' });
     expect(parseOsrmLandmarkInstruction('Continue on Yes Bank Road')).toBeNull();
   });
 
@@ -57,11 +62,32 @@ describe('narration text matching', () => {
       ['Merge left after Dev College', 'after'],
       ['Merge left at Vasan Eye Care Hospital', 'at'],
       ['Keep right at Apollo AyurVAID Hospitals', 'at'],
-      ['After RBL Bank: Enter the roundabout and take the 1st exit', 'prefix-after'],
+      ['After RBL Bank: Enter the roundabout and take the 1st exit', 'after'],
+      ['Turn right before Yes Bank', 'before'],
+      ['Keep right before RBL Bank', 'before'],
+      ['Merge left before Dev College', 'before'],
+      ['Take the exit on the right before Civic Center', 'before'],
+      ['Continue straight before Metro Tower', 'before'],
+      ['Make a U-turn before Union Bank', 'before'],
+      ['Before RBL Bank: Enter the roundabout and take the 1st exit', 'before'],
+      ['At RBL Bank: Enter the roundabout and take the 1st exit', 'at'],
     ];
-    for (const [instruction, cue] of cases) {
-      expect(parseOsrmLandmarkInstruction(instruction)?.cue).toBe(cue);
+    for (const [instruction, relation] of cases) {
+      expect(parseOsrmLandmarkInstruction(instruction)?.relation).toBe(relation);
     }
+  });
+
+  it('rejects navigation features and preserves relation words inside proper names', () => {
+    expect(parseOsrmLandmarkInstruction('Turn right before the roundabout')).toBeNull();
+    expect(parseOsrmLandmarkInstruction('Keep right at the fork')).toBeNull();
+    expect(parseOsrmLandmarkInstruction('Take the exit before the junction')).toBeNull();
+    expect(parseOsrmLandmarkInstruction('Continue on Yes Bank Road')).toBeNull();
+    expect(parseOsrmLandmarkInstruction('Turn right before Before Hours Cafe')).toEqual({
+      name: 'Before Hours Cafe', relation: 'before', placement: 'inline',
+    });
+    expect(parseOsrmLandmarkInstruction('Turn left at At Home Bank')).toEqual({
+      name: 'At Home Bank', relation: 'at', placement: 'inline',
+    });
   });
 });
 
@@ -77,6 +103,43 @@ describe('narration POI identity', () => {
     expect(narrationPoiKey({ ...fallback, poiId: 'poi-1', sourceNodeId: 'node-1' })).toBe('poi:poi-1');
     expect(narrationPoiKey({ ...fallback, sourceNodeId: 'node-1' })).toBe('node:node-1');
     expect(narrationPoiKey(fallback)).toBe('name:cafe central|77.2090000|28.6139000');
+  });
+});
+
+describe('OSRM narration occurrence evidence', () => {
+  it('derives distance and matched instruction per occurrence without mutating grouped evidence', () => {
+    const feature: GeoJSON.Feature<GeoJSON.Point> = {
+      type: 'Feature',
+      properties: { name: 'Yes Bank' },
+      geometry: { type: 'Point', coordinates: [77, 28] },
+    };
+    const groupedEvidence = {
+      feature,
+      coordinate: [77, 28] as [number, number],
+      distanceM: 20,
+      priority: 1,
+      name: 'Yes Bank',
+      landmarkType: 'bank',
+      poiId: 'bank-1',
+      sourceNodeId: 'node-1',
+      evidence: 'strong' as const,
+      matchedInstruction: 'Keep right after Yes Bank',
+    };
+    const selected = narrationEvidenceForOsrmOccurrence(groupedEvidence, {
+      index: 12,
+      legIndex: 0,
+      stepIndex: 12,
+      coordinate: [77, 28.000405],
+      step: { maneuver: { instruction: 'Turn right before Yes Bank' } },
+    });
+
+    expect(selected.distanceM).toBeCloseTo(45, 0);
+    expect(selected.matchedInstruction).toBe('Turn right before Yes Bank');
+    expect(groupedEvidence.distanceM).toBe(20);
+    expect(groupedEvidence.matchedInstruction).toBe('Keep right after Yes Bank');
+    expect(narrationEvidenceForOsrmOccurrence(groupedEvidence, {
+      index: 13, legIndex: 0, stepIndex: 13, coordinate: null, step: {},
+    }).distanceM).toBeNull();
   });
 });
 
@@ -119,6 +182,15 @@ describe('OSRM guidance derivation', () => {
     expect(guidance.entries[0].category).toBe('landmark-at');
     expect(guidance.entries[2].category).toBe('landmark-after');
     expect(guidance.passByEvents[0].key).toBe('pass-by:0:0');
+  });
+
+  it('classifies BEFORE guidance by semantic relation for inline and prefix syntax', () => {
+    const guidance = buildOsrmGuidance({ routes: [{ legs: [{ steps: [
+      { maneuver: { instruction: 'Turn right before Yes Bank' } },
+      { maneuver: { instruction: 'Before RBL Bank: Enter the roundabout and take the 1st exit' } },
+    ] }] }] });
+    expect(guidance.entries.map((entry) => entry.category)).toEqual(['landmark-before', 'landmark-before']);
+    expect(guidance.entries.map((entry) => entry.landmark?.placement)).toEqual(['inline', 'prefix']);
   });
 
   it('ignores malformed arrays and reports unavailable ordering without inventing distance', () => {

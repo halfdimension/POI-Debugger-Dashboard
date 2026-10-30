@@ -13,7 +13,7 @@ import { AnalysisTabContent } from './components/analysis/AnalysisTabContent';
 import { AuthenticationScreen } from './components/auth/AuthenticationScreen';
 import { CompactDatasetSelector } from './components/datasets/DatasetSelector';
 import { CompactPoiExplorer } from './components/datasets/PoiExplorer';
-import { buildOsrmGuidance, type ManeuverView, type NarrationPoiEvidence, type NearbyPoi, type OsrmPassByEventView, type OsrmPassByLandmark, type OsrmRouteNarrationPoi, type OsrmStepView, type RouteNarrationPoi } from './components/inspection/viewModels';
+import { buildOsrmGuidance, narrationEvidenceForOsrmOccurrence, type ManeuverView, type NarrationPoiEvidence, type NearbyPoi, type OsrmPassByEventView, type OsrmPassByLandmark, type OsrmRouteNarrationPoi, type OsrmStepView, type RouteNarrationPoi } from './components/inspection/viewModels';
 import { ManeuverInspection } from './components/inspection/ManeuverInspection';
 import { SelectedPoiDetails, type PoiGuidanceContext } from './components/inspection/SelectedPoiDetails';
 import { ClusterMemberDetails } from './components/inspection/ClusterMemberDetails';
@@ -66,6 +66,7 @@ import {
   narrationPoiKey,
   normalizeNarrationText,
   osrmInstructionText,
+  parseOsrmLandmarkInstruction,
 } from './narration';
 import type { CandidateAnalysis, CandidateAnalysisManeuver, CompareRouteResponse, DatasetRegistryResponse, DatasetSummary, DebuggerConfig, EngineRouteResult, LngLat, OsrmRouteResponse, RouteScenario, UserPreferencesPatch, ValhallaRouteResponse } from './types';
 import { useVerticalPanelResize } from './useVerticalPanelResize';
@@ -89,6 +90,10 @@ const ANALYSIS_HEIGHT_STORAGE_KEY = 'poi-dashboard.analysis-height';
 const DEFAULT_ANALYSIS_HEIGHT = 300;
 
 type EngineConnectivityStatus = 'checking' | 'up' | 'down';
+
+function isFiniteCoordinate(coordinate: LngLat | null | undefined): coordinate is LngLat {
+  return Boolean(coordinate && Number.isFinite(coordinate[0]) && Number.isFinite(coordinate[1]));
+}
 
 function engineConnectivityAfterRoute<T>(
   result: EngineRouteResult<T>,
@@ -852,13 +857,26 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
 
   const osrmPoiNamesByStep = useMemo(() => {
     const result = new Map<number, string[]>();
-    const sourceNames = diagnosticPois.features.flatMap((rawFeature) => {
-      const feature = pointFeature(rawFeature);
-      const name = feature ? propText(feature.properties, 'name', '').trim() : '';
-      return name ? [name] : [];
-    });
 
     for (const item of osrmStepViews) {
+      const stepCoordinate = item.coordinate;
+      if (!isFiniteCoordinate(stepCoordinate)) {
+        result.set(item.index, []);
+        continue;
+      }
+
+      const sourceNames = diagnosticPois.features.flatMap((rawFeature) => {
+        const feature = pointFeature(rawFeature);
+        if (!feature) return [];
+
+        const coordinate = feature.geometry.coordinates as LngLat;
+        const name = propText(feature.properties, 'name', '').trim();
+        return name
+          && isFiniteCoordinate(coordinate)
+          && haversineMeters(stepCoordinate, coordinate) <= NARRATION_POI_MAX_DISTANCE_M
+          ? [name]
+          : [];
+      });
       const instruction = osrmInstructionText(item.step);
       const match = matchOsrmLandmarkInstruction(instruction, sourceNames);
       result.set(item.index, match ? [match.name] : []);
@@ -873,7 +891,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
     for (const item of osrmStepViews) {
       const instruction = osrmInstructionText(item.step);
 
-      if (!instruction) continue;
+      if (!instruction || !isFiniteCoordinate(item.coordinate)) continue;
 
       const matches: NarrationPoiEvidence[] = [];
 
@@ -890,15 +908,13 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
         if (!landmarkMatch) continue;
 
         const coordinate = feature.geometry.coordinates as LngLat;
+        if (!isFiniteCoordinate(coordinate)) continue;
 
-        const distanceM = item.coordinate
-          ? haversineMeters(item.coordinate, coordinate)
-          : null;
+        const distanceM = haversineMeters(item.coordinate, coordinate);
 
-        // At-intersection landmarks should remain close to the maneuver.
-        // After/prefix landmarks can legitimately precede it by more than the
-        // diagnostic radius, so their grammar is stronger than proximity.
-        if (landmarkMatch.cue === 'at' && distanceM !== null && distanceM > NARRATION_POI_MAX_DISTANCE_M) {
+        // The diagnostic collection spans multiple maneuvers, so every
+        // relation needs a conservative per-maneuver proximity guard.
+        if (distanceM > NARRATION_POI_MAX_DISTANCE_M) {
           continue;
         }
 
@@ -932,6 +948,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
 
       const primary = matches[0];
       const key = narrationPoiKey(primary);
+      const landmarkMatch = matchOsrmLandmarkInstruction(instruction, [primary.name])!;
 
       const existing = grouped.get(key);
 
@@ -941,7 +958,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
           evidence: primary,
           stepIndexes: [item.index],
           primaryStepIndex: item.index,
-          cue: matchOsrmLandmarkInstruction(instruction, [primary.name])!.cue,
+          matchesByStep: { [item.index]: landmarkMatch },
         });
 
         continue;
@@ -950,6 +967,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
       if (!existing.stepIndexes.includes(item.index)) {
         existing.stepIndexes.push(item.index);
       }
+      existing.matchesByStep[item.index] = landmarkMatch;
 
       const existingDistance =
         existing.evidence.distanceM ?? Number.POSITIVE_INFINITY;
@@ -1280,15 +1298,19 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
         ?? osrmRouteNarrationPois.find((candidate) => candidate.stepIndexes.includes(routeLandmarkSelection.occurrenceIndex));
       const selectedStep = osrmStepViews.find((step) => step.index === routeLandmarkSelection.occurrenceIndex);
       if (!item || !selectedStep) return null;
+      const landmark = item.matchesByStep[selectedStep.index]
+        ?? parseOsrmLandmarkInstruction(osrmInstructionText(selectedStep.step));
+      if (!landmark) return null;
       return {
         kind: 'osrm-step',
-        category: item.cue === 'prefix-after' ? 'PREFIX' : item.cue.toUpperCase() as 'AT' | 'AFTER',
+        category: landmark.relation.toUpperCase() as 'AT' | 'AFTER' | 'BEFORE',
+        placement: landmark.placement,
         selectedStep,
         relatedSteps: item.stepIndexes.flatMap((index) => {
           const step = osrmStepViews.find((candidate) => candidate.index === index);
           return step ? [step] : [];
         }),
-        evidence: item.evidence,
+        evidence: narrationEvidenceForOsrmOccurrence(item.evidence, selectedStep),
       };
     }
     const item = routeNarrationPois.find((candidate) => candidate.key === routeLandmarkSelection.key)
@@ -2125,7 +2147,8 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
           _primary_osrm_step_index: item.primaryStepIndex,
           _osrm_step_indexes: item.stepIndexes.map((index) => index + 1).join(', '),
           _matched_instruction: item.evidence.matchedInstruction,
-          _landmark_cue: item.cue,
+          _landmark_relation: item.matchesByStep[item.primaryStepIndex]?.relation ?? '',
+          _landmark_placement: item.matchesByStep[item.primaryStepIndex]?.placement ?? '',
           _debug_distance_m: item.evidence.distanceM === null ? '' : item.evidence.distanceM.toFixed(1),
         },
       });
@@ -2888,23 +2911,24 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
     }, 80);
   }
 
-  function focusOsrmRouteNarrationPoi(item: OsrmRouteNarrationPoi) {
-    setSelectedOsrmStepIndex(item.primaryStepIndex);
+  function focusOsrmRouteNarrationPoi(item: OsrmRouteNarrationPoi, occurrenceIndex = item.primaryStepIndex) {
+    const selectedOccurrenceIndex = item.stepIndexes.includes(occurrenceIndex) ? occurrenceIndex : item.primaryStepIndex;
+    setSelectedOsrmStepIndex(selectedOccurrenceIndex);
     setSelectedManeuverIndex(null);
     setSelectedOsrmPassByKey(null);
-    setRouteLandmarkSelection({ kind: 'osrm', key: item.key, occurrenceIndex: item.primaryStepIndex });
+    setRouteLandmarkSelection({ kind: 'osrm', key: item.key, occurrenceIndex: selectedOccurrenceIndex });
     openInspector('inspect');
     focusRouteLandmarkFeature(item.evidence.feature);
 
     const step =
       osrmStepViews.find(
         (candidate) =>
-          candidate.index === item.primaryStepIndex,
+          candidate.index === selectedOccurrenceIndex,
       );
 
     if (step?.coordinate) {
       const occurrence = turnOccurrences.find((candidate) =>
-        candidate.index === item.primaryStepIndex &&
+        candidate.index === selectedOccurrenceIndex &&
         candidate.legIndex === step.legIndex &&
         candidate.stepIndex === step.stepIndex &&
         candidate.turnId === step.step.maneuver?.turn_id,
@@ -2925,7 +2949,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
 
     window.setTimeout(() => {
       document.querySelector(
-        `[data-osrm-step-index="${item.primaryStepIndex}"]`,
+        `[data-osrm-step-index="${selectedOccurrenceIndex}"]`,
       )?.scrollIntoView({
         behavior: 'smooth',
         block: 'center',
@@ -2938,7 +2962,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
       const item = osrmRouteNarrationPois.find((candidate) => candidate.key === landmarkKey)
         ?? osrmRouteNarrationPois.find((candidate) => candidate.stepIndexes.includes(occurrenceIndex));
       if (item) {
-        focusOsrmRouteNarrationPoi({ ...item, evidence: { ...item.evidence, feature } });
+        focusOsrmRouteNarrationPoi({ ...item, evidence: { ...item.evidence, feature } }, occurrenceIndex);
         return;
       }
     } else {
@@ -3404,7 +3428,8 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
                       <div className="route-narration-overlay-list engine-list route-poi-subsection-list">
                         {osrmRouteNarrationPois.map((item) => {
                           const alsoValhalla = valhallaRoutePoiKeys.has(item.key);
-                          const cueLabel = item.cue === 'prefix-after' ? 'PREFIX' : item.cue.toUpperCase();
+                          const landmark = item.matchesByStep[item.primaryStepIndex];
+                          const cueLabel = landmark?.relation.toUpperCase() ?? 'LANDMARK';
                           return (
                             <button key={`osrm-${item.key}`} className="route-narration-overlay-item osrm-engine" onClick={() => focusOsrmRouteNarrationPoi(item)} title={item.evidence.matchedInstruction}>
                               <i />
@@ -3413,14 +3438,14 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
                                 <small>OSRM step {item.primaryStepIndex + 1} · Narration match · {item.evidence.poiId || item.evidence.sourceNodeId || 'source record'}</small>
                               </span>
                               <span className="route-poi-item-badges">
-                                <b className={`guidance-kind-badge ${item.cue}`}>{cueLabel}</b>
+                                <b className={`guidance-kind-badge ${landmark?.relation ?? ''}`}>{cueLabel}{landmark?.placement === 'prefix' ? ' · PREFIX' : ''}</b>
                                 <b className={`engine-match-badge ${alsoValhalla ? 'both' : 'osrm'}`}>{alsoValhalla ? 'BOTH' : 'O'}</b>
                               </span>
                             </button>
                           );
                         })}
                         {osrmLandmarkGuidanceEntries.filter((entry) => entry.step && !resolvedOsrmLandmarkStepIndexes.has(entry.step.index)).map((entry) => {
-                          const cueLabel = entry.category === 'landmark-prefix' ? 'PREFIX' : entry.category === 'landmark-after' ? 'AFTER' : 'AT';
+                          const cueLabel = entry.landmark?.relation.toUpperCase() ?? 'LANDMARK';
                           return (
                             <button key={`osrm-unresolved-${entry.key}`} className="route-narration-overlay-item osrm-engine unresolved-engine" onClick={() => focusOsrmStep(entry.step!)} title={entry.instruction}>
                               <i />

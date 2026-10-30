@@ -3,7 +3,7 @@ import { osrmInstructionText } from '../../narration';
 import type { ManeuverView, NarrationPoiEvidence, OsrmPassByLandmark, OsrmStepView } from './viewModels';
 
 export type PoiGuidanceContext =
-  | { kind: 'osrm-step'; category: 'AT' | 'AFTER' | 'PREFIX'; selectedStep: OsrmStepView; relatedSteps: OsrmStepView[]; evidence: NarrationPoiEvidence }
+  | { kind: 'osrm-step'; category: 'AT' | 'AFTER' | 'BEFORE'; placement: 'inline' | 'prefix'; selectedStep: OsrmStepView; relatedSteps: OsrmStepView[]; evidence: NarrationPoiEvidence }
   | { kind: 'valhalla-maneuver'; category: 'AT'; selectedManeuver: ManeuverView; relatedManeuvers: ManeuverView[]; evidence: NarrationPoiEvidence }
   | { kind: 'pass-by'; landmark: OsrmPassByLandmark };
 
@@ -58,11 +58,12 @@ export function SelectedPoiDetails({ poi, guidance = null }: SelectedPoiDetailsP
       </div>
 
       {guidance?.kind === 'osrm-step' && <section className="landmark-inspector-section">
-        <div className="landmark-section-heading"><strong>Related guidance</strong><b className={`guidance-kind-badge ${guidance.category === 'PREFIX' ? 'prefix-after' : guidance.category.toLowerCase()}`}>{guidance.category}</b></div>
+        <div className="landmark-section-heading"><strong>Related guidance</strong><b className={`guidance-kind-badge ${guidance.category.toLowerCase()}`}>{guidance.category}</b></div>
         <p className="landmark-instruction">{osrmInstructionText(guidance.selectedStep.step)}</p>
         <div className="property-grid compact-property-grid">
           <DetailRow label="Maneuver" value={`${guidance.selectedStep.step.maneuver?.type ?? 'maneuver'}${guidance.selectedStep.step.maneuver?.modifier ? ` / ${guidance.selectedStep.step.maneuver.modifier}` : ''}`} />
           <DetailRow label="OSRM occurrence" value={`Step ${guidance.selectedStep.index + 1} · leg ${guidance.selectedStep.legIndex + 1} · leg step ${guidance.selectedStep.stepIndex + 1}`} />
+          <DetailRow label="Instruction grammar" value={guidance.placement === 'prefix' ? 'Relation prefix' : 'Relation suffix'} />
           <DetailRow label="Distance" value={typeof guidance.selectedStep.step.distance === 'number' ? `${guidance.selectedStep.step.distance.toFixed(1)} m` : null} />
           <DetailRow label="Duration" value={typeof guidance.selectedStep.step.duration === 'number' ? `${guidance.selectedStep.step.duration.toFixed(1)} s` : null} />
         </div>

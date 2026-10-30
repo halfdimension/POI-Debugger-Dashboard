@@ -38,11 +38,13 @@ export function hasStrongLandmarkCue(instruction: string, name: string): boolean
     normalizedInstruction.includes(` at the ${normalizedName} `);
 }
 
-export type OsrmLandmarkCue = 'at' | 'after' | 'prefix-after';
+export type OsrmLandmarkRelation = 'at' | 'after' | 'before';
+export type OsrmLandmarkPlacement = 'inline' | 'prefix';
 
 export type OsrmLandmarkMatch = {
   name: string;
-  cue: OsrmLandmarkCue;
+  relation: OsrmLandmarkRelation;
+  placement: OsrmLandmarkPlacement;
 };
 
 const GENERIC_SINGLE_WORD_POI_NAMES = new Set([
@@ -60,18 +62,30 @@ function isSpecificPoiName(name: string): boolean {
 const GENERIC_NAVIGATION_FEATURES = /^(?:the\s+)?(?:fork|roundabout|intersection|junction|crossroads?|ramp|(?:left|right|middle)?\s*lanes?|(?:(?:next|first|second|third|unnamed|\d+(?:st|nd|rd|th))\s+)?exit(?:\s+(?:on\s+)?(?:the\s+)?(?:left|right))?)$/;
 
 function extractOsrmLandmarkSlot(instruction: string): OsrmLandmarkMatch | null {
-  const prefixText = instruction.match(/^\s*after\s+(?:the\s+)?(.+?)\s*:\s*/i)?.[1]?.trim();
-  if (prefixText && isSpecificPoiName(prefixText)) return { name: prefixText, cue: 'prefix-after' };
+  const prefixMatch = instruction.match(/^\s*(before|at|after)\s+(.+?)\s*:\s*/i);
+  const prefixText = prefixMatch?.[2]?.trim();
+  if (prefixMatch && prefixText && isSpecificPoiName(prefixText)) {
+    return {
+      name: prefixText,
+      relation: prefixMatch[1].toLowerCase() as OsrmLandmarkRelation,
+      placement: 'prefix',
+    };
+  }
 
   if (!/^\s*(turn|keep|merge|take|make|bear|use|enter|exit|continue|stay|fork)\b/i.test(instruction)) return null;
 
-  const cuePattern = /\b(at|after)(?:\s+the)?\s+/gi;
-  let lastMatch: RegExpExecArray | null = null;
-  for (let match = cuePattern.exec(instruction); match; match = cuePattern.exec(instruction)) lastMatch = match;
-  if (!lastMatch) return null;
-  const name = instruction.slice(lastMatch.index + lastMatch[0].length).replace(/[\s.,;!?]+$/g, '').trim();
+  // The first relation token belongs to the maneuver grammar. Keeping the
+  // remainder intact allows proper names such as "At Home Bank" or
+  // "Before School Cafe" without reinterpreting words inside the POI name.
+  const relationMatch = /\b(at|after|before)\s+/i.exec(instruction);
+  if (!relationMatch) return null;
+  const name = instruction.slice(relationMatch.index + relationMatch[0].length).replace(/[\s.,;!?]+$/g, '').trim();
   if (!isSpecificPoiName(name)) return null;
-  return { name, cue: lastMatch[1].toLowerCase() as 'at' | 'after' };
+  return {
+    name,
+    relation: relationMatch[1].toLowerCase() as OsrmLandmarkRelation,
+    placement: 'inline',
+  };
 }
 
 export function parseOsrmLandmarkInstruction(instruction: string): OsrmLandmarkMatch | null {
@@ -99,8 +113,20 @@ export function matchOsrmLandmarkInstruction(
     .filter(isSpecificPoiName)
     .sort((a, b) => normalizeNarrationText(b).length - normalizeNarrationText(a).length);
 
-  const match = names.find((name) => normalizeNarrationText(name) === normalizeNarrationText(parsed.name));
-  return match ? { name: match, cue: parsed.cue } : null;
+  const normalizedParsedName = normalizeNarrationText(parsed.name);
+  const exactMatch = names.find((name) => normalizeNarrationText(name) === normalizedParsedName);
+  if (exactMatch) {
+    return { name: exactMatch, relation: parsed.relation, placement: parsed.placement };
+  }
+
+  // Older engine instructions use "the" as grammar even when it is not part
+  // of the source POI name. Only try that one controlled alternative after
+  // preserving the complete emitted name for exact correlation.
+  const articleStrippedName = parsed.name.replace(/^the\s+/i, '').trim();
+  const match = articleStrippedName === parsed.name
+    ? undefined
+    : names.find((name) => normalizeNarrationText(name) === normalizeNarrationText(articleStrippedName));
+  return match ? { name: match, relation: parsed.relation, placement: parsed.placement } : null;
 }
 
 export function narrationPoiKey(item: NarrationPoiIdentity): string {

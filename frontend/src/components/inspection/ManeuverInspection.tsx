@@ -1,4 +1,5 @@
 import type { OsrmRouteResponse, OsrmStep, ValhallaRouteResponse } from '../../types';
+import { parseOsrmLandmarkInstruction } from '../../narration';
 import type { ManeuverView, NarrationPoiEvidence, NearbyPoi, OsrmPassByEventView, OsrmPassByLandmark, OsrmStepView } from './viewModels';
 
 const NEARBY_POI_RADIUS_M = 100;
@@ -102,6 +103,7 @@ export function ManeuverInspection({
           <ol className="maneuver-list osrm-maneuver-list">
             {osrmStepViews.map((item) => {
               const poiNames = osrmPoiNamesByStep.get(item.index) ?? [];
+              const landmark = parseOsrmLandmarkInstruction(osrmInstructionText(item.step));
   
               return (
                 <li
@@ -114,6 +116,7 @@ export function ManeuverInspection({
                     onClick={() => focusOsrmStep(item)}
                   >
                     <strong>{osrmInstructionText(item.step)}</strong>
+                    {landmark && <span className={`narration-mini-badge landmark-${landmark.relation}`}>{landmark.relation.toUpperCase()}{landmark.placement === 'prefix' ? ' · PREFIX' : ''}</span>}
   
                     {poiNames.length > 0 && (
                       <span className="narration-mini-badge osrm">
@@ -186,6 +189,10 @@ export function ManeuverInspection({
           <div className="selected-maneuver-summary selected-osrm-summary">
             <strong>OSRM step #{selectedOsrmStep.index + 1}</strong>
             <span>{osrmInstructionText(selectedOsrmStep.step)}</span>
+            {(() => {
+              const landmark = parseOsrmLandmarkInstruction(osrmInstructionText(selectedOsrmStep.step));
+              return landmark ? <b className={`guidance-kind-badge ${landmark.relation}`}>{landmark.relation.toUpperCase()}{landmark.placement === 'prefix' ? ' · PREFIX' : ''}</b> : null;
+            })()}
             <code>{selectedOsrmStep.step.maneuver?.type ?? 'maneuver'}{selectedOsrmStep.step.maneuver?.modifier ? ` / ${selectedOsrmStep.step.maneuver.modifier}` : ''}</code>
             <small>Leg {selectedOsrmStep.legIndex + 1} · leg step {selectedOsrmStep.stepIndex + 1}{typeof selectedOsrmStep.step.distance === 'number' ? ` · ${selectedOsrmStep.step.distance.toFixed(1)} m` : ''}{typeof selectedOsrmStep.step.duration === 'number' ? ` · ${selectedOsrmStep.step.duration.toFixed(1)} s` : ''}</small>
             {selectedOsrmStep.coordinate && <small>{selectedOsrmStep.coordinate[1].toFixed(6)}, {selectedOsrmStep.coordinate[0].toFixed(6)}</small>}

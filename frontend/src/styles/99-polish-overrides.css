@@ -151,6 +151,73 @@ summary:focus-visible,
 .scenario-message, .scenario-warning { border-radius: 7px; padding: 8px 10px; }
 .empty-state { line-height: 1.5; }
 
+.testcase-library { display: grid; gap: 10px; min-width: 0; }
+.testcase-library .testcase-tabs { display: grid; grid-template-columns: repeat(3, 1fr); }
+.testcase-library .testcase-tabs button { min-width: 0; padding-inline: 4px; }
+.testcase-library__section, .testcase-card-list { display: grid; gap: 7px; min-width: 0; }
+.testcase-library__summary { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; }
+.testcase-library__summary strong { font-size: 12px; }
+.testcase-library__summary span { color: var(--text-muted); font-size: 10px; text-align: right; }
+.testcase-card-list { max-height: none; }
+.testcase-card { display: grid; gap: 5px; min-width: 0; padding: 8px; border: 1px solid var(--border); border-radius: 8px; background: white; }
+.testcase-card > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 6px; }
+.testcase-card > header strong { overflow-wrap: anywhere; font-size: 13px; line-height: 1.3; }
+.testcase-card > small { color: var(--text-muted); font-size: 10px; line-height: 1.4; }
+.testcase-card .visibility-badge { font-size: 9px; }
+.testcase-card .testcase-dataset-warning { font-size: 10px; line-height: 1.4; }
+.testcase-description-preview { display: -webkit-box; overflow: hidden; margin: 0; color: var(--text-secondary); font-size: 11px; line-height: 1.45; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.testcase-run-status { flex: none; border-radius: 999px; padding: 3px 6px; background: var(--surface-subtle); color: var(--text-muted); font-size: 9px; line-height: 1.2; font-weight: 800; text-transform: uppercase; }
+.testcase-run-status.status-pass { background: var(--success-soft); color: #067647; }
+.testcase-run-status.status-fail, .testcase-run-status.status-error { background: var(--danger-soft); color: var(--danger); }
+.testcase-run-status.status-not-evaluated { background: var(--warning-soft); color: #9a6700; }
+.testcase-card__actions { display: flex; align-items: center; gap: 4px; }
+.testcase-card__actions > button, .testcase-card__actions summary { min-height: 28px; border: 1px solid var(--border-strong); border-radius: 6px; padding: 5px 8px; background: white; color: var(--text-secondary); font-size: 10px; font-weight: 700; cursor: pointer; list-style: none; }
+.testcase-card__details { position: static; width: 100%; font-size: 11px; }
+.testcase-card__details > summary { width: fit-content; color: var(--text-secondary); font-size: 11px; font-weight: 700; cursor: pointer; }
+.testcase-card__details[open] > summary { width: fit-content; }
+.testcase-detail-body { display: grid; gap: 6px; margin-top: 6px; padding: 7px; border-radius: 6px; background: var(--surface-subtle); }
+.testcase-detail-body p, .testcase-detail-body dl { margin: 0; font-size: 11px; line-height: 1.5; }
+.testcase-detail-body dl { display: grid; gap: 4px; }
+.testcase-detail-body dl > div { display: grid; grid-template-columns: 52px minmax(0, 1fr); gap: 5px; }
+.testcase-detail-body dt { color: var(--text-muted); font-weight: 700; }
+.testcase-detail-body dd { margin: 0; overflow-wrap: anywhere; }
+.testcase-more-actions { position: relative; margin-left: auto; }
+.testcase-more-actions > summary { min-width: 28px; text-align: center; }
+.testcase-more-actions > div { position: absolute; right: 0; z-index: 5; display: grid; width: 120px; gap: 3px; margin-top: 3px; padding: 5px; border: 1px solid var(--border); border-radius: 7px; background: white; box-shadow: var(--shadow-panel); }
+.testcase-more-actions button { border: 0; padding: 7px; background: transparent; font-size: 10px; text-align: left; }
+.testcase-library .testcase-search button,
+.testcase-library .testcase-pagination button { font-size: 10px; }
+.testcase-library .empty-state,
+.testcase-library .scenario-message,
+.testcase-library .scenario-warning { font-size: 11px; }
+
+.testcase-editor { display: grid; gap: 14px; max-width: 1120px; }
+.testcase-editor__header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
+.testcase-editor__header h2 { margin: 0 0 3px; font-size: 15px; }
+.testcase-editor__header p { margin: 0; color: var(--text-muted); font-size: 10px; }
+.edit-mode-badge { border-radius: 999px; padding: 4px 8px; background: var(--accent-soft); color: var(--accent-hover); font-size: 9px; font-weight: 800; }
+.testcase-editor__grid { display: grid; grid-template-columns: minmax(0, 2fr) minmax(230px, 1fr); gap: 18px; }
+.testcase-editor__main, .testcase-editor__context, .testcase-expectations { display: grid; align-content: start; gap: 11px; }
+.testcase-editor label { display: grid; gap: 5px; color: var(--text-secondary); font-size: 10px; font-weight: 700; }
+.testcase-editor label > span { display: flex; justify-content: space-between; gap: 8px; }
+.testcase-editor label small { color: var(--text-muted); font-weight: 500; }
+.testcase-editor input, .testcase-editor textarea, .testcase-editor select { width: 100%; border: 1px solid var(--border-strong); border-radius: 7px; padding: 8px 9px; background: white; color: var(--text); font: inherit; font-size: 11px; }
+.testcase-editor textarea { min-height: 88px; resize: vertical; }
+.testcase-expectations { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.testcase-editor__context { padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-subtle); }
+.testcase-editor__context > div { display: grid; gap: 3px; }
+.testcase-editor__context span { color: var(--text-muted); font-size: 9px; font-weight: 700; }
+.testcase-editor__context strong, .testcase-editor__context code { overflow-wrap: anywhere; font-size: 10px; }
+.testcase-editor__context small { color: var(--text-muted); font-size: 8px; }
+.testcase-route-warning { color: #9a6700 !important; font-weight: 700; }
+.testcase-editor__actions { display: flex; align-items: center; gap: 7px; padding-top: 10px; border-top: 1px solid var(--border); }
+.testcase-editor__actions button { min-height: 32px; border: 1px solid var(--border-strong); border-radius: 7px; padding: 7px 12px; background: white; color: var(--text-secondary); font-size: 10px; font-weight: 700; }
+.testcase-editor__actions .route-button { border-color: var(--accent); background: var(--accent); color: white; }
+
+@media (max-width: 760px) {
+  .testcase-editor__grid, .testcase-expectations { grid-template-columns: 1fr; }
+}
+
 .route-comparison-overlay,
 .route-narration-overlay,
 .landmark-map-legend { border-color: rgba(100,116,139,.35); box-shadow: var(--shadow-panel); backdrop-filter: blur(8px); }

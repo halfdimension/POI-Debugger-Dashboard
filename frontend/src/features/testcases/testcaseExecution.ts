@@ -1,5 +1,6 @@
 import type { ScenarioRunResult, ScenarioRunStatus } from '../../scenarioAssertions';
-import type { LngLat, RouteScenario } from '../../types';
+import { evaluateScenario } from '../../scenarioAssertions';
+import type { CompareRouteResponse, LngLat, RouteScenario } from '../../types';
 
 export interface TestcaseRoutePoints {
   routeStart: LngLat;
@@ -35,6 +36,42 @@ export function testcaseErrorResult(
   };
 }
 
+export function testcaseNotEvaluatedResult(
+  reason: string,
+  checkedAt = new Date().toISOString(),
+): ScenarioRunResult {
+  return {
+    status: 'not-evaluated',
+    checkedAt,
+    actualInstructions: [],
+    matchedInstructions: [],
+    failures: [],
+    error: reason,
+  };
+}
+
+export function evaluateTestcaseRouteOutcome(
+  scenario: RouteScenario,
+  outcome: CompareRouteResponse | null,
+  checkedAt = new Date().toISOString(),
+): ScenarioRunResult {
+  const valhallaResponse = outcome?.valhalla.ok ? outcome.valhalla.response : undefined;
+  const osrmResponse = outcome?.osrm.ok ? outcome.osrm.response : undefined;
+  const hasUsableValhallaRoute = Boolean(valhallaResponse?.trip?.legs?.length);
+  const hasUsableOsrmRoute = osrmResponse?.code === 'Ok' && Boolean(osrmResponse.routes?.length);
+
+  if (hasUsableValhallaRoute && valhallaResponse) {
+    return evaluateScenario(scenario, valhallaResponse, checkedAt);
+  }
+  if (hasUsableOsrmRoute) {
+    return testcaseNotEvaluatedResult(
+      `OSRM completed, but the Valhalla/Odin assertion was not evaluated: ${outcome?.valhalla.error ?? 'Valhalla did not provide a usable route response'}.`,
+      checkedAt,
+    );
+  }
+  return testcaseErrorResult('Neither routing engine provided a usable route response.', checkedAt);
+}
+
 export function testcaseResultMessage(
   scenarioName: string,
   status: ScenarioRunStatus,
@@ -43,7 +80,11 @@ export function testcaseResultMessage(
     ? 'PASS'
     : status === 'fail'
       ? 'FAIL'
-      : 'route ran; no expectation configured';
+      : status === 'not-evaluated'
+        ? 'route ran; Valhalla assertion not evaluated'
+        : status === 'error'
+          ? 'ERROR'
+          : 'route ran; no expectation configured';
   return `${scenarioName}: ${label}.`;
 }
 
@@ -52,8 +93,9 @@ export function runAllResultMessage(results: ScenarioRunResult[]): string {
     pass: 0,
     fail: 0,
     'no-expectation': 0,
+    'not-evaluated': 0,
     error: 0,
   };
   for (const result of results) counts[result.status] += 1;
-  return `Run all complete: ${counts.pass} PASS · ${counts.fail} FAIL · ${counts['no-expectation']} NO EXPECTATION · ${counts.error} ERROR.`;
+  return `Run all complete: ${counts.pass} PASS · ${counts.fail} FAIL · ${counts['no-expectation']} NO EXPECTATION · ${counts['not-evaluated']} NOT EVALUATED · ${counts.error} ERROR.`;
 }

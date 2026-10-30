@@ -4,6 +4,7 @@ export type ScenarioRunStatus =
   | 'pass'
   | 'fail'
   | 'no-expectation'
+  | 'not-evaluated'
   | 'error';
 
 export interface ScenarioRunResult {

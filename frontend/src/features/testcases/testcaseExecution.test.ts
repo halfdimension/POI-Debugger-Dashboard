@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { RouteScenario } from '../../types';
 import {
+  evaluateTestcaseRouteOutcome,
   runAllResultMessage,
   testcaseDatasetMismatchMessage,
   testcaseErrorResult,
+  testcaseNotEvaluatedResult,
   testcaseResultMessage,
   testcaseRoutePoints,
 } from './testcaseExecution';
@@ -51,11 +53,39 @@ describe('testcase execution helpers', () => {
     expect(testcaseResultMessage('Landmark route', 'no-expectation')).toBe(
       'Landmark route: route ran; no expectation configured.',
     );
+    expect(testcaseResultMessage('Landmark route', 'not-evaluated')).toBe(
+      'Landmark route: route ran; Valhalla assertion not evaluated.',
+    );
+    expect(testcaseResultMessage('Landmark route', 'error')).toBe('Landmark route: ERROR.');
     expect(runAllResultMessage([
       testcaseErrorResult('failed', 'now'),
       { ...testcaseErrorResult('', 'now'), status: 'pass' },
       { ...testcaseErrorResult('', 'now'), status: 'fail' },
       { ...testcaseErrorResult('', 'now'), status: 'no-expectation' },
-    ])).toBe('Run all complete: 1 PASS · 1 FAIL · 1 NO EXPECTATION · 1 ERROR.');
+      testcaseNotEvaluatedResult('Valhalla unavailable', 'now'),
+    ])).toBe('Run all complete: 1 PASS · 1 FAIL · 1 NO EXPECTATION · 1 NOT EVALUATED · 1 ERROR.');
+  });
+
+  it('classifies only usable engine responses', () => {
+    const valhalla = evaluateTestcaseRouteOutcome(scenario, {
+      valhalla: { ok: true, response: { trip: { legs: [{}] } } },
+      osrm: { ok: false, error: 'offline' },
+    }, 'now');
+    expect(valhalla.status).toBe('no-expectation');
+
+    const osrmOnly = evaluateTestcaseRouteOutcome(scenario, {
+      valhalla: { ok: false, error: 'offline' },
+      osrm: { ok: true, response: { code: 'Ok', routes: [{}] } },
+    }, 'now');
+    expect(osrmOnly).toMatchObject({ status: 'not-evaluated', error: expect.stringContaining('OSRM completed') });
+
+    const unusable = evaluateTestcaseRouteOutcome(scenario, {
+      valhalla: { ok: false, error: 'offline' },
+      osrm: { ok: true, response: { code: 'Error', routes: [] } },
+    }, 'now');
+    expect(unusable).toMatchObject({
+      status: 'error',
+      error: 'Neither routing engine provided a usable route response.',
+    });
   });
 });

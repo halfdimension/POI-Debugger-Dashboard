@@ -1,9 +1,10 @@
 import { useState, type Dispatch, type SetStateAction } from 'react';
 import { createScenario, deleteScenario, getScenarios, updateScenario } from '../../api';
-import { evaluateScenario, type ScenarioRunResult } from '../../scenarioAssertions';
-import type { LngLat, RouteScenario, ScenarioRegistryResponse, ValhallaRouteResponse } from '../../types';
+import type { ScenarioRunResult } from '../../scenarioAssertions';
+import type { CompareRouteResponse, LngLat, RouteScenario, ScenarioRegistryResponse } from '../../types';
 import {
   runAllResultMessage,
+  evaluateTestcaseRouteOutcome,
   testcaseDatasetMismatchMessage,
   testcaseErrorResult,
   testcaseResultMessage,
@@ -24,7 +25,7 @@ interface TestcaseManagementOptions {
     routeStart: LngLat,
     routeEnd: LngLat,
     costing: string,
-  ) => Promise<ValhallaRouteResponse | null>;
+  ) => Promise<CompareRouteResponse | null>;
 }
 
 export interface TestcaseManagement {
@@ -50,11 +51,19 @@ export interface TestcaseManagement {
   message: string;
   runAllBusy: boolean;
   runResults: Record<string, ScenarioRunResult>;
+  editingScenario: RouteScenario | null;
+  editorDataset: string;
+  editorStart: LngLat | null;
+  editorEnd: LngLat | null;
+  routeReplaced: boolean;
   browse: (scope: TestcaseScope, query: string, offset: number) => Promise<void>;
   saveCurrent: () => Promise<void>;
   load: (scenario: RouteScenario) => void;
   run: (scenario: RouteScenario) => Promise<ScenarioRunResult | null>;
-  edit: (scenario: RouteScenario) => Promise<void>;
+  edit: (scenario: RouteScenario) => boolean;
+  useCurrentRoute: () => void;
+  cancelEdit: () => void;
+  resetEditor: () => void;
   changeVisibility: (scenario: RouteScenario) => Promise<void>;
   remove: (scenario: RouteScenario) => Promise<void>;
   runAll: () => Promise<void>;
@@ -81,6 +90,45 @@ export function useTestcaseManagement({
   const [forbiddenText, setForbiddenText] = useState('');
   const [runResults, setRunResults] = useState<Record<string, ScenarioRunResult>>({});
   const [runAllBusy, setRunAllBusy] = useState(false);
+  const [editingScenario, setEditingScenario] = useState<RouteScenario | null>(null);
+  const [routeReplaced, setRouteReplaced] = useState(false);
+
+  const hasDraft = Boolean(name.trim() || notes.trim() || expectedText.trim() || forbiddenText.trim() || visibility !== 'private');
+  const editorDirty = editingScenario
+    ? name !== editingScenario.name
+      || notes !== (editingScenario.description ?? editingScenario.notes ?? '')
+      || visibility !== (editingScenario.visibility ?? 'private')
+      || expectedText !== (editingScenario.expectation?.instruction_contains ?? editingScenario.expectation?.landmark_name ?? '')
+      || forbiddenText !== (editingScenario.expectation?.instruction_not_contains ?? '')
+      || routeReplaced
+    : hasDraft;
+  const savedStart: LngLat | null = editingScenario
+    ? [editingScenario.request.start.lon, editingScenario.request.start.lat]
+    : null;
+  const savedEnd: LngLat | null = editingScenario
+    ? [editingScenario.request.end.lon, editingScenario.request.end.lat]
+    : null;
+  const editorStart = editingScenario && !routeReplaced ? savedStart : start;
+  const editorEnd = editingScenario && !routeReplaced ? savedEnd : end;
+  const editorDataset = editingScenario && !routeReplaced
+    ? editingScenario.dataset
+    : activeDatasetId ?? 'default';
+
+  function clearEditor(): void {
+    setEditingScenario(null);
+    setRouteReplaced(false);
+    setName('');
+    setNotes('');
+    setVisibility('private');
+    setExpectedText('');
+    setForbiddenText('');
+    setMessage('');
+  }
+
+  function resetEditor(): void {
+    if (editorDirty && !window.confirm('Reset the testcase form and discard the unsaved changes?')) return;
+    clearEditor();
+  }
 
   async function refresh(nextMessage = ''): Promise<void> {
     const nextRegistry = await getScenarios({
@@ -128,65 +176,36 @@ export function useTestcaseManagement({
 
     const { routeStart, routeEnd } = testcaseRoutePoints(scenario);
     setMessage(`Running ${scenario.name}.`);
-    const response = await executeRoute(routeStart, routeEnd, scenario.request.costing || 'auto');
-    if (!response) {
-      const result = testcaseErrorResult('Route request failed.');
-      setRunResults((previous) => ({ ...previous, [scenario.id]: result }));
-      return result;
-    }
-
-    const result = evaluateScenario(scenario, response);
+    const outcome = await executeRoute(routeStart, routeEnd, scenario.request.costing || 'auto');
+    const result = evaluateTestcaseRouteOutcome(scenario, outcome);
     setRunResults((previous) => ({ ...previous, [scenario.id]: result }));
     setMessage(testcaseResultMessage(scenario.name, result.status));
     return result;
   }
 
-  async function edit(scenario: RouteScenario): Promise<void> {
-    const nextName = window.prompt('Testcase name.', scenario.name);
-    if (nextName === null || !nextName.trim()) return;
-    const description = window.prompt('Testcase description.', scenario.description ?? '');
-    if (description === null) return;
-    const currentContains = scenario.expectation?.instruction_contains ?? scenario.expectation?.landmark_name ?? '';
-    const contains = window.prompt('Expected Odin text / landmark name. Leave blank for no positive assertion.', currentContains);
-    if (contains === null) return;
-    const currentForbidden = scenario.expectation?.instruction_not_contains ?? '';
-    const forbidden = window.prompt('Forbidden Odin text. Leave blank if not needed.', currentForbidden);
-    if (forbidden === null) return;
-    const replaceRoute = Boolean(start && end && window.confirm('Replace the saved route and dataset with the current dashboard configuration?'));
-
-    setBusy(true);
+  function edit(scenario: RouteScenario): boolean {
+    if (editorDirty && !window.confirm('Discard the current unsaved testcase draft and edit this testcase?')) return false;
+    setEditingScenario(scenario);
+    setRouteReplaced(false);
+    setName(scenario.name);
+    setNotes(scenario.description ?? scenario.notes ?? '');
+    setVisibility(scenario.visibility ?? 'private');
+    setExpectedText(scenario.expectation?.instruction_contains ?? scenario.expectation?.landmark_name ?? '');
+    setForbiddenText(scenario.expectation?.instruction_not_contains ?? '');
+    setMessage(`Editing ${scenario.name}. Saved coordinates and dataset are preserved.`);
     onError('');
-    try {
-      await updateScenario(scenario.id, {
-        revision: scenario.revision,
-        name: nextName.trim(),
-        description: description.trim(),
-        ...(replaceRoute && start && end ? {
-          dataset: activeDatasetId ?? scenario.dataset,
-          request: {
-            start: { lon: start[0], lat: start[1] },
-            end: { lon: end[0], lat: end[1] },
-            costing: 'auto',
-          },
-        } : {}),
-        expectation: {
-          landmark_name: contains.trim(),
-          instruction_contains: contains.trim(),
-          instruction_not_contains: forbidden.trim(),
-          case_sensitive: false,
-        },
-      });
-      setRunResults((previous) => {
-        const next = { ...previous };
-        delete next[scenario.id];
-        return next;
-      });
-      await refresh(`Updated testcase ${nextName.trim()}.`);
-    } catch (error) {
-      onError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setBusy(false);
-    }
+    return true;
+  }
+
+  function useCurrentRoute(): void {
+    if (!editingScenario || !start || !end) return;
+    setRouteReplaced(true);
+    setMessage('The current dashboard route and dataset will replace the saved route when changes are saved.');
+  }
+
+  function cancelEdit(): void {
+    if (editorDirty && !window.confirm('Cancel editing and discard the unsaved changes?')) return;
+    clearEditor();
   }
 
   async function runAll(): Promise<void> {
@@ -212,7 +231,7 @@ export function useTestcaseManagement({
   }
 
   async function saveCurrent(): Promise<void> {
-    if (!start || !end) {
+    if (!editorStart || !editorEnd) {
       onError('Set both start and end coordinates before saving a scenario.');
       return;
     }
@@ -225,14 +244,14 @@ export function useTestcaseManagement({
     onError('');
     setMessage('');
     try {
-      const created = await createScenario({
+      const payload = {
         name: name.trim(),
         visibility,
-        dataset: activeDatasetId ?? 'default',
+        dataset: editorDataset,
         request: {
-          start: { lon: start[0], lat: start[1] },
-          end: { lon: end[0], lat: end[1] },
-          costing: 'auto',
+          start: { lon: editorStart[0], lat: editorStart[1] },
+          end: { lon: editorEnd[0], lat: editorEnd[1] },
+          costing: editingScenario?.request.costing || 'auto',
         },
         description: notes.trim(),
         expectation: {
@@ -241,13 +260,24 @@ export function useTestcaseManagement({
           instruction_not_contains: forbiddenText.trim(),
           case_sensitive: false,
         },
-      });
-      setName('');
-      setNotes('');
-      setExpectedText('');
-      setForbiddenText('');
-      setVisibility('private');
-      await refresh(`Saved scenario ${created.name}.`);
+      };
+      if (editingScenario) {
+        const updated = await updateScenario(editingScenario.id, {
+          revision: editingScenario.revision,
+          ...payload,
+        });
+        setRunResults((previous) => {
+          const next = { ...previous };
+          delete next[editingScenario.id];
+          return next;
+        });
+        clearEditor();
+        await refresh(`Updated testcase ${updated.name}.`);
+      } else {
+        const created = await createScenario(payload);
+        clearEditor();
+        await refresh(`Saved testcase ${created.name}.`);
+      }
     } catch (error) {
       onError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -260,10 +290,15 @@ export function useTestcaseManagement({
     setBusy(true);
     onError('');
     try {
-      await updateScenario(scenario.id, {
+      const updated = await updateScenario(scenario.id, {
         revision: scenario.revision,
         visibility: nextVisibility,
       });
+      if (editingScenario?.id === scenario.id) {
+        const editorVisibilityWasUnchanged = visibility === (editingScenario.visibility ?? 'private');
+        setEditingScenario(updated);
+        if (editorVisibilityWasUnchanged) setVisibility(updated.visibility ?? nextVisibility);
+      }
       await refresh(`${scenario.name} is now ${nextVisibility}.`);
     } catch (error) {
       onError(error instanceof Error ? error.message : String(error));
@@ -273,12 +308,15 @@ export function useTestcaseManagement({
   }
 
   async function remove(scenario: RouteScenario): Promise<void> {
-    if (!window.confirm(`Delete saved scenario "${scenario.name}"?`)) return;
+    const discardsOpenDraft = editingScenario?.id === scenario.id && editorDirty;
+    const warning = discardsOpenDraft ? '\n\nThis will also discard unsaved changes in the open editor.' : '';
+    if (!window.confirm(`Delete saved scenario "${scenario.name}"?${warning}`)) return;
     setBusy(true);
     onError('');
     setMessage('');
     try {
       await deleteScenario(scenario.id);
+      if (editingScenario?.id === scenario.id) clearEditor();
       await refresh(`Deleted scenario ${scenario.name}.`);
     } catch (error) {
       onError(error instanceof Error ? error.message : String(error));
@@ -310,11 +348,19 @@ export function useTestcaseManagement({
     message,
     runAllBusy,
     runResults,
+    editingScenario,
+    editorDataset,
+    editorStart,
+    editorEnd,
+    routeReplaced,
     browse,
     saveCurrent,
     load,
     run,
     edit,
+    useCurrentRoute,
+    cancelEdit,
+    resetEditor,
     changeVisibility,
     remove,
     runAll,

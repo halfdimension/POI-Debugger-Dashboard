@@ -50,10 +50,9 @@ import { TURN_COVERAGE_3D_LAYER_ID, TurnCoverageCustomLayer } from './components
 import { TurnCoveragePoiHalo } from './components/map/TurnCoveragePoiHalo';
 import { RouteSetupControls } from './components/route/RouteSetupControls';
 import { RouteComparisonSummary } from './components/route/RouteComparisonSummary';
-import { SavedScenarioControls } from './components/scenarios/SavedScenarioControls';
-import { TestcaseManagementSections } from './components/scenarios/TestcaseManagementSections';
+import { TestcaseLibrary, TestcaseManagementSections } from './components/scenarios/TestcaseManagementSections';
 import { testcaseRoutePoints } from './features/testcases/testcaseExecution';
-import { useTestcaseManagement, type TestcaseTab } from './features/testcases/useTestcaseManagement';
+import { useTestcaseManagement } from './features/testcases/useTestcaseManagement';
 import {
   initialDashboardLayout,
   selectAnalysisTab,
@@ -68,7 +67,7 @@ import {
   normalizeNarrationText,
   osrmInstructionText,
 } from './narration';
-import type { CandidateAnalysis, CandidateAnalysisManeuver, DatasetRegistryResponse, DatasetSummary, DebuggerConfig, LngLat, OsrmRouteResponse, RouteScenario, UserPreferencesPatch, ValhallaRouteResponse } from './types';
+import type { CandidateAnalysis, CandidateAnalysisManeuver, CompareRouteResponse, DatasetRegistryResponse, DatasetSummary, DebuggerConfig, EngineRouteResult, LngLat, OsrmRouteResponse, RouteScenario, UserPreferencesPatch, ValhallaRouteResponse } from './types';
 import { useVerticalPanelResize } from './useVerticalPanelResize';
 import { buildTurnOccurrences, classifyCoveragePoi, offsetLngLat, TURN_COVERAGE_RADIUS_M, TURN_OPPOSITE_COVERAGE_RADIUS_M, type CoveragePoi, type TurnOccurrence } from './turnPoiCoverage';
 
@@ -88,6 +87,17 @@ const NARRATION_POI_MAX_DISTANCE_M = 500;
 const SEARCH_POI_LIMIT = 50;
 const ANALYSIS_HEIGHT_STORAGE_KEY = 'poi-dashboard.analysis-height';
 const DEFAULT_ANALYSIS_HEIGHT = 300;
+
+type EngineConnectivityStatus = 'checking' | 'up' | 'down';
+
+function engineConnectivityAfterRoute<T>(
+  result: EngineRouteResult<T>,
+  current: EngineConnectivityStatus,
+): EngineConnectivityStatus {
+  if (result.ok || result.status_code !== undefined || result.response !== undefined) return 'up';
+  if (result.error?.startsWith('Cannot reach ')) return 'down';
+  return current;
+}
 
 function storedAnalysisHeight(): number {
   try {
@@ -275,7 +285,8 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
   const [routePoiCardCollapsed, setRoutePoiCardCollapsed] = useState(true);
   const [layout, setLayout] = useState(initialDashboardLayout);
   const [preferredAnalysisHeight, setPreferredAnalysisHeight] = useState(storedAnalysisHeight);
-  const [inspectorTab, setInspectorTab] = useState<'inspect' | 'route'>('route');
+  const [inspectorTab, setInspectorTab] = useState<'inspect' | 'route' | 'testcases'>('route');
+  const [engineRouteOutcomes, setEngineRouteOutcomes] = useState<CompareRouteResponse | null>(null);
   const [map3D, setMap3D] = useState(false);
   const [showCandidateMap, setShowCandidateMap] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -365,14 +376,14 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
     setLayout((current) => togglePanel(current, panel));
   };
 
-  const openInspector = (tab: 'inspect' | 'route') => {
+  const openInspector = (tab: 'inspect' | 'route' | 'testcases') => {
     setInspectorTab(tab);
     setLayout((current) => ({ ...current, rightCollapsed: false }));
   };
 
-  const openTestcases = (tab: TestcaseTab) => {
-    testcases.setActiveTab(tab);
-    setLayout((current) => selectAnalysisTab(current, 'scenarios'));
+  const editTestcase = (scenario: RouteScenario) => {
+    if (!testcases.edit(scenario)) return;
+    setLayout((current) => ({ ...selectAnalysisTab(current, 'scenarios'), analysisCollapsed: false }));
   };
 
   useEffect(() => {
@@ -2260,7 +2271,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
     }
   }
 
-  async function executeRoute(routeStart: LngLat, routeEnd: LngLat, costing = 'auto'): Promise<ValhallaRouteResponse | null> {
+  async function executeRoute(routeStart: LngLat, routeEnd: LngLat, costing = 'auto'): Promise<CompareRouteResponse | null> {
     const datasetId = activeDatasetIdRef.current;
     if (!datasetId) return null;
     routeRequestRef.current?.abort();
@@ -2281,6 +2292,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
     closeActivePoiPopup();
     setValhallaCandidateAnalysis(null);
     setOsrmCandidateAnalysis(null);
+    setEngineRouteOutcomes(null);
     setShowCandidateMap(false);
 
     syncGeoJsonSource(
@@ -2307,6 +2319,9 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
 
       const comparison = await requestCompareRoute(payload, controller.signal);
       if (controller.signal.aborted || activeDatasetIdRef.current !== datasetId) return null;
+      setEngineRouteOutcomes(comparison);
+      setValhallaStatus((current) => engineConnectivityAfterRoute(comparison.valhalla, current));
+      setOsrmStatus((current) => engineConnectivityAfterRoute(comparison.osrm, current));
 
       const valhallaResponse =
         comparison.valhalla.ok
@@ -2422,12 +2437,11 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
         );
       }
 
-      if (engineErrors.length > 0) {
+      if (!comparison.valhalla.ok && !comparison.osrm.ok) {
         setError(engineErrors.join('\n'));
       }
 
-      // Existing scenario assertions are still Odin/Valhalla assertions.
-      return valhallaResponse;
+      return comparison;
     } catch (err) {
       if (controller.signal.aborted) return null;
       setRoute(null);
@@ -2436,6 +2450,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
       setOsrmRouteGeoJson(EMPTY_FC);
       setValhallaCandidateAnalysis(null);
       setOsrmCandidateAnalysis(null);
+      setEngineRouteOutcomes(null);
       setError(err instanceof Error ? err.message : String(err));
       return null;
     } finally {
@@ -2465,6 +2480,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
     setOsrmRouteGeoJson(EMPTY_FC);
     setValhallaCandidateAnalysis(null);
     setOsrmCandidateAnalysis(null);
+    setEngineRouteOutcomes(null);
     setSelectedManeuverIndex(null);
     setSelectedOsrmStepIndex(null);
     setSelectedOsrmPassByKey(null);
@@ -2488,7 +2504,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
     routeStart: LngLat,
     routeEnd: LngLat,
     costing: string,
-  ): Promise<ValhallaRouteResponse | null> {
+  ): Promise<CompareRouteResponse | null> {
     setStart(routeStart);
     setEnd(routeEnd);
     return executeRoute(routeStart, routeEnd, costing);
@@ -3076,12 +3092,6 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
             onRetrySearch={() => setSearchRetry((value) => value + 1)}
           />
 
-          <SavedScenarioControls
-            mineCount={testcases.registry?.total ?? 0}
-            sharedCount={testcases.registry?.shared_total ?? 0}
-            legacyCount={testcases.registry?.legacy_scenarios?.length ?? 0}
-            onOpen={openTestcases}
-          />
         </Sidebar>
 
         <section className="map-section">
@@ -3554,6 +3564,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
           <div className="inspector-tabs" role="tablist" aria-label="Inspector context">
             <button type="button" role="tab" aria-selected={inspectorTab === 'inspect'} className={inspectorTab === 'inspect' ? 'is-active' : ''} onClick={() => setInspectorTab('inspect')}>Inspect</button>
             <button type="button" role="tab" aria-selected={inspectorTab === 'route'} className={inspectorTab === 'route' ? 'is-active' : ''} onClick={() => setInspectorTab('route')}>Route</button>
+            <button type="button" role="tab" aria-selected={inspectorTab === 'testcases'} className={inspectorTab === 'testcases' ? 'is-active' : ''} onClick={() => setInspectorTab('testcases')}>Testcases</button>
           </div>
 
           <div className="inspector-content" role="tabpanel">
@@ -3630,8 +3641,35 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
               <div className="kv"><span>Valhalla</span><code>{config.valhalla.service_url}</code></div>
               <div className="kv"><span>OSRM</span><code>{config.osrm.service_url}</code></div>
               <div className="kv"><span>Dataset</span><code>{datasetRegistry?.active_dataset ?? config.active_dataset ?? 'default'}</code></div>
+              {engineRouteOutcomes && <>
+                <div className="kv"><span>Valhalla outcome</span><code>{engineRouteOutcomes.valhalla.ok ? 'Available' : engineRouteOutcomes.valhalla.error ?? 'Unavailable'}</code></div>
+                <div className="kv"><span>OSRM outcome</span><code>{engineRouteOutcomes.osrm.ok ? 'Available' : engineRouteOutcomes.osrm.error ?? 'Unavailable'}</code></div>
+              </>}
             </details>
           </>}
+
+          {inspectorTab === 'testcases' && <TestcaseLibrary
+            activeTab={testcases.activeTab}
+            onSelectTab={testcases.setActiveTab}
+            registry={testcases.registry}
+            activeDataset={datasetRegistry?.active_dataset ?? config.active_dataset ?? ''}
+            myQuery={testcases.myQuery}
+            sharedQuery={testcases.sharedQuery}
+            scenarioBusy={testcases.busy}
+            scenarioMessage={testcases.message}
+            runAllBusy={testcases.runAllBusy}
+            routeBusy={busy}
+            runResults={testcases.runResults}
+            setMyQuery={testcases.setMyQuery}
+            setSharedQuery={testcases.setSharedQuery}
+            onBrowse={testcases.browse}
+            onRunAll={testcases.runAll}
+            onLoad={testcases.load}
+            onRun={testcases.run}
+            onEdit={editTestcase}
+            onChangeVisibility={testcases.changeVisibility}
+            onDelete={testcases.remove}
+          />}
 
           </div>
         </Sidebar>
@@ -3666,39 +3704,30 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
             selectedOsrmAnalysis={selectedOsrmCandidateAnalysis}
             showCandidatesOnMap={showCandidateMap}
             testcaseWorkspace={<TestcaseManagementSections
-              activeTab={testcases.activeTab}
-              onSelectTab={testcases.setActiveTab}
-              registry={testcases.registry}
               activeDataset={datasetRegistry?.active_dataset ?? config.active_dataset ?? ''}
               start={start}
               end={end}
+              editingScenario={testcases.editingScenario}
+              editorDataset={testcases.editorDataset}
+              editorStart={testcases.editorStart}
+              editorEnd={testcases.editorEnd}
+              routeReplaced={testcases.routeReplaced}
               scenarioName={testcases.name}
               scenarioNotes={testcases.notes}
               scenarioVisibility={testcases.visibility}
               expectedText={testcases.expectedText}
               forbiddenText={testcases.forbiddenText}
-              myQuery={testcases.myQuery}
-              sharedQuery={testcases.sharedQuery}
               scenarioBusy={testcases.busy}
               scenarioMessage={testcases.message}
-              runAllBusy={testcases.runAllBusy}
-              routeBusy={busy}
-              runResults={testcases.runResults}
               setScenarioName={testcases.setName}
               setScenarioNotes={testcases.setNotes}
               setScenarioVisibility={testcases.setVisibility}
               setExpectedText={testcases.setExpectedText}
               setForbiddenText={testcases.setForbiddenText}
-              setMyQuery={testcases.setMyQuery}
-              setSharedQuery={testcases.setSharedQuery}
-              onBrowse={testcases.browse}
               onSave={testcases.saveCurrent}
-              onRunAll={testcases.runAll}
-              onLoad={testcases.load}
-              onRun={testcases.run}
-              onEditExpectation={testcases.edit}
-              onChangeVisibility={testcases.changeVisibility}
-              onDelete={testcases.remove}
+              onUseCurrentRoute={testcases.useCurrentRoute}
+              onCancelEdit={testcases.cancelEdit}
+              onReset={testcases.resetEditor}
             />}
             getOsrmInstruction={osrmInstructionText}
             onFocusManeuver={focusManeuver}

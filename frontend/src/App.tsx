@@ -47,6 +47,7 @@ import {
 } from './components/map/poiMap';
 import { PoiPopupController } from './components/map/poiPopup';
 import { TURN_COVERAGE_3D_LAYER_ID, TurnCoverageCustomLayer } from './components/map/TurnCoverageCustomLayer';
+import { TurnCoveragePoiHalo } from './components/map/TurnCoveragePoiHalo';
 import { RouteSetupControls } from './components/route/RouteSetupControls';
 import { RouteComparisonSummary } from './components/route/RouteComparisonSummary';
 import { SavedScenarioControls } from './components/scenarios/SavedScenarioControls';
@@ -195,6 +196,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
   ) => void) | null>(null);
   const passByFocusRef = useRef<((key: string) => void) | null>(null);
   const turnCoverageLayerRef = useRef(new TurnCoverageCustomLayer());
+  const turnCoveragePoiHaloRef = useRef<TurnCoveragePoiHalo | null>(null);
   const workspaceRef = useRef<HTMLElement | null>(null);
   const analysisWorkspaceRef = useRef<HTMLElement | null>(null);
 
@@ -1427,6 +1429,8 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
       zoom: config.frontend.default_zoom,
     });
     mapRef.current = map;
+    const turnCoveragePoiHalo = new TurnCoveragePoiHalo(map);
+    turnCoveragePoiHaloRef.current = turnCoveragePoiHalo;
     const sourceManager = createDashboardMapSourceManager(map);
     mapSourceManagerRef.current = sourceManager;
     map.addControl(new maplibregl.NavigationControl(), 'top-right');
@@ -1447,6 +1451,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
       if (!map.getLayer(TURN_COVERAGE_3D_LAYER_ID)) {
         map.addLayer(turnCoverageLayerRef.current);
       }
+      turnCoveragePoiHalo.syncStyle();
 
       if (!disposeDashboardMapEvents) disposeDashboardMapEvents = bindDashboardMapEvents(map, {
         onAggregateSelected: inspectAggregateFeature,
@@ -1511,6 +1516,10 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
       disposed = true;
       map.off('style.load', handleMapStyleLoad);
       disposeDashboardMapEvents?.();
+      turnCoveragePoiHalo.dispose();
+      if (turnCoveragePoiHaloRef.current === turnCoveragePoiHalo) {
+        turnCoveragePoiHaloRef.current = null;
+      }
       sourceManager.dispose();
       if (mapSourceManagerRef.current === sourceManager) {
         mapSourceManagerRef.current = null;
@@ -2039,6 +2048,7 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
       })),
     );
     syncGeoJsonSource('turn-poi-coverage-pois', { type: 'FeatureCollection', features: poiFeatures });
+    turnCoveragePoiHaloRef.current?.setEligiblePoiCount(poiFeatures.length);
     turnCoverageLayerRef.current.setTurns(displayed, map3D, turnCoverageRadiusM, turnOppositeCoverageRadiusM);
     const map = mapRef.current;
     if (map?.getLayer('turn-poi-coverage-footprint')) map.setLayoutProperty('turn-poi-coverage-footprint', 'visibility', !busy && displayed.length > 0 && !map3D ? 'visible' : 'none');

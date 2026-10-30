@@ -23,6 +23,7 @@ export interface DashboardMapLayerOptions {
 }
 
 export const POI_DENSITY_LAYER_ID = 'poi-density-heatmap';
+export const TURN_COVERAGE_POI_HALO_LAYER_ID = 'turn-poi-coverage-pois-halo';
 
 const POI_OVERLAY_LAYER_IDS = [
   'selected-poi',
@@ -498,6 +499,18 @@ export function registerDashboardMapLayers(
     paint: { 'circle-radius': 6, 'circle-color': '#ecfeff', 'circle-stroke-color': '#0891b2', 'circle-stroke-width': 3 },
   });
   map.addSource('turn-poi-coverage-pois', { type: 'geojson', data: EMPTY_FEATURE_COLLECTION });
+  map.addLayer({
+    id: TURN_COVERAGE_POI_HALO_LAYER_ID,
+    type: 'circle',
+    source: 'turn-poi-coverage-pois',
+    paint: {
+      'circle-radius': 9,
+      'circle-color': 'rgba(0,0,0,0)',
+      'circle-stroke-color': ['match', ['get', 'coverage_region'], 'opposite', '#f59e0b', '#06b6d4'],
+      'circle-stroke-width': 3,
+      'circle-stroke-opacity': 0,
+    },
+  });
   map.addLayer({
     id: 'turn-poi-coverage-pois',
     type: 'circle',

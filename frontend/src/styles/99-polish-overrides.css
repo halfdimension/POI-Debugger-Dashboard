@@ -155,7 +155,7 @@ summary:focus-visible,
 .route-narration-overlay,
 .landmark-map-legend { border-color: rgba(100,116,139,.35); box-shadow: var(--shadow-panel); backdrop-filter: blur(8px); }
 .route-comparison-overlay { top: 12px; right: 52px; width: min(300px, calc(50% - 34px)); max-height: calc(100% - 24px); overflow: auto; }
-.route-narration-overlay.dual-engine-pois { top: 12px; width: min(320px, calc(50% - 18px)); max-height: calc(100% - 72px); }
+.route-narration-overlay.dual-engine-pois { top: 47px; width: min(320px, calc(50% - 18px)); max-height: calc(100% - 107px); }
 .route-comparison-overlay.collapsed,
 .route-narration-overlay.dual-engine-pois.collapsed { width: auto; max-width: calc(100% - 80px); }
 .route-comparison-heading, .route-narration-overlay-heading { min-height: 36px; align-items: center; background: rgba(248,250,252,.88); }

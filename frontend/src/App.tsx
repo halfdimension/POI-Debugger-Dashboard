@@ -69,7 +69,7 @@ import {
 } from './narration';
 import type { CandidateAnalysis, CandidateAnalysisManeuver, DatasetRegistryResponse, DatasetSummary, DebuggerConfig, LngLat, OsrmRouteResponse, RouteScenario, UserPreferencesPatch, ValhallaRouteResponse } from './types';
 import { useVerticalPanelResize } from './useVerticalPanelResize';
-import { buildTurnOccurrences, classifyCoveragePoi, offsetLngLat, TURN_COVERAGE_RADIUS_M, type CoveragePoi, type TurnOccurrence } from './turnPoiCoverage';
+import { buildTurnOccurrences, classifyCoveragePoi, offsetLngLat, TURN_COVERAGE_RADIUS_M, TURN_OPPOSITE_COVERAGE_RADIUS_M, type CoveragePoi, type TurnOccurrence } from './turnPoiCoverage';
 
 declare const __VPD_MOCK_API__: boolean;
 
@@ -226,6 +226,12 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
   const [initializationAttempt, setInitializationAttempt] = useState(0);
   const [basemap, setBasemap] = useState<Basemap>('mapmyindia');
   const basemapRef = useRef<Basemap>('mapmyindia');
+  const [turnCoverageRadiusM, setTurnCoverageRadiusM] = useState(TURN_COVERAGE_RADIUS_M);
+  const [turnCoverageRadiusInput, setTurnCoverageRadiusInput] = useState(String(TURN_COVERAGE_RADIUS_M));
+  const [turnCoverageRadiusError, setTurnCoverageRadiusError] = useState('');
+  const [turnOppositeCoverageRadiusM, setTurnOppositeCoverageRadiusM] = useState(TURN_OPPOSITE_COVERAGE_RADIUS_M);
+  const [turnOppositeCoverageRadiusInput, setTurnOppositeCoverageRadiusInput] = useState(String(TURN_OPPOSITE_COVERAGE_RADIUS_M));
+  const [turnOppositeCoverageRadiusError, setTurnOppositeCoverageRadiusError] = useState('');
   const [pickMode, setPickMode] = useState<PickMode>('start');
   const [start, setStart] = useState<LngLat | null>(null);
   const [end, setEnd] = useState<LngLat | null>(null);
@@ -301,6 +307,28 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
     onPreferredHeightChange: persistAnalysisHeight,
     disabled: layout.analysisCollapsed,
   });
+
+  const applyTurnCoverageRadius = useCallback(() => {
+    const next = Number(turnCoverageRadiusInput);
+    if (!Number.isFinite(next) || next < 1 || next > 500) {
+      setTurnCoverageRadiusError('Enter a value from 1 to 500 m.');
+      return;
+    }
+    setTurnCoverageRadiusInput(String(next));
+    setTurnCoverageRadiusError('');
+    setTurnCoverageRadiusM(next);
+  }, [turnCoverageRadiusInput]);
+
+  const applyTurnOppositeCoverageRadius = useCallback(() => {
+    const next = Number(turnOppositeCoverageRadiusInput);
+    if (!Number.isFinite(next) || next < 1 || next > 500) {
+      setTurnOppositeCoverageRadiusError('Enter a value from 1 to 500 m.');
+      return;
+    }
+    setTurnOppositeCoverageRadiusInput(String(next));
+    setTurnOppositeCoverageRadiusError('');
+    setTurnOppositeCoverageRadiusM(next);
+  }, [turnOppositeCoverageRadiusInput]);
 
   const testcases = useTestcaseManagement({
     activeDatasetId: datasetRegistry?.active_dataset ?? config?.active_dataset,
@@ -1936,7 +1964,8 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
       setTurnCoverageMessage(selectedTurnOccurrence.directionStatus);
       return;
     }
-    const cacheKey = [datasetId, activeDataset?.loaded_at ?? '', selectedTurnOccurrence.key, ...selectedTurnOccurrence.origin].join('|');
+    const queryRadiusM = Math.max(turnCoverageRadiusM, turnOppositeCoverageRadiusM);
+    const cacheKey = [datasetId, activeDataset?.loaded_at ?? '', selectedTurnOccurrence.key, ...selectedTurnOccurrence.origin, turnCoverageRadiusM, turnOppositeCoverageRadiusM].join('|');
     const cached = turnCoverageCacheRef.current.get(cacheKey);
     if (cached) {
       setTurnCoveragePois({ [selectedTurnOccurrence.key]: cached.pois });
@@ -1949,14 +1978,14 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
     setTurnCoveragePois({});
     setTurnCoverageStatus('loading');
     setTurnCoverageMessage('');
-    fetchDiagnosticPois(datasetId, [selectedTurnOccurrence.origin], TURN_COVERAGE_RADIUS_M, controller.signal).then((response) => {
+    fetchDiagnosticPois(datasetId, [selectedTurnOccurrence.origin], queryRadiusM, controller.signal).then((response) => {
       if (controller.signal.aborted || activeDatasetIdRef.current !== datasetId) return;
       const analysis = osrmCandidateAnalysis?.maneuvers.find((item) =>
         item.leg_index === selectedTurnOccurrence.legIndex && item.step_index === selectedTurnOccurrence.stepIndex &&
         (item.identity?.turn_id === undefined || item.identity.turn_id === selectedTurnOccurrence.turnId),
       ) ?? null;
       const pois = response.features
-        .map((feature) => classifyCoveragePoi(selectedTurnOccurrence, feature, analysis))
+        .map((feature) => classifyCoveragePoi(selectedTurnOccurrence, feature, analysis, turnCoverageRadiusM, turnOppositeCoverageRadiusM))
         .filter((poi): poi is CoveragePoi => poi !== null)
         .sort((a, b) => a.distanceM - b.distanceM);
       const status = response.complete ? 'complete' as const : 'incomplete' as const;
@@ -1974,21 +2003,26 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
       if (turnCoverageRequestRef.current === controller) turnCoverageRequestRef.current = null;
     });
     return () => controller.abort();
-  }, [selectedTurnOccurrence, selectedOsrmStepView, datasetRegistry?.active_dataset, activeDataset?.loaded_at, osrmCandidateAnalysis, busy]);
+  }, [selectedTurnOccurrence, selectedOsrmStepView, datasetRegistry?.active_dataset, activeDataset?.loaded_at, osrmCandidateAnalysis, busy, turnCoverageRadiusM, turnOppositeCoverageRadiusM]);
 
   useEffect(() => {
     const displayed: TurnOccurrence[] = !busy && selectedTurnOccurrence?.incoming ? [selectedTurnOccurrence] : [];
     const features: GeoJSON.Feature[] = [];
     for (const turn of displayed) {
       const incoming = turn.incoming!;
-      const arc: LngLat[] = [];
-      for (let index = 0; index <= 32; index += 1) {
-        const angle = Math.PI / 2 + Math.PI * index / 32;
-        const along = TURN_COVERAGE_RADIUS_M * Math.cos(angle);
-        const lateral = TURN_COVERAGE_RADIUS_M * Math.sin(angle);
-        arc.push(offsetLngLat(turn.origin, incoming.east * along - incoming.north * lateral, incoming.north * along + incoming.east * lateral));
+      for (const { region, radiusM, angleOffset } of [
+        { region: 'incoming', radiusM: turnCoverageRadiusM, angleOffset: Math.PI / 2 },
+        { region: 'opposite', radiusM: turnOppositeCoverageRadiusM, angleOffset: -Math.PI / 2 },
+      ] as const) {
+        const arc: LngLat[] = [];
+        for (let index = 0; index <= 32; index += 1) {
+          const angle = angleOffset + Math.PI * index / 32;
+          const along = radiusM * Math.cos(angle);
+          const lateral = radiusM * Math.sin(angle);
+          arc.push(offsetLngLat(turn.origin, incoming.east * along - incoming.north * lateral, incoming.north * along + incoming.east * lateral));
+        }
+        features.push({ type: 'Feature', geometry: { type: 'Polygon', coordinates: [[turn.origin, ...arc, turn.origin]] }, properties: { kind: 'footprint', region, turn_key: turn.key } });
       }
-      features.push({ type: 'Feature', geometry: { type: 'Polygon', coordinates: [[turn.origin, ...arc, turn.origin]] }, properties: { kind: 'footprint', turn_key: turn.key } });
       const tail = offsetLngLat(turn.origin, -incoming.east * 42, -incoming.north * 42);
       const tip = offsetLngLat(turn.origin, -incoming.east * 5, -incoming.north * 5);
       const left = offsetLngLat(tip, -incoming.east * 8 - incoming.north * 5, -incoming.north * 8 + incoming.east * 5);
@@ -1999,16 +2033,16 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
     syncGeoJsonSource('turn-poi-coverage', { type: 'FeatureCollection', features });
 
     const poiFeatures: GeoJSON.Feature<GeoJSON.Point>[] = displayed.flatMap((turn) =>
-      (turnCoveragePois[turn.key] ?? []).filter((poi) => poi.inside).map((poi) => ({
+      (turnCoveragePois[turn.key] ?? []).filter((poi) => poi.inside || poi.oppositeInside).map((poi) => ({
         ...poi.feature,
-        properties: { ...(poi.feature.properties ?? {}), _turn_key: turn.key, distance_m: poi.distanceM, lateral: poi.lateral, boundary: poi.boundary, engine_evidence: poi.engineEvidence },
+        properties: { ...(poi.feature.properties ?? {}), _turn_key: turn.key, distance_m: poi.distanceM, lateral: poi.lateral, coverage_region: poi.inside ? 'incoming' : 'opposite', boundary: poi.boundary, engine_evidence: poi.engineEvidence },
       })),
     );
     syncGeoJsonSource('turn-poi-coverage-pois', { type: 'FeatureCollection', features: poiFeatures });
-    turnCoverageLayerRef.current.setTurns(displayed, map3D);
+    turnCoverageLayerRef.current.setTurns(displayed, map3D, turnCoverageRadiusM, turnOppositeCoverageRadiusM);
     const map = mapRef.current;
     if (map?.getLayer('turn-poi-coverage-footprint')) map.setLayoutProperty('turn-poi-coverage-footprint', 'visibility', !busy && displayed.length > 0 && !map3D ? 'visible' : 'none');
-  }, [selectedTurnOccurrence, turnCoveragePois, busy, map3D, config]);
+  }, [selectedTurnOccurrence, turnCoveragePois, busy, map3D, config, turnCoverageRadiusM, turnOppositeCoverageRadiusM]);
 
   useEffect(() => {
     const features: GeoJSON.Feature<GeoJSON.Point>[] = osrmGuidance.passByEvents.flatMap((event) => event.coordinate ? [{
@@ -3422,6 +3456,60 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
           onToggle={() => toggleLayoutPanel('right')}
         >
           <section className="inspector-map-controls" aria-label="Map display controls">
+            <label className="turn-coverage-radius-control" htmlFor="turn-coverage-radius">
+              <span><i className="coverage-region-swatch incoming" />Incoming coverage</span>
+              <span className="turn-coverage-radius-input">
+                <input
+                  id="turn-coverage-radius"
+                  type="number"
+                  min="1"
+                  max="500"
+                  step="any"
+                  value={turnCoverageRadiusInput}
+                  aria-invalid={Boolean(turnCoverageRadiusError)}
+                  aria-describedby={turnCoverageRadiusError ? 'turn-coverage-radius-error' : undefined}
+                  onChange={(event) => {
+                    setTurnCoverageRadiusInput(event.target.value);
+                    if (turnCoverageRadiusError) setTurnCoverageRadiusError('');
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') {
+                      event.preventDefault();
+                      applyTurnCoverageRadius();
+                    }
+                  }}
+                />
+                <b>m</b>
+              </span>
+              {turnCoverageRadiusError && <small id="turn-coverage-radius-error" role="alert">{turnCoverageRadiusError}</small>}
+            </label>
+            <label className="turn-coverage-radius-control" htmlFor="turn-opposite-coverage-radius">
+              <span><i className="coverage-region-swatch opposite" />Opposite coverage</span>
+              <span className="turn-coverage-radius-input">
+                <input
+                  id="turn-opposite-coverage-radius"
+                  type="number"
+                  min="1"
+                  max="500"
+                  step="any"
+                  value={turnOppositeCoverageRadiusInput}
+                  aria-invalid={Boolean(turnOppositeCoverageRadiusError)}
+                  aria-describedby={turnOppositeCoverageRadiusError ? 'turn-opposite-coverage-radius-error' : undefined}
+                  onChange={(event) => {
+                    setTurnOppositeCoverageRadiusInput(event.target.value);
+                    if (turnOppositeCoverageRadiusError) setTurnOppositeCoverageRadiusError('');
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') {
+                      event.preventDefault();
+                      applyTurnOppositeCoverageRadius();
+                    }
+                  }}
+                />
+                <b>m</b>
+              </span>
+              {turnOppositeCoverageRadiusError && <small id="turn-opposite-coverage-radius-error" role="alert">{turnOppositeCoverageRadiusError}</small>}
+            </label>
             <label htmlFor="basemap-select"><span>Basemap</span>
             <select
               id="basemap-select"
@@ -3467,6 +3555,8 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
                   pois={turnCoveragePois[selectedTurnOccurrence.key] ?? []}
                   status={turnCoverageStatus}
                   message={turnCoverageMessage}
+                  radiusM={turnCoverageRadiusM}
+                  oppositeRadiusM={turnOppositeCoverageRadiusM}
                   dataset={activeDataset}
                   selectedLandmark={selectedPoiGuidance?.kind === 'osrm-step' ? selectedPoiGuidance.evidence.feature : selectedPoi}
                   onSelectPoi={focusCoveragePoi}
@@ -3504,6 +3594,8 @@ function Dashboard({ session, onLogout }: { session: AuthSession; onLogout: () =
                     pois={turnCoveragePois[selectedTurnOccurrence.key] ?? []}
                     status={turnCoverageStatus}
                     message={turnCoverageMessage}
+                    radiusM={turnCoverageRadiusM}
+                    oppositeRadiusM={turnOppositeCoverageRadiusM}
                     dataset={activeDataset}
                     onSelectPoi={focusCoveragePoi}
                   />}

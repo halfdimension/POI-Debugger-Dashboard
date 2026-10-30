@@ -4,6 +4,7 @@ import { propNumber, propText } from './poi';
 import type { CandidateAnalysisCandidate, CandidateAnalysisManeuver, LngLat, OsrmRouteResponse, OsrmStep } from './types';
 
 export const TURN_COVERAGE_RADIUS_M = 30;
+export const TURN_OPPOSITE_COVERAGE_RADIUS_M = 10;
 export const TURN_COVERAGE_EPSILON_M = 0.35;
 
 export type TurnOccurrence = {
@@ -24,9 +25,11 @@ export type CoveragePoi = {
   distanceM: number;
   approachDotM: number;
   crossM: number;
-  halfPlane: 'INCOMING' | 'BOUNDARY' | 'OUTGOING';
+  halfPlane: 'INCOMING' | 'BOUNDARY' | 'OPPOSITE';
   lateral: 'LEFT' | 'RIGHT' | 'LATERAL BOUNDARY';
+  region: 'INCOMING' | 'OPPOSITE' | 'NEITHER' | 'BOUNDARY';
   inside: boolean;
+  oppositeInside: boolean;
   boundary: boolean;
   engineEvidence: 'engine-selected' | 'engine-rejected' | 'engine-candidate' | 'engine decision unknown';
   engineReason: string;
@@ -128,6 +131,8 @@ export function classifyCoveragePoi(
   turn: TurnOccurrence,
   feature: Feature<Point>,
   analysis?: CandidateAnalysisManeuver | null,
+  incomingRadiusM = TURN_COVERAGE_RADIUS_M,
+  oppositeRadiusM = TURN_OPPOSITE_COVERAGE_RADIUS_M,
 ): CoveragePoi | null {
   if (!turn.incoming) return null;
   const coordinate = validCoordinate(feature.geometry.coordinates);
@@ -136,21 +141,28 @@ export function classifyCoveragePoi(
   const distanceM = Math.hypot(vector.east, vector.north);
   const approachDotM = vector.east * turn.incoming.east + vector.north * turn.incoming.north;
   const crossM = turn.incoming.east * vector.north - turn.incoming.north * vector.east;
-  const radialBoundary = Math.abs(distanceM - TURN_COVERAGE_RADIUS_M) <= TURN_COVERAGE_EPSILON_M;
+  const incomingRadialBoundary = Math.abs(distanceM - incomingRadiusM) <= TURN_COVERAGE_EPSILON_M;
+  const oppositeRadialBoundary = approachDotM > 0 && Math.abs(distanceM - oppositeRadiusM) <= TURN_COVERAGE_EPSILON_M;
   const planeBoundary = Math.abs(approachDotM) <= TURN_COVERAGE_EPSILON_M;
-  // `inside` is the actual 30 m incoming half-disc. Epsilon only marks a
+  // `inside` is the configured incoming half-disc. Epsilon only marks a
   // numerically uncertain boundary; it never expands the region.
-  const inside = distanceM <= TURN_COVERAGE_RADIUS_M && approachDotM <= 0;
+  const inside = distanceM <= incomingRadiusM && approachDotM <= 0;
+  // The strict plane comparison gives the dividing plane exclusively to the
+  // established incoming region, so a physical POI can never be double-counted.
+  const oppositeInside = distanceM <= oppositeRadiusM && approachDotM > 0;
+  const boundary = planeBoundary || incomingRadialBoundary || oppositeRadialBoundary;
   return {
     feature,
     coordinate,
     distanceM,
     approachDotM,
     crossM,
-    halfPlane: planeBoundary ? 'BOUNDARY' : approachDotM < 0 ? 'INCOMING' : 'OUTGOING',
+    halfPlane: planeBoundary ? 'BOUNDARY' : approachDotM < 0 ? 'INCOMING' : 'OPPOSITE',
     lateral: Math.abs(crossM) <= TURN_COVERAGE_EPSILON_M ? 'LATERAL BOUNDARY' : crossM > 0 ? 'LEFT' : 'RIGHT',
+    region: boundary ? 'BOUNDARY' : inside ? 'INCOMING' : oppositeInside ? 'OPPOSITE' : 'NEITHER',
     inside,
-    boundary: radialBoundary || planeBoundary,
+    oppositeInside,
+    boundary,
     ...evidenceFor(feature, analysis),
   };
 }

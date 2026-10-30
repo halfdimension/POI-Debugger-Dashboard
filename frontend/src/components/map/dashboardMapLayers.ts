@@ -473,14 +473,22 @@ export function registerDashboardMapLayers(
     type: 'fill',
     source: 'turn-poi-coverage',
     filter: ['==', ['get', 'kind'], 'footprint'],
-    paint: { 'fill-color': '#22d3ee', 'fill-opacity': 0.2, 'fill-outline-color': '#0891b2' },
+    paint: {
+      'fill-color': ['match', ['get', 'region'], 'opposite', '#f59e0b', '#22d3ee'],
+      'fill-opacity': ['match', ['get', 'region'], 'opposite', 0.24, 0.2],
+      'fill-outline-color': ['match', ['get', 'region'], 'opposite', '#d97706', '#0891b2'],
+    },
   });
   map.addLayer({
     id: 'turn-poi-coverage-rim',
     type: 'line',
     source: 'turn-poi-coverage',
     filter: ['in', ['get', 'kind'], ['literal', ['footprint', 'arrow']]],
-    paint: { 'line-color': '#06b6d4', 'line-width': 3, 'line-opacity': 0.9 },
+    paint: {
+      'line-color': ['match', ['get', 'region'], 'opposite', '#f59e0b', '#06b6d4'],
+      'line-width': 3,
+      'line-opacity': 0.9,
+    },
   });
   map.addLayer({
     id: 'turn-poi-coverage-origin',
@@ -496,7 +504,7 @@ export function registerDashboardMapLayers(
     source: 'turn-poi-coverage-pois',
     paint: {
       'circle-radius': 7,
-      'circle-color': ['match', ['get', 'lateral'], 'LEFT', '#2563eb', 'RIGHT', '#f97316', '#eab308'],
+      'circle-color': ['match', ['get', 'coverage_region'], 'opposite', '#f59e0b', '#06b6d4'],
       'circle-stroke-color': ['case', ['==', ['get', 'boundary'], true], '#fde047', '#ffffff'],
       'circle-stroke-width': ['case', ['==', ['get', 'boundary'], true], 4, 2],
       'circle-opacity': 0.95,
